@@ -1,0 +1,43 @@
+{
+  "providers": [
+    {
+      "name": "local",
+      "kind": "openai_compat",
+      "base_url": "http://llm:8000/v1",
+      "model": "local-model",
+      "max_sensitivity": "confidential",
+      "temperature": 0.2,
+      "timeout": 180
+    },
+    {
+      "name": "gigachat",
+      "kind": "gigachat",
+      "model": "GigaChat-2-Max",
+      "api_key_env": "GIGACHAT_AUTH_KEY",
+      "max_sensitivity": "internal",
+      "mask_pii": true,
+      "verify_ssl": true,
+      "extra": {"scope": "GIGACHAT_API_CORP"}
+    },
+    {
+      "name": "yandexgpt",
+      "kind": "openai_compat",
+      "base_url": "https://llm.api.cloud.yandex.net/v1",
+      "model": "gpt://FOLDER_ID/yandexgpt/latest",
+      "api_key_env": "YANDEX_API_KEY",
+      "max_sensitivity": "internal",
+      "mask_pii": true
+    },
+    {
+      "name": "offline",
+      "kind": "offline",
+      "max_sensitivity": "confidential"
+    }
+  ],
+  "routes": {
+    "route": ["local", "gigachat", "offline"],
+    "chat": ["local", "gigachat", "yandexgpt", "offline"],
+    "analysis": ["gigachat", "yandexgpt", "local", "offline"],
+    "default": ["local", "gigachat", "offline"]
+  }
+}

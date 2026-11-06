@@ -41,6 +41,7 @@ packages = ["bis"]
 [tool.ruff]
 line-length = 110
 target-version = "py311"
+extend-exclude = ["bis/migrations/versions"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]

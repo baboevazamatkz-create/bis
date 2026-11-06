@@ -1,0 +1,79 @@
+# BIS: базовая установка — БД, API, веб-интерфейс.
+#   docker compose -f deploy/docker-compose.yml up -d --build
+#   docker compose -f deploy/docker-compose.yml exec api bis seed-demo
+# Профили:
+#   --profile ai   — сервер эмбеддингов bge-m3 (CPU) в закрытом контуре
+#   --profile gpu  — локальная LLM на vLLM (нужна видеокарта NVIDIA и nvidia-container-toolkit)
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: bis
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bis}
+      POSTGRES_DB: bis
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bis"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  api:
+    build: ../backend
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      BIS_DATABASE_URL: postgresql+psycopg://bis:${POSTGRES_PASSWORD:-bis}@db:5432/bis
+      BIS_LLM_CONFIG_FILE: /config/llm.json
+    volumes:
+      - files:/data/files
+      - ./config:/config:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  web:
+    build: ../frontend
+    ports:
+      - "${BIS_HTTP_PORT:-8080}:80"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  embeddings:
+    profiles: ["ai"]
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.5
+    command: ["--model-id", "BAAI/bge-m3"]
+    volumes:
+      - hf-cache:/data
+    restart: unless-stopped
+
+  llm:
+    profiles: ["gpu"]
+    image: vllm/vllm-openai:v0.6.3
+    command:
+      - --model=${LLM_MODEL:-Qwen/Qwen2.5-32B-Instruct-AWQ}
+      - --served-model-name=local-model
+      - --max-model-len=32768
+      - --enable-auto-tool-choice
+      - --tool-call-parser=hermes
+    volumes:
+      - hf-cache:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  files:
+  hf-cache:

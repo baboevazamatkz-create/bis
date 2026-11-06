@@ -56,7 +56,7 @@ class Settings(BaseSettings):
 
     env: Literal["dev", "test", "prod"] = "dev"
     database_url: str = "postgresql+psycopg://bis:bis@localhost:5432/bis"
-    secret_key: str = "change-me-in-production"
+    secret_key: str = "change-me-in-production"  # в prod — не короче 32 символов
     access_token_ttl_minutes: int = 60 * 12
     storage_dir: Path = Path("./data/files")
     cors_origins: list[str] = ["http://localhost:5173", "http://localhost:8080"]

@@ -13,6 +13,8 @@ from bis.config import get_settings
 
 def create_app() -> FastAPI:
     settings = get_settings()
+    if settings.env == "prod" and (settings.secret_key == "change-me-in-production" or len(settings.secret_key) < 32):
+        raise RuntimeError("Задайте BIS_SECRET_KEY длиной не менее 32 символов")
     app = FastAPI(title="BIS API", version=__version__,
                   description="ИИ-платформа автоматизации строительных компаний")
     app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_credentials=True,

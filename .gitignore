@@ -10,3 +10,4 @@ data/
 .env
 node_modules/
 frontend/dist/
+*.tsbuildinfo
