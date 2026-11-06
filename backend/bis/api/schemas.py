@@ -1,0 +1,184 @@
+"""Схемы API реестров."""
+
+from __future__ import annotations
+
+import datetime as dt
+import uuid
+from datetime import datetime
+from decimal import Decimal
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field, create_model
+
+
+class ORM(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+
+def partial(model: type[BaseModel]) -> type[BaseModel]:
+    """Схема частичного обновления: все поля необязательны."""
+    fields = {name: (f.annotation | None, None) for name, f in model.model_fields.items()}
+    return create_model(f"{model.__name__}Update", **fields)  # type: ignore[call-overload]
+
+
+def read_model(model: type[BaseModel]) -> type[BaseModel]:
+    return create_model(  # type: ignore[call-overload]
+        f"{model.__name__.removesuffix('In')}Out",
+        __base__=(model, ORM),
+        id=(uuid.UUID, ...),
+        created_at=(datetime | None, None),
+    )
+
+
+class CounterpartyIn(BaseModel):
+    name: str
+    kind: str = Field("other", description="customer, developer, designer, subcontractor, supplier, other")
+    inn: str | None = None
+    kpp: str | None = None
+    ogrn: str | None = None
+    address: str | None = None
+    phone: str | None = None
+    email: str | None = None
+    sro: str | None = None
+    head_position: str | None = None
+    head_name: str | None = None
+
+
+class ObjectIn(BaseModel):
+    name: str
+    code: str | None = None
+    address: str | None = None
+    status: str = "active"
+    developer_id: uuid.UUID | None = None
+    designer_id: uuid.UUID | None = None
+    start_date: dt.date | None = None
+    end_date: dt.date | None = None
+    extra: dict[str, Any] = Field(default_factory=dict)
+
+
+class ContractIn(BaseModel):
+    kind: str = Field(description="general, subcontract, supply, services, design")
+    number: str
+    date: dt.date | None = None
+    subject: str | None = None
+    object_id: uuid.UUID | None = None
+    counterparty_id: uuid.UUID | None = None
+    our_role: str = "contractor"
+    amount: Decimal | None = None
+    vat_rate: Decimal | None = None
+    start_date: dt.date | None = None
+    end_date: dt.date | None = None
+    status: str = "active"
+    extra: dict[str, Any] = Field(default_factory=dict)
+
+
+class PersonIn(BaseModel):
+    full_name: str
+    position: str | None = None
+    counterparty_id: uuid.UUID | None = None
+    nrs_id: str | None = None
+    phone: str | None = None
+    email: str | None = None
+
+
+class AppointmentIn(BaseModel):
+    person_id: uuid.UUID
+    object_id: uuid.UUID
+    role: str = Field(description="developer_control, builder, builder_control, designer, performer или своя роль")
+    order_number: str | None = None
+    order_date: dt.date | None = None
+    valid_from: dt.date | None = None
+    valid_to: dt.date | None = None
+
+
+class ObligationIn(BaseModel):
+    contract_id: uuid.UUID
+    description: str
+    party: str = "we"
+    due_date: dt.date | None = None
+    responsible_id: uuid.UUID | None = None
+    status: str = "open"
+    penalty: str | None = None
+    source_clause: str | None = None
+
+
+class DocumentOut(ORM):
+    id: uuid.UUID
+    kind: str
+    title: str
+    number: str | None
+    date: dt.date | None
+    status: str
+    source: str
+    object_id: uuid.UUID | None
+    contract_id: uuid.UUID | None
+    file_name: str | None
+    issues: list[dict[str, Any]]
+    created_by: str | None
+    created_at: datetime
+    approved_at: datetime | None
+    reject_reason: str | None
+    data: dict[str, Any] = Field(default_factory=dict)
+
+
+class UserIn(BaseModel):
+    email: str = Field(pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+    full_name: str
+    position: str | None = None
+    role: str = "viewer"
+    password: str = Field(min_length=8)
+
+
+class UserOut(ORM):
+    id: uuid.UUID
+    email: str
+    full_name: str
+    position: str | None
+    role: str
+    is_active: bool
+    is_platform_admin: bool
+    organization_id: uuid.UUID
+
+
+class OrganizationOut(ORM):
+    id: uuid.UUID
+    name: str
+    short_name: str | None
+    inn: str | None
+    kpp: str | None
+    ogrn: str | None
+    address: str | None
+    phone: str | None
+    email: str | None
+    sro: str | None
+    settings: dict[str, Any]
+
+
+class OrganizationUpdate(BaseModel):
+    name: str | None = None
+    short_name: str | None = None
+    inn: str | None = None
+    kpp: str | None = None
+    ogrn: str | None = None
+    address: str | None = None
+    phone: str | None = None
+    email: str | None = None
+    sro: str | None = None
+    settings: dict[str, Any] | None = None
+
+
+class MemoryIn(BaseModel):
+    kind: str = "rule"
+    scope: str = "*"
+    content: str
+    is_active: bool = True
+
+
+class MemoryOut(ORM):
+    id: uuid.UUID
+    kind: str
+    scope: str
+    content: str
+    source: str | None
+    is_active: bool
+    created_at: datetime

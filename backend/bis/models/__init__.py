@@ -1,0 +1,38 @@
+from bis.models.core import (
+    Appointment,
+    AuditLog,
+    ChatMessage,
+    ChatSession,
+    ConstructionObject,
+    Contract,
+    ContractObligation,
+    Counter,
+    Counterparty,
+    Document,
+    DocumentTemplate,
+    Organization,
+    OrgMemory,
+    Person,
+    User,
+)
+from bis.models.knowledge import KnowledgeChunk, KnowledgeSource
+
+__all__ = [
+    "Appointment",
+    "AuditLog",
+    "ChatMessage",
+    "ChatSession",
+    "ConstructionObject",
+    "Contract",
+    "ContractObligation",
+    "Counter",
+    "Counterparty",
+    "Document",
+    "DocumentTemplate",
+    "KnowledgeChunk",
+    "KnowledgeSource",
+    "OrgMemory",
+    "Organization",
+    "Person",
+    "User",
+]
