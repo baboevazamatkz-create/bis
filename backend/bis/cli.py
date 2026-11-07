@@ -54,6 +54,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--setup", action="store_true", help="Только подготовить базу и выполнить команду --then")
     p.add_argument("--then", nargs=argparse.REMAINDER, default=[], help="Команда bis после подготовки (seed-demo, create-org …)")
     sub.add_parser("cad-mcp", help="MCP-сервер для AutoCAD/nanoCAD (ИИ рисует в чертеже)")
+    sub.add_parser("cad-check", help="Диагностика подключения к AutoCAD/nanoCAD")
     sub.add_parser("reindex", help="Пересчитать смысловые векторы базы знаний (после смены модели эмбеддингов)")
     sub.add_parser("llm-check", help="Проверить подключение моделей: ответ, JSON, время")
     sub.add_parser("telegram-poll", help="Telegram-бот в режиме опроса (без входящих соединений, закрытый контур)")
@@ -98,6 +99,13 @@ def main(argv: list[str] | None = None) -> int:
         from bis.cad.mcp_server import main as cad_main
 
         cad_main()
+        return 0
+    if args.cmd == "cad-check":
+        import json
+
+        from bis.cad.bridge import diagnose
+
+        print(json.dumps(diagnose(), ensure_ascii=False, indent=2))
         return 0
     if args.cmd == "reindex":
         from sqlalchemy import select

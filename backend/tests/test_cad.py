@@ -164,4 +164,4 @@ def test_cad_bridge_dxf_and_com(tmp_path):
     mcp_server._state["cad"] = bridge.DxfBackend()
     res = mcp_server.executive_scheme({"title": "т", "points": [{"name": "1", "design_x": 0, "design_y": 0, "fact_x": 0.01, "fact_y": 0}]})
     assert res["file"].endswith(".dxf") and res["opened_in"] == "dxf"
-    assert len(mcp_server.TOOLS) == 10
+    assert len(mcp_server.TOOLS) == 11

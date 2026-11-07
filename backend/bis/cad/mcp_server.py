@@ -32,9 +32,12 @@ def _cad() -> bridge.Backend:
 
 def status() -> dict:
     cad = _cad()
-    return {"backend": cad.name, "entities": cad.count(), "file": getattr(cad, "path", None),
-            "hint": "Рисую в DXF-файл: запустите AutoCAD или nanoCAD и вызовите cad_connect, чтобы рисовать в нём"
-            if cad.name == "dxf" else f"Подключено к {cad.name}"}
+    out = {"backend": cad.name, "entities": cad.count(), "file": getattr(cad, "path", None),
+           "hint": "Рисую в DXF-файл: AutoCAD/nanoCAD не подключён — причины в errors; после исправления вызовите cad_connect"
+           if cad.name == "dxf" else f"Подключено к {cad.name}"}
+    if cad.name == "dxf" and bridge.LAST_ERRORS:
+        out["errors"] = list(bridge.LAST_ERRORS)
+    return out
 
 
 def connect(target: str = "auto") -> dict:
@@ -102,6 +105,13 @@ def executive_scheme(scheme: dict) -> dict:
     return {"file": str(out), "opened_in": cad.name, "scale": f"1:{scale}", **summary(check_points(data), data)}
 
 
+def diagnose() -> dict:
+    """Почему не удаётся подключиться к AutoCAD/nanoCAD."""
+    info = bridge.diagnose()
+    _state["cad"] = None
+    return info
+
+
 def save(path: str = "") -> dict:
     return {"saved": _cad().save(path), **status()}
 
@@ -117,6 +127,7 @@ TOOLS = [
     ("cad_dimension", dimension, "Параллельный размер между точками; offset — точка положения размерной линии (мм)."),
     ("cad_executive_scheme", executive_scheme, executive_scheme.__doc__ or ""),
     ("cad_save", save, "Сохранить чертёж (путь .dwg или .dxf; пусто — текущий файл)."),
+    ("cad_diagnose", diagnose, "Диагностика подключения к AutoCAD/nanoCAD: pywin32, реестр, процессы, права, ошибки."),
 ]
 
 

@@ -114,10 +114,7 @@ class ComBackend:
                 import win32com.client
             except ImportError as e:
                 raise CadError("Не установлен pywin32: pip install pywin32") from e
-            try:
-                app = win32com.client.GetActiveObject(PROGIDS[product])
-            except Exception as e:  # noqa: BLE001 — CAD не запущен
-                raise CadError(f"{product} не запущен") from e
+            app = _attach(product, win32com.client)
         self.app = app
         try:
             self.doc = app.ActiveDocument
@@ -196,18 +193,103 @@ class ComBackend:
             self.app.ZoomExtents()
 
 
-def connect(target: str = "auto", dxf_path: str | None = None) -> Backend:
-    """auto: запущенный AutoCAD, затем nanoCAD, иначе DXF-файл."""
-    order = ["autocad", "nanocad"] if target == "auto" else [target] if target in PROGIDS else []
+def registered_progids(product: str) -> list[str]:
+    """ProgID из реестра: общий «AutoCAD.Application» и версионные «AutoCAD.Application.24.3» и т.п."""
+    base = PROGIDS[product]
+    found = []
+    try:
+        import winreg
+
+        i = 0
+        with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, "") as root:
+            while True:
+                try:
+                    name = winreg.EnumKey(root, i)
+                except OSError:
+                    break
+                i += 1
+                if name.lower().startswith(base.lower()):
+                    found.append(name)
+    except Exception:  # noqa: BLE001 — не Windows
+        return [base]
+    # сначала общий, затем версионные от новых к старым
+    return sorted(set(found) | {base}, key=lambda n: (n.lower() != base.lower(), [-ord(c) for c in n]))
+
+
+def _attach(product: str, client) -> Any:
+    """Подключение к запущенному CAD: GetActiveObject по всем ProgID, затем Dispatch (подхватывает запущенный)."""
     errors = []
+    progids = registered_progids(product)
+    for progid in progids:
+        try:
+            return client.GetActiveObject(progid)
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"{progid}: {_com_error(e)}")
+    for progid in progids:
+        try:
+            return client.Dispatch(progid)
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"{progid} (запуск): {_com_error(e)}")
+    raise CadError(f"{product}: " + "; ".join(errors[:6]))
+
+
+def _com_error(e: Exception) -> str:
+    text = str(e)
+    if "-2147221005" in text or "Invalid class string" in text or "Недопустимая строка с указанием класса" in text:
+        return "не зарегистрирован (CAD не установлен или это версия LT без программного управления)"
+    if "-2147221021" in text or "Operation unavailable" in text or "Операция недоступна" in text:
+        return "не запущен или запущен с другими правами (от администратора)"
+    return text[:160]
+
+
+LAST_ERRORS: list[str] = []
+
+
+def connect(target: str = "auto", dxf_path: str | None = None) -> Backend:
+    """auto: запущенный AutoCAD, затем nanoCAD, иначе DXF-файл. Причины отказа — в LAST_ERRORS."""
+    order = ["autocad", "nanocad"] if target == "auto" else [target] if target in PROGIDS else []
+    LAST_ERRORS.clear()
     for product in order:
         try:
             return ComBackend(product)
         except CadError as e:
-            errors.append(str(e))
+            LAST_ERRORS.append(str(e))
     if target not in ("auto", "dxf"):
-        raise CadError("; ".join(errors))
+        raise CadError("; ".join(LAST_ERRORS))
     return DxfBackend(dxf_path)
+
+
+def diagnose() -> dict:
+    """Почему не удаётся подключиться к CAD: платформа, pywin32, ProgID в реестре, запущенные процессы, права."""
+    info: dict[str, Any] = {"platform": sys.platform, "python": sys.executable}
+    try:
+        import win32com.client  # noqa: F401
+
+        info["pywin32"] = "установлен"
+    except Exception as e:  # noqa: BLE001
+        info["pywin32"] = f"НЕТ: {e}"
+    info["progids"] = {p: registered_progids(p) for p in PROGIDS}
+    try:
+        import subprocess
+
+        out = subprocess.run(["tasklist", "/FO", "CSV", "/NH"], capture_output=True, text=True, timeout=20).stdout
+        info["running"] = sorted({ln.split(",")[0].strip('"') for ln in out.splitlines()
+                                  if any(k in ln.lower() for k in ("acad", "nanocad", "ncad"))})
+    except Exception:  # noqa: BLE001
+        info["running"] = "не удалось проверить"
+    try:
+        import ctypes
+
+        info["this_process_admin"] = bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:  # noqa: BLE001
+        pass
+    cad = connect("auto")
+    info["connected"] = cad.name
+    info["errors"] = list(LAST_ERRORS)
+    if cad.name != "dxf":
+        with contextlib.suppress(Exception):
+            info["document"] = str(cad.doc.Name)
+    return info
 
 
 def draw_axes(cad: Backend, x_axes: list[dict], y_axes: list[dict], *, bubble: float = 400, ext: float = 1500,
