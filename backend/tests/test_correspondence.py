@@ -136,3 +136,27 @@ def test_mailbox_disabled(db, demo):
     from bis.connectors.mailbox import fetch_mailbox
 
     assert "skipped" in fetch_mailbox(db, demo, imap_factory=lambda cfg: None)
+
+
+def test_mailbox_routes_production_attachments_to_ai(db, demo):
+    from sqlalchemy import select
+
+    from bis.connectors.mailbox import fetch_mailbox
+    from bis.models import AIAction, Document, IntakeEvent
+
+    demo.settings = {**demo.settings, "mailbox": {"enabled": True, "host": "imap.test", "username": "u"}}
+    db.commit()
+    upd = ("Универсальный передаточный документ\nСчет-фактура № 77 от 03.06.2026\nПродавец: ООО «БетонСтрой» "
+           "ИНН 7705123456\n1 | Бетон B25 W8 F150 | м3 | 60 | 7 200,00 | 432 000,00").encode()
+    msg = EmailMessage()
+    msg["From"], msg["Subject"], msg["Message-ID"] = "ООО «БетонСтрой» <sales@beton.example>", "УПД за июнь", "<m9@test>"
+    msg.set_content("Добрый день! Направляем УПД.")
+    msg.add_attachment(upd, maintype="text", subtype="plain", filename="УПД_77.txt")
+    imap = FakeImap({b"1": msg.as_bytes()})
+    assert fetch_mailbox(db, demo, imap_factory=lambda cfg: imap) == {"imported": 1, "skipped": 0}
+    ev = db.scalar(select(IntakeEvent).where(IntakeEvent.source == "email"))
+    assert ev.detected_type == "upd" and ev.result["email"]["subject"] == "УПД за июнь"
+    assert db.scalar(select(AIAction).where(AIAction.event_id == ev.id, AIAction.kind == "create_receipt")).status == "proposed"
+    letter = db.scalar(select(Document).where(Document.kind == "incoming_letter", Document.source == "email"))
+    assert letter.data["routed_to_ai"] == ["УПД_77.txt"]
+    assert not db.scalar(select(Document).where(Document.title.like("Вложение:%")))  # не задвоено обычным вложением

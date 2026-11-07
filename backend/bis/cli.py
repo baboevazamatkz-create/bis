@@ -47,6 +47,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--k", type=int, default=5)
     p.add_argument("--answers", action="store_true", help="Проверять ответы агентов (нужна модель)")
 
+    sub.add_parser("telegram-poll", help="Telegram-бот в режиме опроса (без входящих соединений, закрытый контур)")
+
     p = sub.add_parser("serve", help="Запустить API")
     p.add_argument("--host", default="0.0.0.0")
     p.add_argument("--port", type=int, default=8000)
@@ -74,6 +76,14 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
             r = run_job(SessionLocal, name)
             print(f"{name}: {r.status}")
+        return 0
+    if args.cmd == "telegram-poll":
+        import logging
+
+        from bis.connectors.telegram import poll
+
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+        poll()
         return 0
     if args.cmd == "serve":
         import uvicorn

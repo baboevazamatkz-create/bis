@@ -81,8 +81,12 @@ class Settings(BaseSettings):
     llm_config_file: Path | None = None
     llm_routes_json: str | None = None
 
-    # Уведомления в Telegram (бот организации); chat_id задаётся у пользователя
+    # Telegram-бот: приём фото, голосовых и документов с площадки, уведомления, решения по предложениям ИИ
     telegram_bot_token: str | None = None
+    telegram_bot_username: str | None = None  # для ссылки привязки t.me/<бот>?start=<код>
+    telegram_webhook_secret: str | None = None  # заголовок X-Telegram-Bot-Api-Secret-Token
+    telegram_api_base: str = "https://api.telegram.org"  # или локальный Bot API сервер в закрытом контуре
+    public_url: str | None = None  # адрес веб-интерфейса — для ссылок в сообщениях
 
     # Голос (OpenAI-совместимые серверы в закрытом контуре)
     stt_url: str | None = None  # например http://stt:8000/v1 (faster-whisper / speaches)
