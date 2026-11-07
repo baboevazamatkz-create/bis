@@ -62,7 +62,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--org-inn", help="ИНН организации (по умолчанию — первая)")
     p.add_argument("--object", help="Шифр объекта для всех файлов (иначе — по папке и тексту)")
     p.add_argument("--no-contracts", action="store_true", help="Не разбирать договоры на обязательства")
-    sub.add_parser("reindex", help="Пересчитать смысловые векторы базы знаний (после смены модели эмбеддингов)")
+    p = sub.add_parser("reindex", help="Смысловые векторы: досчитать недостающие (после смены модели — все)")
+    p.add_argument("--all", action="store_true", help="Пересчитать все векторы заново")
     sub.add_parser("llm-check", help="Проверить подключение моделей: ответ, JSON, время")
     sub.add_parser("telegram-poll", help="Telegram-бот в режиме опроса (без входящих соединений, закрытый контур)")
 
@@ -169,23 +170,33 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "reindex":
         from sqlalchemy import select
 
+        from bis.config import get_settings
         from bis.db import SessionLocal
         from bis.models import KnowledgeChunk, KnowledgeSource
         from bis.rag.embeddings import get_embedder
         from bis.rag.ingest import embedding_text
 
         emb = get_embedder()
+        dim = getattr(emb, "dim", None) or get_settings().embedding_dim
+        signature = f"{type(emb).__name__}:{getattr(emb, 'doc_model', getattr(emb, 'model', ''))}:{dim}"
+        marker = Path(get_settings().storage_dir).resolve().parent / ".embedder"
+        previous = marker.read_text(encoding="utf-8").strip() if marker.exists() else signature
+        full = args.all or previous != signature  # сменилась модель — векторы несравнимы, считаем все
         with SessionLocal() as db:
-            rows = db.execute(select(KnowledgeChunk, KnowledgeSource).join(
-                KnowledgeSource, KnowledgeSource.id == KnowledgeChunk.source_id)).all()
-            for i in range(0, len(rows), 64):
-                part = rows[i:i + 64]
+            ids = [cid for cid, vec in db.execute(select(KnowledgeChunk.id, KnowledgeChunk.embedding)).all()
+                   if full or vec is None or len(vec) != dim]
+            print(("Пересчёт всех векторов" if full else "Досчёт недостающих векторов") + f": {len(ids)}")
+            for i in range(0, len(ids), 64):
+                part = db.execute(select(KnowledgeChunk, KnowledgeSource).join(
+                    KnowledgeSource, KnowledgeSource.id == KnowledgeChunk.source_id).where(KnowledgeChunk.id.in_(ids[i:i + 64]))).all()
                 vecs = emb.embed_documents([embedding_text(s.designation or s.title, c.section_path, c.heading, c.content)
                                             for c, s in part])
                 for (c, _), v in zip(part, vecs, strict=True):
                     c.embedding = v
                 db.commit()
-                print(f"{min(i + 64, len(rows))}/{len(rows)}")
+                print(f"{min(i + 64, len(ids))}/{len(ids)}")
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(signature, encoding="utf-8")
         return 0
     if args.cmd == "llm-check":
         from bis.llm.check import check_providers
