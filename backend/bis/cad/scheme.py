@@ -88,9 +88,19 @@ def summary(checks: list[PointCheck], d: SchemeData) -> dict:
         "max_height_mm": max((abs(c.dz_mm) for c in checks if c.dz_mm is not None), default=None),
         "tolerance_plan_mm": d.tolerance_plan_mm,
         "tolerance_height_mm": d.tolerance_height_mm,
-        "conclusion": ("Отклонения в пределах допусков" if not bad else
-                       f"Превышение допусков в точках: {', '.join(c.name for c in bad)}"),
+        "measured": sum(1 for c in checks if c.plan_ok is not None or c.height_ok is not None),
+        "conclusion": _conclusion(checks, bad),
     }
+
+
+def _conclusion(checks: list[PointCheck], bad: list[PointCheck]) -> str:
+    measured = [c for c in checks if c.plan_ok is not None or c.height_ok is not None]
+    if not measured:
+        return "Фактические замеры не внесены — схема по проекту, графы факта заполняются по замерам"
+    head = "" if len(measured) == len(checks) else f"Замерено {len(measured)} из {len(checks)} точек. "
+    if bad:
+        return head + f"Превышение допусков в точках: {', '.join(c.name for c in bad)}"
+    return head + "Отклонения в пределах допусков"
 
 
 def _pick_scale(width_m: float, height_m: float) -> int:

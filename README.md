@@ -8,6 +8,7 @@
 - [Концепция, план, трудозатраты, ресурсы](docs/PLAN.md)
 - [Запуск, гибридный ИИ, Telegram, плагины](docs/DEVELOPMENT.md)
 - [Установка на сервер в Yandex Cloud](docs/INSTALL_YANDEX_CLOUD.md)
+- [AutoCAD и nanoCAD: ИИ рисует в чертеже (MCP)](docs/CAD_MCP.md)
 
 ## Как это работает
 

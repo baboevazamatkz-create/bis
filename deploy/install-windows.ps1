@@ -57,7 +57,7 @@ Move-Item $src.FullName $App
 Say "3/6 Устанавливаю компоненты (первый раз 3–7 минут)"
 if (-not (Test-Path $Bis)) { & $Py -m venv $Venv }
 & (Join-Path $Venv "Scripts\python.exe") -m pip install -q --upgrade pip
-& (Join-Path $Venv "Scripts\python.exe") -m pip install -q (Join-Path $App "backend") pgserver imageio-ffmpeg
+& (Join-Path $Venv "Scripts\python.exe") -m pip install -q ((Join-Path $App "backend") + "[cad]") pgserver imageio-ffmpeg
 if (-not (Test-Path $Bis)) { Write-Host "Не удалось установить BIS — пришлите текст ошибки выше." -ForegroundColor Red; return }
 
 $first = -not (Test-Path $Ready)

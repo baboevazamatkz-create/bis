@@ -102,3 +102,66 @@ def test_cad_agent_from_survey_document(client, auth):
     assert data["documents"] and data["documents"][0]["kind"] == "scheme"
     result = [m for m in llm.calls[2]["messages"] if m.role == "tool"][-1].content
     assert '"out_of_tolerance": ["2", "3"]' in result and '"scale": "1:200"' in result
+
+
+def test_scheme_without_survey_from_project_and_measurements(client, auth):
+    obj = client.get("/api/objects", headers=auth).json()[0]
+    r = client.post("/api/schemes/draft", headers=auth, json={
+        "title": "Исполнительная схема колонн, этаж 2", "element": "колонны", "object_id": obj["id"],
+        "x_axes": [{"name": "1", "coord": 0}, {"name": "2", "coord": 6}], "y_axes": [{"name": "А", "coord": 0}, {"name": "Б", "coord": 6}],
+        "measurements_text": "1/А: X +8, Y -3; 2/Б x минус 22 y 4", "tolerance_plan_mm": 15, "tolerance_height_mm": 10,
+        "visual_note": "по фото армирование выполнено, фиксаторы установлены"})
+    assert r.status_code == 201, r.text
+    data = r.json()["data"]
+    assert data["summary"]["measured"] == 2 and data["summary"]["out_of_tolerance"] == ["2/Б"]
+    assert "Замерено 2 из 4" in data["summary"]["conclusion"]
+    assert any("рулетка" in n for n in data["input"]["notes"]) and any("Визуальный контроль" in n for n in data["input"]["notes"])
+    empty = client.post("/api/schemes/draft", headers=auth, json={"x_axes": [{"name": "1", "coord": 0}],
+                                                                  "y_axes": [{"name": "А", "coord": 0}]}).json()
+    assert "не внесены" in empty["data"]["summary"]["conclusion"]
+
+
+def test_cad_bridge_dxf_and_com(tmp_path):
+    from bis.cad import bridge, mcp_server
+
+    cad = bridge.DxfBackend()
+    bridge.draw_axes(cad, [{"name": "1", "coord": 0}, {"name": "2", "coord": 6000}], [{"name": "А", "coord": 0}])
+    cad.polyline([(0, 0), (6000, 0), (6000, 400)], True, "BIS")
+    assert cad.count() > 5 and cad.save(str(tmp_path / "x.dxf")).endswith(".dxf")
+
+    class Ent:
+        def __init__(self):
+            self.Layer = ""
+
+    class MS:
+        def __init__(self):
+            self.calls = []
+            self.Count = 0
+
+        def __getattr__(self, name):
+            def add(*a):
+                self.calls.append(name)
+                self.Count += 1
+                return Ent()
+            return add
+
+    class LayerTable:
+        def Add(self, name):  # noqa: N802 — COM
+            return Ent()
+
+    class Doc:
+        ModelSpace = MS()
+        Layers = LayerTable()
+
+    class App:
+        ActiveDocument = Doc()
+
+    com = bridge.ComBackend("nanocad", app=App())
+    bridge.draw_axes(com, [{"name": "1", "coord": 0}, {"name": "2", "coord": 6000}], [{"name": "А", "coord": 0}])
+    com.text("Схема", (0, 0), 250, "BIS")
+    assert {"AddLine", "AddCircle", "AddText", "AddDimAligned"} <= set(App.ActiveDocument.ModelSpace.calls)
+
+    mcp_server._state["cad"] = bridge.DxfBackend()
+    res = mcp_server.executive_scheme({"title": "т", "points": [{"name": "1", "design_x": 0, "design_y": 0, "fact_x": 0.01, "fact_y": 0}]})
+    assert res["file"].endswith(".dxf") and res["opened_in"] == "dxf"
+    assert len(mcp_server.TOOLS) == 10

@@ -2,6 +2,7 @@
 
 import datetime as dt
 import uuid
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
@@ -166,6 +167,66 @@ def create_scheme(body: SchemeIn, db: Session = Depends(get_db), user: User = De
                              object_id=body.object_id)
     db.commit()
     return doc
+
+
+class SchemeDraftIn(BaseModel):
+    title: str = "Исполнительная схема"
+    element: str = "конструкция"
+    object_id: uuid.UUID | None = None
+    code: str = ""
+    x_axes: list[dict] = []
+    y_axes: list[dict] = []
+    contour: list[list[float]] | None = None
+    design_z: float | None = None
+    measurements_text: str = ""
+    tolerance_plan_mm: float | None = None
+    tolerance_height_mm: float | None = None
+    visual_note: str = ""
+
+
+@router.post("/schemes/draft", response_model=DocumentOut, status_code=201)
+def draft_scheme(body: SchemeDraftIn, db: Session = Depends(get_db), user: User = Depends(require("documents:write"))):
+    """Схема без геодезической съёмки: оси/контур по проекту, допуски по нормативу, факт — по замерам (текст, голос)."""
+    from bis.llm.gateway import get_gateway
+    from bis.rag.embeddings import get_embedder
+
+    if body.object_id:
+        _owned(db, user, ConstructionObject, body.object_id, "Объект")
+    try:
+        doc = ssvc.draft_scheme(db, get_storage(), get_gateway(), get_embedder(), user.organization_id, title=body.title,
+                                element=body.element, x_axes=body.x_axes, y_axes=body.y_axes, contour=body.contour,
+                                measurements_text=body.measurements_text, tolerance_plan_mm=body.tolerance_plan_mm,
+                                tolerance_height_mm=body.tolerance_height_mm, visual_note=body.visual_note,
+                                design_z=body.design_z, object_id=body.object_id, code=body.code, actor=f"user:{user.id}")
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    db.commit()
+    return doc
+
+
+@router.post("/documents/{doc_id}/open-in-cad")
+def open_in_cad(doc_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(require("documents:read"))):
+    """Открыть чертёж в запущенном AutoCAD или nanoCAD (BIS установлен на этом же компьютере с Windows)."""
+    import tempfile
+
+    from bis.cad import bridge
+    from bis.models import Document
+
+    doc = _owned(db, user, Document, doc_id, "Документ")
+    if not doc.file_key or not (doc.file_name or "").lower().endswith((".dxf", ".dwg")):
+        raise HTTPException(400, "У документа нет чертежа DXF/DWG")
+    try:
+        cad = bridge.connect("auto")
+    except bridge.CadError as e:
+        raise HTTPException(400, str(e)) from e
+    if cad.name == "dxf":
+        raise HTTPException(400, "AutoCAD или nanoCAD не запущен на компьютере с BIS — откройте CAD и повторите, "
+                                 "или скачайте файл")
+    path = Path(tempfile.gettempdir()) / f"bis-{doc.id}{Path(doc.file_name).suffix}"
+    path.write_bytes(get_storage().get(doc.file_key))
+    cad.open_file(str(path))
+    cad.zoom()
+    return {"opened_in": cad.name, "file": str(path)}
 
 
 @router.post("/schemes/survey")
