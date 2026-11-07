@@ -144,7 +144,7 @@ export default function App() {
         </div>
         <div className="sidebar-footer">
           <span className="user-name" title={ROLE_TITLES[user.role] ?? user.role}>{user.full_name}</span>
-          <a href="#" onClick={(e) => { e.preventDefault(); setToken(null); setUser(null); }}>Выйти</a>
+          <a href="#" onClick={(e) => { e.preventDefault(); setToken(null); window.location.reload(); }}>Выйти</a>
         </div>
       </nav>
       <main className="main">
