@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import re
 import uuid
 from dataclasses import asdict, dataclass
@@ -178,7 +179,10 @@ def hybrid_search(
     ranked: list[list[tuple[KnowledgeChunk, KnowledgeSource]]] = []
     weights: list[float] = []
 
-    qvec = embedder.embed_query(query)
+    try:
+        qvec = embedder.embed_query(query)
+    except Exception:  # noqa: BLE001 — сервис векторов недоступен: ищем по словам, а не падаем
+        qvec = None
     expansions = expand(query, org_terms(db, org_id))
 
     # 1. Точная ссылка на пункт
@@ -190,7 +194,7 @@ def hybrid_search(
         if clause:
             stmt = stmt.where(or_(KnowledgeChunk.clause == clause, KnowledgeChunk.clause.like(clause + ".%")))
             ranked.append(list(db.execute(stmt.order_by(KnowledgeChunk.ord).limit(5)).all()))
-        elif VECTOR:
+        elif VECTOR and qvec is not None:
             stmt = stmt.order_by(KnowledgeChunk.embedding.cosine_distance(qvec)).limit(pool)
             ranked.append(list(db.execute(stmt).all()))
         else:
@@ -198,12 +202,13 @@ def hybrid_search(
         weights.append(3.0)
 
     # 2. Векторный поиск: исходный запрос и запрос, расширенный терминами тезауруса
-    if not VECTOR and getattr(embedder, "semantic", False):  # смысловой поиск без pgvector: сравнение в памяти
+    if qvec is not None and not VECTOR and getattr(embedder, "semantic", False):  # без pgvector: сравнение в памяти
         ranked.append(_semantic_in_memory(db, qvec, flt, pool))
         weights.append(1.3)
-    vectors = [(qvec, 1.0)] if VECTOR else []
-    if expansions and VECTOR:
-        vectors.append((embedder.embed_query(query + ". " + "; ".join(expansions)), 0.7))
+    vectors = [(qvec, 1.0)] if VECTOR and qvec is not None else []
+    if expansions and vectors:
+        with contextlib.suppress(Exception):
+            vectors.append((embedder.embed_query(query + ". " + "; ".join(expansions)), 0.7))
     for vec, weight in vectors:
         stmt = _base_filter(select(KnowledgeChunk, KnowledgeSource), **flt).where(KnowledgeChunk.embedding.is_not(None))
         stmt = stmt.order_by(KnowledgeChunk.embedding.cosine_distance(vec)).limit(pool)

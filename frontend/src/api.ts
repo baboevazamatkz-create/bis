@@ -94,6 +94,24 @@ export async function download(path: string, fallbackName = "document") {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+/** Открыть документ: PDF, картинки и текст — в новой вкладке, остальное (Word, Excel, DWG) — скачать. */
+export async function openFile(path: string, fallbackName = "document") {
+  if (DEMO) return download(path, fallbackName);
+  const tab = window.open("", "_blank"); // окно открываем сразу по нажатию — иначе браузер его заблокирует
+  try {
+    const blob = await fetchBlob(path);
+    if (tab && /^(application\/pdf|image\/|text\/)/.test(blob.type)) {
+      tab.location.href = URL.createObjectURL(blob);
+      return;
+    }
+    tab?.close();
+    await download(path, fallbackName);
+  } catch (e) {
+    tab?.close();
+    throw e;
+  }
+}
+
 // --- типы -------------------------------------------------------------------------------------
 
 export interface User {

@@ -122,6 +122,23 @@ def _object_for(db: Session, org_id: uuid.UUID, hint: str) -> uuid.UUID | None:
     return named[0].id if len(named) == 1 else None
 
 
+def _ours(db: Session, org_id: uuid.UUID, text: str) -> bool:
+    """Письмо от нашей организации: её название в шапке (до адресата)."""
+    from bis.models import Organization
+
+    org = db.get(Organization, org_id)
+    if org is None or not org.name:
+        return False
+    core = re.sub(r"^(ооо|ао|пао|зао|оао|ип)\s+", "", org.name.lower().replace("«", "").replace("»", "").replace('"', "")).strip()
+    head = []
+    for ln in text.splitlines():
+        if re.search(r"директору|начальнику|руководителю|заместителю|главному|^\s*кому\b|уважаем", ln, re.IGNORECASE):
+            break
+        head.append(ln)
+    top = " ".join(head[:6]).lower().replace("«", "").replace("»", "").replace('"', "")
+    return bool(core) and core in top
+
+
 def assign_single_object(db: Session, org_id: uuid.UUID) -> int:
     """У организации один объект — документы и договоры без объекта относятся к нему (архив загрузили раньше объекта)."""
     objs = db.scalars(select(ConstructionObject.id).where(ConstructionObject.organization_id == org_id).limit(2)).all()
@@ -141,7 +158,7 @@ def repair_archive(db: Session) -> dict[str, int]:
 
     from bis.models import KnowledgeChunk, KnowledgeSource, Organization
 
-    fixed = {"objects": 0, "dates": 0}
+    fixed = {"objects": 0, "dates": 0, "letters": 0}
     for org_id in db.scalars(select(Organization.id)).all():
         fixed["objects"] += assign_single_object(db, org_id)
     docs = db.scalars(select(Document).where(Document.source == "archive", Document.date == cast(Document.created_at, Date),
@@ -152,6 +169,16 @@ def repair_archive(db: Session) -> dict[str, int]:
         doc.date = doc_date(text, (doc.data or {}).get("detected_type", ""))
         doc.data = {**(doc.data or {}), "date_checked": True}
         fixed["dates"] += 1
+    # исходящие письма организации, загруженные раньше как входящие
+    letters = db.scalars(select(Document).where(Document.source == "archive", Document.kind == "incoming_letter",
+                                                Document.data["direction_checked"].astext.is_(None)).limit(5000)).all()
+    for doc in letters:
+        text = db.scalar(select(KnowledgeChunk.content).join(KnowledgeSource, KnowledgeSource.id == KnowledgeChunk.source_id)
+                         .where(KnowledgeSource.document_id == doc.id).order_by(KnowledgeChunk.ord).limit(1)) or ""
+        if _ours(db, doc.organization_id, text):
+            doc.kind = "letter"
+            fixed["letters"] += 1
+        doc.data = {**(doc.data or {}), "direction_checked": True}
     return fixed
 
 
@@ -176,7 +203,7 @@ def doc_date(text: str, dtype: str) -> dt.date | None:
     head = text[:1500]
     patterns = []
     if dtype in ("aosr", "aook"):
-        patterns.append(r"окончани\w*\s+работ\w*[^0-9]{0,30}" + _DMY)
+        patterns.append(r"окончани\w*(?:\s+работ\w*)?[^0-9]{0,30}" + _DMY)
     patterns += [r"\bот\s+" + _DMY, r"\bот\s+" + _LONG, r"(?:дата|составлен\w*)[^0-9]{0,20}" + _DMY, _LONG, _DMY]
     for pattern in patterns:
         for m in re.finditer(pattern, head if pattern not in (_LONG, _DMY) else text[:600], re.IGNORECASE):
@@ -200,6 +227,8 @@ def import_file(db: Session, storage: Storage, gateway, embedder, org_id: uuid.U
     dtype, by = detect_type(gateway, text, name)
     object_id = object_id or _object_for(db, org_id, f"{folder} {name} {text[:1500]}")
     kind = KIND.get(dtype, "other")
+    if dtype == "letter" and _ours(db, org_id, text):
+        kind = "letter"  # исходящее: наша организация — отправитель
     title = Path(name).stem
     if dtype in TITLES and not title.lower().startswith(TITLES[dtype].lower()[:3]):
         title = f"{TITLES[dtype]}: {title}"

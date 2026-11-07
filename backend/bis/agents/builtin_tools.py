@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import date
 from typing import Literal
@@ -12,7 +13,7 @@ from sqlalchemy import or_, select
 from bis.agents.base import AgentContext, tool
 from bis.documents import AOSRData, LetterData
 from bis.documents.aosr import REPRESENTATIVE_ROLES
-from bis.models import ConstructionObject, Contract, Counterparty, Document, Organization
+from bis.models import ConstructionObject, Contract, Counterparty, Document, KnowledgeSource, Organization
 from bis.rag.search import hybrid_search
 from bis.services import documents as docsvc
 
@@ -51,6 +52,113 @@ def search_knowledge(ctx: AgentContext, args: SearchArgs) -> dict:
         results.append({"n": n, "citation": h.citation, "status": h.status, "section": h.section_path,
                         "content": h.content[:1500]})
     return {"results": results}
+
+
+# --- документы организации (в т.ч. загруженный архив) ---------------------------------------------
+
+ORG_KINDS = SCOPE_KINDS["organization"]
+_WORD = re.compile(r"[а-яёa-z0-9]{3,}", re.IGNORECASE)
+_STOP = {"найди", "покажи", "открой", "какие", "какой", "какая", "есть", "все", "всё", "документ", "документы", "про",
+         "для", "что", "где", "нам", "наш", "наши", "по", "на", "мне", "пожалуйста"}
+
+
+def share_document(ctx: AgentContext, doc: Document) -> dict:
+    """Документ показывается пользователю карточкой под ответом (открыть/скачать)."""
+    ref = _doc_ref(doc)
+    if all(d.get("id") != ref["id"] for d in ctx.documents):
+        ctx.documents.append(ref)
+    return ref
+
+
+def _first_chunk(ctx: AgentContext, doc: Document) -> dict | None:
+    from bis.models import KnowledgeChunk
+    from bis.rag.search import _hit
+
+    row = ctx.db.execute(select(KnowledgeChunk, KnowledgeSource).join(KnowledgeSource, KnowledgeSource.id == KnowledgeChunk.source_id)
+                         .where(KnowledgeSource.document_id == doc.id).order_by(KnowledgeChunk.ord).limit(1)).first()
+    return _hit(*row).to_dict() if row else None
+
+
+class FindDocumentsArgs(BaseModel):
+    query: str | None = Field(None, description="Что ищем своими словами: «АОСР на армирование плиты», "
+                              "«письмо заказчика про исполнительную документацию», «сертификат на арматуру», номер")
+    kind: str | None = Field(None, description="aosr, aook, scheme, contract, incoming_letter, letter, ks2, ks3, order, "
+                             "project_doc, certificate, test_protocol, supply_doc, work_journal, photo, other")
+    object_id: str | None = None
+    date_from: date | None = None
+    date_to: date | None = None
+    limit: int = Field(8, ge=1, le=30)
+
+
+@tool("find_documents", "Найти документы организации — и созданные в BIS, и загруженный архив (АОСР, схемы, договоры, "
+      "письма, сертификаты, протоколы, приказы) — по смыслу текста и по названию. Возвращает дату, объект, выдержку "
+      "из текста; найденные документы пользователь видит карточками под ответом.", scopes=("documents:read",))
+def find_documents(ctx: AgentContext, args: FindDocumentsArgs) -> dict:
+    def allowed(stmt):
+        stmt = stmt.where(Document.organization_id == ctx.org_id)
+        if args.kind:
+            stmt = stmt.where(Document.kind == args.kind)
+        if args.object_id:
+            stmt = stmt.where(or_(Document.object_id == _uuid(args.object_id, "объекта"), Document.object_id.is_(None)))
+        if args.date_from:
+            stmt = stmt.where(Document.date >= args.date_from)
+        if args.date_to:
+            stmt = stmt.where(Document.date <= args.date_to)
+        return stmt
+
+    ranked: dict[uuid.UUID, dict] = {}
+    if args.query and args.query.strip():
+        words = [w for w in _WORD.findall(args.query.lower()) if w not in _STOP]
+        # 1. по названию и номеру: чем больше слов запроса в названии, тем выше
+        if words:
+            stems = [w[:max(4, len(w) - 2)] for w in words]
+            rows = ctx.db.scalars(allowed(select(Document)).where(or_(*(Document.title.ilike(f"%{t}%") for t in stems),
+                                                                       *(Document.number.ilike(f"%{t}%") for t in stems)))
+                                  .limit(300)).all()
+            for d in rows:
+                low = f"{d.title} {d.number or ''}".lower()
+                share = sum(1 for t in stems if t in low) / len(stems)
+                if share >= 0.5 or len(stems) == 1:
+                    ranked[d.id] = {"doc": d, "score": 1.0 + share, "excerpt": None, "n": None}
+        # 2. по смыслу текста (в т.ч. распознанных сканов)
+        hits = hybrid_search(ctx.db, ctx.embedder, args.query, org_id=ctx.org_id, kinds=ORG_KINDS, include_global=False,
+                             k=min(args.limit * 3, 30))
+        src_doc = dict(ctx.db.execute(select(KnowledgeSource.id, KnowledgeSource.document_id).where(
+            KnowledgeSource.id.in_([uuid.UUID(h.source_id) for h in hits]))).all()) if hits else {}
+        ids = {src_doc.get(uuid.UUID(h.source_id)) for h in hits} - {None}
+        docs = {d.id: d for d in ctx.db.scalars(allowed(select(Document)).where(Document.id.in_(ids))).all()} if ids else {}
+        for rank, h in enumerate(hits):
+            d = docs.get(src_doc.get(uuid.UUID(h.source_id)))
+            if d is None:
+                continue
+            item = ranked.setdefault(d.id, {"doc": d, "score": 0.0, "excerpt": None, "n": None})
+            item["score"] += 1.0 / (rank + 2)
+            if item["excerpt"] is None:
+                item["excerpt"] = h.content[:700]
+                item["n"] = ctx.add_citation(h.to_dict())
+    else:
+        for d in ctx.db.scalars(allowed(select(Document)).order_by(Document.date.desc().nulls_last(),
+                                                                    Document.created_at.desc()).limit(args.limit)).all():
+            ranked[d.id] = {"doc": d, "score": 0.0, "excerpt": None, "n": None}
+
+    best = sorted(ranked.values(), key=lambda x: -x["score"])[: args.limit]
+    for x in best:  # найден по названию — выдержка из начала текста, чтобы на документ можно было сослаться [n]
+        if x["excerpt"] is None:
+            hit = _first_chunk(ctx, x["doc"])
+            if hit:
+                x["excerpt"], x["n"] = hit["content"][:700], ctx.add_citation(hit)
+    objects = {o.id: o.name for o in ctx.db.scalars(select(ConstructionObject).where(
+        ConstructionObject.id.in_([x["doc"].object_id for x in best if x["doc"].object_id]))).all()} if best else {}
+    out = []
+    cards = len(best) if (args.kind or not args.query) else 3  # список по виду — все; поиск по смыслу — самые близкие
+    for i, x in enumerate(best):
+        d = x["doc"]
+        if i < cards:
+            share_document(ctx, d)
+        out.append({"id": str(d.id), "title": d.title, "kind": d.kind, "number": d.number, "date": d.date,
+                    "status": d.status, "object": objects.get(d.object_id), "n": x["n"], "excerpt": x["excerpt"]})
+    return {"documents": out, "found": len(out),
+            "hint": None if out else "Ничего не нашлось — попробуйте другие слова или поиск по базе знаний"}
 
 
 # --- реестры ------------------------------------------------------------------------------------
@@ -151,8 +259,8 @@ def list_documents(ctx: AgentContext, args: ListDocumentsArgs) -> dict:
         stmt = stmt.where(Document.object_id == _uuid(args.object_id, "объекта"))
     if args.status:
         stmt = stmt.where(Document.status == args.status)
-    rows = ctx.db.scalars(stmt.order_by(Document.created_at.desc()).limit(args.limit)).all()
-    return {"documents": [_doc_ref(d) | {"date": d.date} for d in rows]}
+    rows = ctx.db.scalars(stmt.order_by(Document.date.desc().nulls_last(), Document.created_at.desc()).limit(args.limit)).all()
+    return {"documents": [share_document(ctx, d) | {"date": d.date} for d in rows]}
 
 
 class EmptyArgs(BaseModel):
@@ -241,6 +349,7 @@ def create_letter_draft(ctx: AgentContext, args: LetterArgs) -> dict:
 
 BUILTIN_TOOLS = [
     search_knowledge,
+    find_documents,
     find_objects,
     find_counterparties,
     find_contracts,

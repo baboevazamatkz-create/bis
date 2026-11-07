@@ -30,7 +30,7 @@ SECRETARY = Agent(
     keywords=r"письм|ответ[а-я]* на|исходящ|входящ|обращени|уведомлени|сопроводительн|корреспонденц",
     tools=["search_knowledge", "find_counterparties", "find_objects", "find_contracts", "list_documents", "get_document",
            "process_incoming_letter", "get_organization_info", "create_letter_draft", "find_persons", "list_tasks",
-           "create_task", "update_task", "delegate_to_agent"],
+           "create_task", "update_task", "delegate_to_agent", "find_documents"],
     priority=2,
     instructions="""Ведёшь корреспонденцию организации по ГОСТ Р 7.0.97-2016.
 Входящие:
@@ -52,7 +52,7 @@ PTO = Agent(
     keywords=r"аоср|аоок|освидетельствовани|скрыт[а-я]* работ|ответственн[а-я]* конструкц|исполнительн[а-я]* документ|"
              r"\bид\b|реестр[а-я]* ид|журнал[а-я]* (?:работ|выполнени)",
     tools=["find_objects", "get_object_participants", "search_knowledge", "list_documents", "create_aosr_draft",
-           "create_aook_draft", "id_registry", "work_journal", "list_volumes", "confirm_volumes"],
+           "create_aook_draft", "id_registry", "work_journal", "list_volumes", "confirm_volumes", "find_documents", "get_document"],
     priority=2,
     instructions="""Готовишь исполнительную документацию по составу и порядку ведения ИД (Приказ Минстроя России № 344/пр).
 Для АОСР нужны: объект; наименование скрытых работ (оси, отметки, захватка); шифр и листы РД;
@@ -74,7 +74,7 @@ ASSISTANT = Agent(
     title="Помощник",
     description="Общие вопросы по данным компании и составные задачи из нескольких действий (оркестратор).",
     tools=["search_knowledge", "find_objects", "find_counterparties", "find_contracts", "list_documents",
-           "get_organization_info", "list_tasks", "delegate_to_agent"],
+           "get_organization_info", "list_tasks", "delegate_to_agent", "find_documents", "get_document"],
     require_citations=True,
     instructions="""Помогаешь сотрудникам и координируешь профильных агентов.
 - Простые вопросы по данным — отвечай сам инструментами поиска, со ссылками [n].
@@ -93,7 +93,7 @@ CONTRACTS = Agent(
     priority=2,
     tools=["find_contracts", "get_contract_details", "analyze_contract", "list_obligations", "update_obligation",
            "calc_penalty", "find_counterparties", "find_persons", "search_knowledge", "get_organization_info",
-           "create_letter_draft", "create_task", "delegate_to_agent"],
+           "create_letter_draft", "create_task", "delegate_to_agent", "find_documents", "get_document"],
     verify=True,
     instructions="""Ведёшь договорную работу строительной организации.
 - Карточка договора и обязательства — get_contract_details; если обязательств нет, а файл есть — analyze_contract.
@@ -112,7 +112,7 @@ CONTROL = Agent(
     keywords=r"поручени|просроч|кто отвечает|ответственн[а-я]* за|контрол[ья] исполн|напомн|задач[аиу]\b",
     priority=1,
     tools=["list_tasks", "create_task", "update_task", "list_obligations", "update_obligation", "find_persons",
-           "find_objects", "find_contracts"],
+           "find_objects", "find_contracts", "find_documents", "get_document"],
     instructions="""Контролируешь исполнение: поручения, обязательства по договорам, сроки, ответственных.
 - Сводку давай по приоритету: просроченные → срок сегодня/завтра → ближайшая неделя.
 - Для каждого пункта: что, кто отвечает, срок, на сколько дней просрочено, основание (договор/письмо).
@@ -128,7 +128,7 @@ WORKS = Agent(
              r"забетонир|смонтир|уложил|захватк|прогноз",
     priority=2,
     tools=["find_objects", "find_estimate_items", "report_volume", "confirm_volumes", "list_volumes", "plan_fact",
-           "list_documents", "find_persons", "create_task"],
+           "list_documents", "find_persons", "create_task", "find_documents", "get_document"],
     instructions="""Контролируешь выполнение работ.
 - Сообщение прораба о сделанном («залили 25 м3 плиты Пм1 в осях 1-5») → найди позицию сметы find_estimate_items,
   при неоднозначности (несколько похожих позиций) — уточни; запиши report_volume с местом (оси/захватка).
@@ -145,7 +145,7 @@ MATERIALS = Agent(
     keywords=r"материал|списани|м-?29|расход|перерасход|остат|приход|\bупд\b|накладн|сертификат",
     priority=2,
     tools=["find_objects", "find_materials", "material_balance", "record_material_receipt", "record_material_usage",
-           "m29_report", "create_writeoff_act", "find_estimate_items"],
+           "m29_report", "create_writeoff_act", "find_estimate_items", "find_documents", "get_document"],
     instructions="""Ведёшь учёт материалов на объекте.
 - Расход по нормам и перерасход считает только m29_report; цифры в ответе — из его результата.
 - Перерасход сверх допуска: назови материал, величину и %, возможные причины (потери, пересортица, ошибка в объёмах,
@@ -160,7 +160,7 @@ CLOSING = Agent(
     description="КС-2 и КС-3: проверка готовности к закрытию, расчёт, формирование актов.",
     keywords=r"кс-?2|кс-?3|закрыт|закрыва|акт[а-я]* выполненных|процентовк|акт[а-я]* при[её]мк",
     priority=2,
-    tools=["find_contracts", "get_contract_details", "closing_check", "create_ks2_ks3", "list_volumes", "list_documents"],
+    tools=["find_contracts", "get_contract_details", "closing_check", "create_ks2_ks3", "list_volumes", "list_documents", "find_documents", "get_document"],
     instructions="""Готовишь закрытие выполненных работ по договору.
 - «Открой / покажи КС-2 (КС-3)» — list_documents(kind="ks2" / "ks3"), дай ссылки на последние. Если их нет —
   сразу сформируй черновики create_ks2_ks3 (договор и период не спрашивай — подставятся сами) и дай ссылки.
@@ -176,7 +176,7 @@ CAD = Agent(
     description="Исполнительные геодезические схемы в DXF/DWG по данным съёмки: отклонения, отметки, допуски.",
     keywords=r"исполнительн[а-я]* схем|геодез|съ[её]мк|\bdxf\b|\bdwg\b|автокад|autocad|nanocad|нанокад|чертеж|чертёж",
     priority=2,
-    tools=["find_objects", "list_documents", "parse_survey_document", "create_executive_scheme", "search_knowledge"],
+    tools=["find_objects", "list_documents", "parse_survey_document", "create_executive_scheme", "search_knowledge", "find_documents", "get_document"],
     instructions="""Строишь исполнительные геодезические схемы (ГОСТ Р 51872-2019) по данным съёмки.
 - Данные берутся из файла геодезиста (parse_survey_document) или из сообщения пользователя; координаты в метрах,
   отклонения схема считает сама в мм.
@@ -194,7 +194,7 @@ PROJECT = Agent(
              r"ведомост[а-я]* (?:замечани|объ[её]м)|нормоконтрол|экспертиз",
     priority=2,
     tools=["find_objects", "list_documents", "get_document", "pd_completeness", "extract_specification",
-           "compare_spec_with_estimate", "find_contracts", "search_knowledge", "create_remarks_sheet"],
+           "compare_spec_with_estimate", "find_contracts", "search_knowledge", "create_remarks_sheet", "find_documents"],
     instructions="""Анализируешь проектную и рабочую документацию объекта.
 - Комплектность — pd_completeness: каких обязательных разделов нет, какие документы не распознаны.
 - Спецификации — extract_specification; сверка со сметой договора — compare_spec_with_estimate: расхождения

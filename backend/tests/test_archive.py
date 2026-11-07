@@ -87,3 +87,48 @@ def test_archive_dates_and_single_object(client, db):
     db.commit()
     assert repair_archive(db)["dates"] >= 1
     assert db.get(Document, later["document_id"]).date.isoformat() == "2026-03-18"
+
+
+def test_find_documents_in_archive_and_letter_direction(client, db):
+    from conftest import login
+    from sqlalchemy import select
+
+    from bis.agents.base import AgentContext
+    from bis.agents.builtin_tools import FindDocumentsArgs, find_documents
+    from bis.demo import create_organization
+    from bis.models import User
+    from bis.rag.embeddings import get_embedder
+    from bis.services.storage import get_storage
+
+    org, _ = create_organization(db, name="ООО «Пилот»", inn="1435000002", admin_email="p2@p.ru", admin_password="12345678",
+                                 admin_name="Админ")
+    db.commit()
+    auth = login(client, "p2@p.ru", "12345678")
+    aosr = ("АКТ освидетельствования скрытых работ № 1\nРаботы: армирование фундаментной плиты Фм1\n"
+            "Материалы: арматура А500С d12 (документ о качестве № 4512 от 02.04.2026)\nокончание работ 12.04.2026").encode()
+    _upload(client, auth, "АОСР 1 армирование.txt", aosr)
+    ours = _upload(client, auth, "Исх 45.txt", "ООО «Пилот»\nИсх. № 45 от 18.03.2026\nДиректору ООО «Метиз»\nО поставке".encode())
+    theirs = _upload(client, auth, "Вх 112.txt", "АО «Заказчик»\nИсх. № 112 от 28.04.2026\nДиректору ООО «Пилот»\nОб ИД".encode())
+    assert ours["kind"] == "letter" and theirs["kind"] == "incoming_letter"  # исходящее / входящее
+
+    user = db.scalar(select(User).where(User.organization_id == org.id))
+    ctx = AgentContext(db=db, org_id=org.id, user=user, gateway=None, embedder=get_embedder(), storage=get_storage(), agents={})
+    res = find_documents.handler(ctx, FindDocumentsArgs(query="сертификат на арматуру фундаментной плиты"))
+    assert res["documents"] and res["documents"][0]["title"].startswith("АОСР")
+    assert all(d["n"] for d in res["documents"]) and "4512" in res["documents"][0]["excerpt"]
+    assert ctx.documents and ctx.citations  # карточки документов и источники для ссылок [n]
+    by_kind = find_documents.handler(ctx, FindDocumentsArgs(kind="incoming_letter"))
+    assert [d["title"] for d in by_kind["documents"]] == ["Вх 112"]
+
+
+def test_search_survives_embedding_outage(db, demo):
+    from bis.rag.search import hybrid_search
+
+    class Down:
+        semantic = True
+
+        def embed_query(self, q):
+            raise RuntimeError("сервис векторов недоступен")
+
+    hits = hybrid_search(db, Down(), "армирование фундаментной плиты", org_id=demo.id, k=5)
+    assert hits  # нашлось по словам

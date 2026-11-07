@@ -10,7 +10,7 @@ from sqlalchemy import or_, select
 
 from bis.agents.base import AgentContext, tool
 from bis.agents.builtin_tools import _uuid
-from bis.models import Contract, ContractObligation, Counterparty, Person, Task, User
+from bis.models import Contract, ContractObligation, Counterparty, Document, Person, Task, User
 from bis.services import contracts as csvc
 from bis.services.audit import audit
 
@@ -58,6 +58,12 @@ def get_contract_details(ctx: AgentContext, args: ContractArgs) -> dict:
     cp = ctx.db.get(Counterparty, c.counterparty_id) if c.counterparty_id else None
     obligations = ctx.db.scalars(select(ContractObligation).where(ContractObligation.contract_id == c.id)
                                  .order_by(ContractObligation.due_date.nulls_last())).all()
+    if c.document_id:  # файл договора — карточкой под ответом
+        from bis.agents.builtin_tools import share_document
+
+        doc = ctx.db.get(Document, c.document_id)
+        if doc is not None:
+            share_document(ctx, doc)
     return {"id": str(c.id), "kind": c.kind, "number": c.number, "date": c.date, "subject": c.subject,
             "our_role": c.our_role, "counterparty": cp.name if cp else None, "amount": c.amount, "vat_rate": c.vat_rate,
             "start_date": c.start_date, "end_date": c.end_date, "status": c.status,
@@ -261,6 +267,8 @@ def _owned_document(ctx: AgentContext, document_id: str):
 @tool("get_document", "Документ из реестра: реквизиты, результаты разбора и текст (для ответа на письмо, проверки).",
       scopes=("documents:read",))
 def get_document(ctx: AgentContext, args: DocumentArgs) -> dict:
+    from bis.agents.builtin_tools import share_document
+    from bis.models import KnowledgeChunk, KnowledgeSource
     from bis.rag.parsers import UnsupportedFormat, parse_file
 
     doc = _owned_document(ctx, args.document_id)
@@ -270,6 +278,11 @@ def get_document(ctx: AgentContext, args: DocumentArgs) -> dict:
             text = parse_file(ctx.storage.get(doc.file_key), doc.file_name or "file", doc.mime).text[:8000]
         except UnsupportedFormat:
             text = None
+    if not (text or "").strip():  # скан или чертёж: текст, распознанный при загрузке, — в базе знаний
+        parts = ctx.db.scalars(select(KnowledgeChunk.content).join(KnowledgeSource, KnowledgeSource.id == KnowledgeChunk.source_id)
+                               .where(KnowledgeSource.document_id == doc.id).order_by(KnowledgeChunk.ord).limit(40)).all()
+        text = "\n".join(parts)[:8000] or None
+    share_document(ctx, doc)
     return {"id": str(doc.id), "kind": doc.kind, "title": doc.title, "number": doc.number, "date": doc.date,
             "status": doc.status, "analysis": (doc.data or {}).get("analysis"), "text": text}
 

@@ -302,3 +302,7 @@ code { background: var(--track); padding: 1px 6px; border-radius: 4px; font-size
   .sidebar-footer { display: none; }
   .hint-pop, .hint-pop.wide { position: fixed; left: 16px; right: 16px; top: auto; bottom: 16px; transform: none; max-width: none; width: auto; }
 }
+.doc-cards { display: flex; flex-wrap: wrap; gap: 0; }
+.doc-chip { max-width: 100%; }
+.doc-chip-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 360px; }
+.bubble .link { padding: 0; font: inherit; }

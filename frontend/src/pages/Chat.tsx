@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { api, download, fetchBlob, type ChatReply, type Citation, type DocRef } from "../api";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { api, download, fetchBlob, openFile, type ChatReply, type Citation, type DocRef } from "../api";
 
 interface Msg {
   role: "user" | "assistant";
@@ -47,17 +47,39 @@ function Citations({ items }: { items: Citation[] }) {
 function Docs({ items }: { items: DocRef[] }) {
   if (!items?.length) return null;
   return (
-    <div>
+    <div className="doc-cards">
       {items.map((d) => (
         <span className="doc-chip" key={d.id}>
-          {d.title}
-          <button className="btn small" onClick={() => download(`/documents/${d.id}/file`)}>
-            Скачать
-          </button>
+          <span className="doc-chip-title" title={d.title}>{d.title}</span>
+          <button className="btn small" onClick={() => void openFile(`/documents/${d.id}/file`, d.title)}>Открыть</button>
+          <button className="btn small" onClick={() => void download(`/documents/${d.id}/file`, d.title)} title="Скачать">⬇</button>
         </span>
       ))}
     </div>
   );
+}
+
+const DOC_LINK = /^(?:document:|\/?(?:api\/)?documents\/)([0-9a-f-]{36})(?:\/file)?$/i;
+const MD = /\[([^\]]+)\]\(([^)\s]+)\)|\*\*([^*]+)\*\*/g;
+
+/** Текст ответа: ссылки на документы — кнопки «открыть», внешние — ссылки, **жирный** — жирный. */
+function Rich({ text }: { text: string }) {
+  const out: ReactNode[] = [];
+  let last = 0;
+  for (const m of text.matchAll(MD)) {
+    if (m.index! > last) out.push(text.slice(last, m.index));
+    const [, label, url, bold] = m;
+    if (bold) out.push(<b key={m.index}>{bold}</b>);
+    else if (DOC_LINK.test(url)) {
+      const id = DOC_LINK.exec(url)![1];
+      out.push(<button key={m.index} className="link" onClick={() => void openFile(`/documents/${id}/file`, label)}>{label}</button>);
+    } else if (/^https?:\/\//.test(url)) {
+      out.push(<a key={m.index} href={url} target="_blank" rel="noopener noreferrer">{label}</a>);
+    } else out.push(label);
+    last = m.index! + m[0].length;
+  }
+  out.push(text.slice(last));
+  return <>{out}</>;
 }
 
 export default function Chat() {
@@ -219,7 +241,7 @@ export default function Chat() {
           )}
           {messages.map((m, i) => (
             <div key={i} className={`msg ${m.role}`}>
-              <div className="bubble">{m.content}</div>
+              <div className="bubble">{m.role === "assistant" ? <Rich text={m.content} /> : m.content}</div>
               {m.role === "assistant" && (
                 <>
                   <Docs items={m.meta?.documents ?? []} />
