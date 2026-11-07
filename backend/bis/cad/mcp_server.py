@@ -178,11 +178,31 @@ def guarded(fn):
                         _state["cad"] = None
                         continue
                     if hr is not None:
-                        raise bridge.CadError(f"Ошибка CAD ({hr}): {e}. Закройте диалоговые окна в CAD и повторите.") from e
-                    raise
-            raise bridge.CadError("CAD занят (открыто диалоговое окно или идёт команда) — завершите её и повторите")
+                        raise _tool_error(f"Ошибка CAD ({hr}): {e}. Закройте диалоговые окна в CAD и повторите.") from e
+                    if isinstance(e, bridge.CadError):
+                        raise _tool_error(str(e)) from e
+                    if isinstance(e, AttributeError) and "<unknown>" in str(e):
+                        # объект AutoCAD отвалился (чертёж закрыт, CAD перезапущен) — переподключаемся
+                        if reconnects < 2:
+                            reconnects += 1
+                            _state["cad"] = None
+                            continue
+                    raise _tool_error(f"{type(e).__name__}: {e}") from e
+            raise _tool_error("CAD занят (открыто диалоговое окно или идёт команда) — завершите её и повторите")
         return _COM.submit(call).result()
     return run
+
+
+def _tool_error(message: str) -> Exception:
+    """Ошибка, текст которой видит ИИ (иначе MCP передаёт только «Error executing tool»)."""
+    try:
+        from mcp.server.mcpserver.exceptions import ToolError
+    except ImportError:
+        try:
+            from mcp.server.fastmcp.exceptions import ToolError
+        except ImportError:
+            return bridge.CadError(message)
+    return ToolError(message)
 
 
 def build_server():

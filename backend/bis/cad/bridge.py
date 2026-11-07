@@ -183,11 +183,17 @@ class ComBackend:
         self._on(self.ms.AddDimAligned(self._pt(*p1), self._pt(*p2), self._pt(*at)), layer)
 
     def save(self, path):
+        doc = self._active()
+        if not path and not str(getattr(doc, "Path", "") or ""):
+            # новый чертёж ещё не сохранялся («Чертеж1.dwg») — в «Документы\BIS»
+            folder = Path.home() / "Documents" / "BIS"
+            folder.mkdir(parents=True, exist_ok=True)
+            path = str(folder / (Path(str(doc.Name or "Чертеж")).stem + ".dwg"))
         if path:
-            self.doc.SaveAs(path)
-            return path
-        self.doc.Save()
-        return str(self.doc.FullName)
+            doc.SaveAs(str(path))
+            return str(path)
+        doc.Save()
+        return str(doc.FullName)
 
     def open_file(self, path):
         self.doc = self.app.Documents.Open(str(path))

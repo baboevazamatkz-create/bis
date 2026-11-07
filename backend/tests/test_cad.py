@@ -187,3 +187,45 @@ def test_mcp_tools_run_in_one_com_thread_with_retry():
     with ThreadPoolExecutor(4) as pool:
         assert list(pool.map(lambda _: g(), range(4))) == ["ok"] * 4
     assert len(seen) == 1 and next(iter(seen)).startswith("bis-com")
+
+
+def test_mcp_errors_reach_model_and_lost_document_reconnects():
+    import pytest
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    from bis.cad import bridge, mcp_server
+
+    def not_running():
+        raise bridge.CadError("autocad не запущен")
+
+    with pytest.raises(ToolError, match="autocad не запущен"):
+        mcp_server.guarded(not_running)()
+
+    calls = {"n": 0}
+
+    def stale():  # объект чертежа отвалился: win32com даёт AttributeError <unknown>.Save
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise AttributeError("<unknown>.Save")
+        return "saved"
+
+    assert mcp_server.guarded(stale)() == "saved"
+
+
+def test_com_save_new_drawing_goes_to_documents(tmp_path, monkeypatch):
+    from bis.cad.bridge import ComBackend
+
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+
+    class Doc:
+        Name, Path, FullName = "Чертеж1.dwg", "", ""
+        saved_as = None
+
+        def SaveAs(self, p):
+            Doc.saved_as = p
+
+    class App:
+        ActiveDocument = Doc()
+
+    path = ComBackend("autocad", app=App()).save("")
+    assert path.endswith("Чертеж1.dwg") and Doc.saved_as == path and (tmp_path / "Documents" / "BIS").is_dir()
