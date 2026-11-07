@@ -164,7 +164,7 @@ def test_cad_bridge_dxf_and_com(tmp_path):
     mcp_server._state["cad"] = bridge.DxfBackend()
     res = mcp_server.executive_scheme({"title": "т", "points": [{"name": "1", "design_x": 0, "design_y": 0, "fact_x": 0.01, "fact_y": 0}]})
     assert res["file"].endswith(".dxf") and res["opened_in"] == "dxf"
-    assert len(mcp_server.TOOLS) == 11
+    assert len(mcp_server.TOOLS) == 14
 
 
 def test_mcp_tools_run_in_one_com_thread_with_retry():
@@ -229,3 +229,28 @@ def test_com_save_new_drawing_goes_to_documents(tmp_path, monkeypatch):
 
     path = ComBackend("autocad", app=App()).save("")
     assert path.endswith("Чертеж1.dwg") and Doc.saved_as == path and (tmp_path / "Documents" / "BIS").is_dir()
+
+
+def test_table_and_title_block_fit_text_without_overlaps():
+    from bis.cad import bridge, mcp_server
+    from bis.cad.layout import fit, text_width
+
+    lines, h, wf = fit("Вед. инженер ОКС ЦЭС ПАО «Якутскэнерго»", 70, 8, 2.5)
+    assert len(lines) == 2 and all(text_width(ln, h, wf) <= 68 for ln in lines)
+    lines, h, wf = fit("Подпись", 15, 8, 2.5)
+    assert text_width(lines[0], h, wf) <= 13
+
+    mcp_server._state.update(cad=bridge.DxfBackend(), dxf_forced=True)
+    rows = [["Должность", "Фамилия", "Подпись", "Дата"],
+            ["Вед. инженер ОКС ЦЭС ПАО «Якутскэнерго»", "Федоров П.П.", "", "02.09.22"],
+            [{"text": "Объединённая ячейка на всю ширину таблицы", "span": 4}]]
+    out = mcp_server.table(0, 0, [70, 30, 15, 15], rows, scale=100)
+    assert out["bottom_right"] == [13000, -2400]
+    mcp_server.title_block(30000, -5000, code="84.801/20-02-АС", object="Реконструкция ПС 110 кВ Хандыга с расширением ОРУ 110 кВ",
+                           title="Исполнительная схема №3", stage="ИД", organization="ООО «Строй Газ Инвест»",
+                           signatures=[{"role": "Разраб.", "name": "Ахматов Ж.И.", "date": "02.09.22"}], scale=100)
+    assert mcp_server.check()["ok"]
+    mcp_server.text("Наезд", 100, -400, 250)  # поверх «Должность»
+    mcp_server.text("Должность поверх", 100, -400, 250)
+    assert not mcp_server.check()["ok"]
+    mcp_server._state.update(cad=None, dxf_forced=False)

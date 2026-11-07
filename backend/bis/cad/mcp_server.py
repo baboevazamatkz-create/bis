@@ -18,11 +18,19 @@ from typing import Any
 
 from bis.cad import bridge
 
-INSTRUCTIONS = (
-    "Инструменты рисуют в открытом чертеже AutoCAD или nanoCAD (или в DXF, если CAD не запущен). "
-    "Координаты в миллиметрах. Для исполнительной схемы по проекту и замерам используйте cad_executive_scheme; "
-    "для произвольного чертежа — cad_axes, cad_line, cad_polyline, cad_text, cad_dimension. Сохраняйте cad_save."
-)
+INSTRUCTIONS = """Инструменты рисуют в открытом чертеже AutoCAD или nanoCAD (или в DXF, если CAD не запущен). Координаты в мм.
+
+Правила, чтобы чертёж был аккуратным:
+1. Таблицы, ведомости, листы согласования — только cad_table; основная надпись (штамп) — только cad_title_block.
+   Не собирайте таблицы из cad_line + cad_text: ширину надписи вы не знаете, текст наедет на линии и соседей.
+   cad_table сам центрирует текст в ячейке по высоте, переносит длинный на вторую строку или сужает его.
+2. Ширины колонок задавайте по самому длинному тексту: примерно 0.8 × высота шрифта × число символов + 2 мм.
+   Высоты шрифта по ГОСТ: 2.5 (таблицы), 3.5 (названия), 5 (обозначение документа) — в мм листа.
+3. Масштаб: чертёж в мм натуры, а таблицы и штамп — в мм листа; для листа 1:100 передайте scale=100.
+4. Отдельные надписи (cad_text) — с max_width, если рядом линии или другие надписи.
+5. После рисования вызовите cad_check: он находит наезжающие надписи. Исправьте и проверьте снова.
+6. Для исполнительной схемы по проекту и замерам — cad_executive_scheme (оси, контур, отклонения, штамп сразу).
+7. Сохранение — cad_save."""
 
 _state: dict[str, Any] = {"cad": None}
 
@@ -79,11 +87,85 @@ def circle(x: float, y: float, radius: float, layer: str = "BIS") -> dict:
     return status()
 
 
-def text(text: str, x: float, y: float, height: float = 250, layer: str = "BIS_TEXT", rotation: float = 0) -> dict:
+def text(text: str, x: float, y: float, height: float = 250, layer: str = "BIS_TEXT", rotation: float = 0,
+         max_width: float = 0, align: str = "left") -> dict:
     cad = _cad()
     cad.layer(layer)
-    cad.text(text, (x, y), height, layer, rotation)
+    if (max_width or align != "left") and not rotation:
+        from bis.cad.layout import Text, fit
+
+        if max_width:
+            lines, h, wf = fit(text, max_width + 2, height * 1.7, height)
+            text, height = " ".join(lines), h
+        else:
+            wf = 1.0
+        cad.fitted_text(Text(text, x, y, height, wf, align, max_width or None), layer)
+    else:
+        cad.text(text, (x, y), height, layer, rotation)
     return status()
+
+
+def _draw(lay, layer: str) -> int:
+    cad = _cad()
+    cad.layer(layer)
+    cad.layer(layer + "_TEXT")
+    for a, b in _dedupe(lay.lines):
+        cad.line(a, b, layer)
+    for t in lay.texts:
+        cad.fitted_text(t, layer + "_TEXT")
+    return len(lay.texts)
+
+
+def _dedupe(lines):
+    seen, out = set(), []
+    for a, b in lines:
+        key = tuple(sorted([(round(a[0], 3), round(a[1], 3)), (round(b[0], 3), round(b[1], 3))]))
+        if key[0] != key[1] and key not in seen:
+            seen.add(key)
+            out.append((a, b))
+    return out
+
+
+def table(x: float, y: float, columns: list[float], rows: list[list[Any]], row_height: float = 8,
+          row_heights: list[float] | None = None, text_height: float = 2.5, header: bool = True,
+          scale: float = 1, layer: str = "BIS_TABLE") -> dict:
+    """Таблица от левого верхнего угла (x, y) вниз. columns — ширины колонок (мм листа), rows — строки,
+    ячейка — текст или {"text", "span" (объединить колонок), "align": left|center}. Текст сам подгоняется под ячейку."""
+    from bis.cad.layout import scaled
+    from bis.cad.layout import table as build
+
+    lay = scaled(build(x, y, columns, rows, row_heights or row_height, text_height, header), scale, (x, y))
+    n = _draw(lay, layer)
+    _cad().zoom()
+    width, height = sum(columns) * scale, sum(row_heights or [row_height] * len(rows)) * scale
+    return {"texts": n, "bottom_right": [x + width, y - height], **status()}
+
+
+def title_block(x: float, y: float, code: str = "", object: str = "", title: str = "", stage: str = "",  # noqa: A002
+                sheet: str = "1", sheets: str = "1", organization: str = "", signatures: list[dict] | None = None,
+                scale: float = 1, layer: str = "BIS_STAMP") -> dict:
+    """Основная надпись по форме 3 ГОСТ Р 21.101 (185×55 мм листа), правый нижний угол — (x, y).
+    signatures: [{role, name, date}] до 5 строк (Разраб., Пров., ГИП, Н.контр., Утв. и т.п.)."""
+    from bis.cad.layout import scaled
+    from bis.cad.layout import title_block as build
+
+    f = {"code": code, "object": object, "title": title, "stage": stage, "sheet": sheet, "sheets": sheets,
+         "organization": organization, "signatures": signatures or []}
+    lay = scaled(build(x, y, f), scale, (x, y))
+    n = _draw(lay, layer)
+    _cad().zoom()
+    return {"texts": n, "size_mm": [185 * scale, 55 * scale], **status()}
+
+
+def check() -> dict:
+    """Наезжающие друг на друга надписи в чертеже."""
+    from bis.cad.layout import overlaps
+
+    boxes = _cad().text_boxes()
+    found = overlaps(boxes)
+    return {"texts": len(boxes), "overlaps": found[:40], "ok": not found,
+            "hint": "Наложений нет" if not found else "Увеличьте ширину колонок или высоту строк, уменьшите шрифт, "
+            "или перерисуйте таблицу через cad_table — он сам подгоняет текст"}
 
 
 def dimension(x1: float, y1: float, x2: float, y2: float, offset_x: float, offset_y: float, layer: str = "BIS_DIM") -> dict:
@@ -129,7 +211,10 @@ TOOLS = [
     ("cad_line", line, "Отрезок (мм)."),
     ("cad_polyline", polyline, "Полилиния по точкам [[x, y], …] (мм), closed — замкнуть контур."),
     ("cad_circle", circle, "Окружность (мм)."),
-    ("cad_text", text, "Однострочный текст (высота в мм чертежа)."),
+    ("cad_text", text, "Однострочный текст (высота в мм чертежа). max_width — не шире (сузит/уменьшит), align: left|center."),
+    ("cad_table", table, table.__doc__ or ""),
+    ("cad_title_block", title_block, title_block.__doc__ or ""),
+    ("cad_check", check, "Проверка оформления: какие надписи наезжают друг на друга. Вызывайте после рисования."),
     ("cad_dimension", dimension, "Параллельный размер между точками; offset — точка положения размерной линии (мм)."),
     ("cad_executive_scheme", executive_scheme, executive_scheme.__doc__ or ""),
     ("cad_save", save, "Сохранить чертёж (путь .dwg или .dxf; пусто — текущий файл)."),
@@ -181,12 +266,11 @@ def guarded(fn):
                         raise _tool_error(f"Ошибка CAD ({hr}): {e}. Закройте диалоговые окна в CAD и повторите.") from e
                     if isinstance(e, bridge.CadError):
                         raise _tool_error(str(e)) from e
-                    if isinstance(e, AttributeError) and "<unknown>" in str(e):
-                        # объект AutoCAD отвалился (чертёж закрыт, CAD перезапущен) — переподключаемся
-                        if reconnects < 2:
-                            reconnects += 1
-                            _state["cad"] = None
-                            continue
+                    # объект AutoCAD отвалился (чертёж закрыт, CAD перезапущен) — переподключаемся
+                    if isinstance(e, AttributeError) and "<unknown>" in str(e) and reconnects < 2:
+                        reconnects += 1
+                        _state["cad"] = None
+                        continue
                     raise _tool_error(f"{type(e).__name__}: {e}") from e
             raise _tool_error("CAD занят (открыто диалоговое окно или идёт команда) — завершите её и повторите")
         return _COM.submit(call).result()

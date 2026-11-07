@@ -68,6 +68,28 @@ class DxfBackend:
     def text(self, s, pos, height, layer, rotation=0):
         self.msp.add_text(s, height=height, rotation=rotation, dxfattribs={"layer": layer}).set_placement(pos)
 
+    def fitted_text(self, t, layer):
+        """Надпись из раскладки (bis.cad.layout.Text): выравнивание по середине строки, сжатие по ширине."""
+        from ezdxf.enums import TextEntityAlignment
+
+        e = self.msp.add_text(t.s, height=t.height, dxfattribs={"layer": layer, "width": t.width_factor})
+        e.set_placement((t.x, t.y), align=TextEntityAlignment.MIDDLE_CENTER if t.align == "center" else TextEntityAlignment.MIDDLE_LEFT)
+
+    def text_boxes(self) -> list[tuple[str, float, float, float, float]]:
+        from bis.cad.layout import text_width
+
+        out = []
+        for e in self.msp.query("TEXT"):
+            h, wf = e.dxf.height, e.dxf.get("width", 1.0)
+            w = text_width(e.dxf.text, h, wf)
+            p = e.dxf.align_point if e.dxf.get("halign", 0) or e.dxf.get("valign", 0) else e.dxf.insert
+            x, y = float(p[0]), float(p[1])
+            if e.dxf.get("halign", 0) in (1, 4):  # по центру
+                x -= w / 2
+            y0 = y - h / 2 if e.dxf.get("valign", 0) == 2 else y
+            out.append((e.dxf.text, x, y0, x + w, y0 + h))
+        return out
+
     def dimension(self, p1, p2, at, layer):
         dim = self.msp.add_aligned_dim(p1=p1, p2=p2, distance=_offset(p1, p2, at), dxfattribs={"layer": layer})
         dim.render()
@@ -179,6 +201,39 @@ class ComBackend:
             t.Rotation = math.radians(rotation)
         self._on(t, layer)
 
+    def fitted_text(self, t, layer):
+        """Надпись из раскладки: выравнивание по середине строки; ширину меряем по габаритам CAD и поджимаем."""
+        e = self.ms.AddText(t.s, self._pt(t.x, t.y), float(t.height))
+        with contextlib.suppress(Exception):
+            e.ScaleFactor = float(t.width_factor)
+        with contextlib.suppress(Exception):
+            e.Alignment = 10 if t.align == "center" else 9  # acAlignmentMiddleCenter / acAlignmentMiddleLeft
+            e.TextAlignmentPoint = self._pt(t.x, t.y)
+        self._on(e, layer)
+        if t.max_width:
+            box = _bbox(e)
+            if box and box[2] - box[0] > t.max_width:
+                k = t.max_width / (box[2] - box[0])
+                with contextlib.suppress(Exception):
+                    sf = float(e.ScaleFactor) * k
+                    if sf >= 0.6:
+                        e.ScaleFactor = sf
+                    else:
+                        e.ScaleFactor = 0.6
+                        e.Height = float(e.Height) * sf / 0.6
+
+    def text_boxes(self) -> list[tuple[str, float, float, float, float]]:
+        out = []
+        ms = self.ms
+        for i in range(int(ms.Count)):
+            with contextlib.suppress(Exception):
+                e = ms.Item(i)
+                if e.ObjectName in ("AcDbText", "AcDbMText"):
+                    box = _bbox(e)
+                    if box:
+                        out.append((str(e.TextString), *box))
+        return out
+
     def dimension(self, p1, p2, at, layer):
         self._on(self.ms.AddDimAligned(self._pt(*p1), self._pt(*p2), self._pt(*at)), layer)
 
@@ -205,6 +260,15 @@ class ComBackend:
     def zoom(self):
         with contextlib.suppress(Exception):  # у части версий nanoCAD нет ZoomExtents у приложения
             self.app.ZoomExtents()
+
+
+def _bbox(e) -> tuple[float, float, float, float] | None:
+    """Габариты объекта CAD: (xmin, ymin, xmax, ymax)."""
+    try:
+        mn, mx = e.GetBoundingBox()
+        return float(mn[0]), float(mn[1]), float(mx[0]), float(mx[1])
+    except Exception:  # noqa: BLE001 — у части версий/объектов габариты недоступны
+        return None
 
 
 def registered_progids(product: str) -> list[str]:
