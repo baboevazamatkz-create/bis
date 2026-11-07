@@ -5,6 +5,8 @@
 #   --profile ai   — сервер эмбеддингов bge-m3 (CPU) в закрытом контуре
 #   --profile gpu  — локальная LLM на vLLM (нужна видеокарта NVIDIA и nvidia-container-toolkit)
 #   --profile voice — распознавание речи (faster-whisper, OpenAI-совместимый API) в закрытом контуре
+#   --profile telegram — Telegram-бот в режиме опроса
+# Установка на сервер одной командой: deploy/install.sh
 
 services:
   db:
@@ -64,6 +66,25 @@ services:
       - "${BIS_HTTP_PORT:-8080}:80"
     depends_on:
       - api
+    restart: unless-stopped
+
+  telegram:
+    # Telegram-бот в режиме опроса: без домена и HTTPS (профиль telegram)
+    profiles: ["telegram"]
+    build: ../backend
+    command: ["bis", "telegram-poll"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      BIS_DATABASE_URL: postgresql+psycopg://bis:${POSTGRES_PASSWORD:-bis}@db:5432/bis
+      BIS_LLM_CONFIG_FILE: ${BIS_LLM_CONFIG_FILE:-/config/llm.json}
+    volumes:
+      - files:/data/files
+      - ./config:/config:ro
+    depends_on:
+      api:
+        condition: service_started
     restart: unless-stopped
 
   embeddings:

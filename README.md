@@ -7,6 +7,7 @@
 
 - [Концепция, план, трудозатраты, ресурсы](docs/PLAN.md)
 - [Запуск, гибридный ИИ, Telegram, плагины](docs/DEVELOPMENT.md)
+- [Установка на сервер в Yandex Cloud](docs/INSTALL_YANDEX_CLOUD.md)
 
 ## Как это работает
 
