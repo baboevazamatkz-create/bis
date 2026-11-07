@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, DEMO, getToken, setToken, type User } from "./api";
+import { api, DEMO, setToken, type User } from "./api";
 import { previewFor } from "./demo/mock";
 import Login from "./pages/Login";
 import Feed from "./pages/Feed";
@@ -30,7 +30,7 @@ const REGISTRY_GROUPS: [string, string[]][] = [
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(!!getToken() || DEMO);
+  const [loading, setLoading] = useState(true);
   const [preview, setPreview] = useState<{ type: string; content: string; title: string } | null | undefined>(undefined);
   const [page, setPage] = useState("feed");
   const [unread, setUnread] = useState(0);
@@ -50,12 +50,11 @@ export default function App() {
     window.addEventListener("bis:logout", onLogout);
     const onPreview = (e: Event) => setPreview(previewFor((e as CustomEvent<string>).detail));
     window.addEventListener("bis:preview", onPreview);
-    if (getToken() || DEMO) {
-      api<{ user: User }>("/auth/me")
-        .then((r) => setUser(r.user))
-        .catch(() => setToken(null))
-        .finally(() => setLoading(false));
-    }
+    // без сохранённого входа тоже спрашиваем: на своём компьютере BIS пускает без пароля (BIS_AUTO_LOGIN)
+    api<{ user: User }>("/auth/me")
+      .then((r) => setUser(r.user))
+      .catch(() => setToken(null))
+      .finally(() => setLoading(false));
     return () => {
       window.removeEventListener("bis:logout", onLogout);
       window.removeEventListener("bis:preview", onPreview);

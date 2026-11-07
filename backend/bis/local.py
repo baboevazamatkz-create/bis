@@ -99,6 +99,8 @@ def prepare(workdir: Path) -> Path:
     load_env(workdir / ".env")
     # pgvector из встроенной сборки падает на части процессоров — по умолчанию поиск полнотекстовый
     os.environ.setdefault("BIS_VECTOR_ENABLED", "false")
+    # без формы входа на своём компьютере (BIS_AUTO_LOGIN=false в .env — вернуть вход)
+    os.environ.setdefault("BIS_AUTO_LOGIN", "true")
     data = Path(os.environ.get("BIS_DATA_DIR") or (workdir / "data"))
     os.environ["BIS_DATABASE_URL"] = start_database(data)
     os.environ.setdefault("BIS_STORAGE_DIR", str(data / "files"))

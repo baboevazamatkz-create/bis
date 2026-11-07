@@ -6,8 +6,9 @@ import uuid
 from collections.abc import Callable
 
 import jwt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from bis.agents.base import AgentContext
@@ -21,10 +22,24 @@ from bis.services.storage import get_storage
 bearer = HTTPBearer(auto_error=False)
 
 
+LOOPBACK = {"127.0.0.1", "::1", "localhost"}
+
+
+def auto_login_user(request: Request, db: Session) -> User | None:
+    """Вход без пароля на время разработки (BIS_AUTO_LOGIN): только с этого же компьютера — последний созданный админ."""
+    from bis.config import get_settings
+
+    if not get_settings().auto_login or (request.client and request.client.host) not in LOOPBACK:
+        return None
+    return db.scalar(select(User).where(User.is_active.is_(True), User.role == "admin").order_by(User.created_at.desc()).limit(1))
+
+
 def current_user(
-    creds: HTTPAuthorizationCredentials | None = Depends(bearer), db: Session = Depends(get_db)
+    request: Request, creds: HTTPAuthorizationCredentials | None = Depends(bearer), db: Session = Depends(get_db)
 ) -> User:
     if creds is None:
+        if user := auto_login_user(request, db):
+            return user
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Требуется авторизация")
     try:
         payload = decode_access_token(creds.credentials)

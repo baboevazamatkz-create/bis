@@ -92,6 +92,8 @@ class Settings(BaseSettings):
     llm_routes_json: str | None = None
 
     # Telegram-бот: приём фото, голосовых и документов с площадки, уведомления, решения по предложениям ИИ
+    # вход без пароля с этого же компьютера (локальный запуск на время разработки)
+    auto_login: bool = False
     telegram_bot_token: str | None = None
     telegram_bot_username: str | None = None  # для ссылки привязки t.me/<бот>?start=<код>
     telegram_webhook_secret: str | None = None  # заголовок X-Telegram-Bot-Api-Secret-Token
