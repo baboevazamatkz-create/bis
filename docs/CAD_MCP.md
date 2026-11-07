@@ -11,8 +11,9 @@ BIS умеет управлять AutoCAD и nanoCAD на компьютере �
 
 ## Подключение в Claude Desktop
 
-Установщик BIS для Windows уже ставит нужные пакеты. Откройте Claude Desktop → Настройки → Developer →
-Edit Config и добавьте:
+Установщик BIS для Windows уже ставит нужные пакеты. В Claude Desktop включите режим разработчика
+(☰ → Help → Troubleshooting → Enable Developer Mode), затем Настройки → Developer → **Edit Config** — откроется
+файл, который Claude читает на самом деле (у версии из Microsoft Store он в другой папке), — и добавьте:
 
 ```json
 {
