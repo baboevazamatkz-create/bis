@@ -261,28 +261,57 @@ def create_writeoff_act(ctx: AgentContext, args: WriteOffArgs) -> dict:
 
 
 class ClosingArgs(BaseModel):
-    contract_id: str
-    period_start: dt.date
-    period_end: dt.date
+    contract_id: str | None = None  # не задан — единственный договор или тот, где есть незакрытые объёмы
+    period_start: dt.date | None = None  # не задан — с первого незакрытого объёма
+    period_end: dt.date | None = None  # не задан — по сегодня
     only_confirmed: bool = True
 
 
-@tool("closing_check", "Проверка закрытия за период по договору: что войдёт в КС-2, что нет и почему.",
+def _closing_target(ctx: AgentContext, args: ClosingArgs) -> tuple[Contract, dt.date, dt.date, list[str]]:
+    """Договор и период: что не задано — подставляем сами и сообщаем об этом."""
+    assumed = []
+    if args.contract_id:
+        c = _owned(ctx, Contract, args.contract_id, "договор")
+    else:
+        open_by_contract = dict(ctx.db.execute(
+            select(EstimateItem.contract_id, func.count(WorkVolume.id))
+            .join(WorkVolume, WorkVolume.estimate_item_id == EstimateItem.id)
+            .where(EstimateItem.organization_id == ctx.org_id, WorkVolume.ks2_document_id.is_(None))
+            .group_by(EstimateItem.contract_id)).all())
+        contracts = ctx.db.scalars(select(Contract).where(Contract.organization_id == ctx.org_id)
+                                   .order_by(Contract.created_at.desc())).all()
+        if not contracts:
+            raise LookupError("В базе нет договоров — загрузите договор и смету")
+        c = max(contracts, key=lambda k: (open_by_contract.get(k.id, 0), k.kind in ("general", "subcontract")))
+        assumed.append(f"договор № {c.number}" + (" (единственный)" if len(contracts) == 1 else " (с незакрытыми объёмами)"))
+    end = args.period_end or dt.date.today()
+    start = args.period_start
+    if start is None:
+        first = ctx.db.scalar(select(func.min(WorkVolume.date)).join(EstimateItem, WorkVolume.estimate_item_id == EstimateItem.id)
+                              .where(EstimateItem.contract_id == c.id, WorkVolume.ks2_document_id.is_(None)))
+        start = min(first, end) if first else end.replace(day=1)
+        assumed.append(f"период {start:%d.%m.%Y}–{end:%d.%m.%Y} (все незакрытые объёмы)")
+    return c, start, end, assumed
+
+
+@tool("closing_check", "Проверка закрытия: что войдёт в КС-2, что нет и почему. Договор и период можно не задавать — подставятся.",
       scopes=("registry:read",))
 def closing_check_tool(ctx: AgentContext, args: ClosingArgs) -> dict:
-    c = _owned(ctx, Contract, args.contract_id, "договор")
-    return csvc._jsonable(wsvc.closing_check(ctx.db, c, args.period_start, args.period_end, only_confirmed=args.only_confirmed))
+    c, start, end, assumed = _closing_target(ctx, args)
+    out = csvc._jsonable(wsvc.closing_check(ctx.db, c, start, end, only_confirmed=args.only_confirmed))
+    return out | {"contract": f"№ {c.number}", "period": f"{start:%d.%m.%Y}–{end:%d.%m.%Y}", "assumed": assumed}
 
 
-@tool("create_ks2_ks3", "Сформировать КС-2 и КС-3 по договору за период из подтверждённых объёмов.",
+@tool("create_ks2_ks3", "Черновики КС-2 и КС-3 из подтверждённых объёмов. Договор и период можно не задавать — подставятся.",
       scopes=("documents:write",))
 def create_ks2_ks3_tool(ctx: AgentContext, args: ClosingArgs) -> dict:
-    c = _owned(ctx, Contract, args.contract_id, "договор")
-    res = csvc.create_ks2_ks3(ctx.db, ctx.storage, c, args.period_start, args.period_end, actor=f"agent:{ctx.agent_name}",
+    c, start, end, assumed = _closing_target(ctx, args)
+    res = csvc.create_ks2_ks3(ctx.db, ctx.storage, c, start, end, actor=f"agent:{ctx.agent_name}",
                               only_confirmed=args.only_confirmed)
     refs = [_doc_ref(res["ks2"]), _doc_ref(res["ks3"])]
     ctx.documents.extend(refs)
-    return {"documents": refs, "total": float(res["check"]["total"]), "vat": float(res["check"]["vat"]),
+    return {"documents": refs, "contract": f"№ {c.number}", "period": f"{start:%d.%m.%Y}–{end:%d.%m.%Y}", "assumed": assumed,
+            "total": float(res["check"]["total"]), "vat": float(res["check"]["vat"]),
             "issues": res["check"]["issues"], "ks3_totals": csvc._jsonable(res["totals"])}
 
 

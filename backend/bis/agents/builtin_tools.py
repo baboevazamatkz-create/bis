@@ -136,7 +136,7 @@ def get_object_participants(ctx: AgentContext, args: ObjectArgs) -> dict:
 
 
 class ListDocumentsArgs(BaseModel):
-    kind: str | None = Field(None, description="aosr, letter, incoming_letter, contract, order …")
+    kind: str | None = Field(None, description="aosr, aook, ks2, ks3, scheme, m29, writeoff, letter, incoming_letter, contract, order, project_doc …")
     object_id: str | None = None
     status: str | None = Field(None, description="draft, approved, rejected, signed")
     limit: int = Field(20, ge=1, le=100)
