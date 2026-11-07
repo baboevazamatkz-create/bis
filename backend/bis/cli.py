@@ -47,6 +47,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--k", type=int, default=5)
     p.add_argument("--answers", action="store_true", help="Проверять ответы агентов (нужна модель)")
 
+    p = sub.add_parser("local", help="Локальный запуск без Docker: встроенная БД, API, веб, фоновые задачи, Telegram")
+    p.add_argument("--dir", type=Path, default=Path.cwd(), help="Папка с .env и данными")
+    p.add_argument("--host", default="0.0.0.0")
+    p.add_argument("--port", type=int, default=8080)
+    p.add_argument("--setup", action="store_true", help="Только подготовить базу и выполнить команду --then")
+    p.add_argument("--then", nargs=argparse.REMAINDER, default=[], help="Команда bis после подготовки (seed-demo, create-org …)")
     sub.add_parser("llm-check", help="Проверить подключение моделей: ответ, JSON, время")
     sub.add_parser("telegram-poll", help="Telegram-бот в режиме опроса (без входящих соединений, закрытый контур)")
 
@@ -77,6 +83,14 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
             r = run_job(SessionLocal, name)
             print(f"{name}: {r.status}")
+        return 0
+    if args.cmd == "local":
+        from bis import local
+
+        if args.setup:
+            local.prepare(args.dir.resolve())
+            return main(args.then) if args.then else 0
+        local.run(args.dir.resolve(), args.host, args.port)
         return 0
     if args.cmd == "llm-check":
         from bis.llm.check import check_providers

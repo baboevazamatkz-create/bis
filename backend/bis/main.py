@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from bis import __version__
 from bis.api import admin, ai, auth, chat, control, documents, knowledge, registry, telegram, voice, works
@@ -43,6 +46,15 @@ def create_app() -> FastAPI:
     @app.exception_handler(PermissionError)
     async def forbidden(_: Request, exc: PermissionError):
         return JSONResponse(status_code=403, content={"detail": str(exc)})
+
+    if settings.web_dir and Path(settings.web_dir).is_dir():  # локальный запуск: веб-интерфейс отдаёт сам API
+        web = Path(settings.web_dir)
+        app.mount("/assets", StaticFiles(directory=web / "assets"), name="assets")
+
+        @app.get("/{path:path}", include_in_schema=False)
+        async def spa(path: str):
+            f = web / path
+            return FileResponse(f if path and f.is_file() and web in f.resolve().parents else web / "index.html")
 
     return app
 

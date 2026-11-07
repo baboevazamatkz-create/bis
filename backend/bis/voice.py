@@ -47,11 +47,15 @@ class VoiceError(Exception):
 
 def status() -> dict[str, bool]:
     s = get_settings()
-    stt = bool(s.stt_url) if s.stt_provider == "openai" else bool(s.yandex()[0]) and bool(shutil.which("ffmpeg"))
+    stt = bool(s.stt_url) if s.stt_provider == "openai" else bool(s.yandex()[0]) and bool(ffmpeg_exe())
     return {"stt": stt, "tts": bool(s.tts_url)}
 
 
 YANDEX_STT = "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize"
+
+
+def ffmpeg_exe() -> str | None:
+    return get_settings().ffmpeg or shutil.which("ffmpeg")
 
 
 def _ogg_chunks(audio: bytes, seconds: int = 25) -> list[bytes]:
@@ -59,7 +63,7 @@ def _ogg_chunks(audio: bytes, seconds: int = 25) -> list[bytes]:
     with tempfile.TemporaryDirectory() as tmp:
         src = Path(tmp) / "in"
         src.write_bytes(audio)
-        cmd = ["ffmpeg", "-loglevel", "error", "-y", "-i", str(src), "-ac", "1", "-ar", "16000", "-c:a", "libopus",
+        cmd = [ffmpeg_exe() or "ffmpeg", "-loglevel", "error", "-y", "-i", str(src), "-ac", "1", "-ar", "16000", "-c:a", "libopus",
                "-b:a", "24k", "-f", "segment", "-segment_time", str(seconds), str(Path(tmp) / "part%03d.ogg")]
         try:
             subprocess.run(cmd, check=True, capture_output=True, timeout=120)

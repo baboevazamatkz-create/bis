@@ -112,6 +112,10 @@ class Settings(BaseSettings):
     tts_voice: str = "alloy"
     tts_api_key: str | None = None
 
+    # Локальный запуск: папка собранного веб-интерфейса (API отдаёт его сам) и путь к ffmpeg
+    web_dir: Path | None = None
+    ffmpeg: str | None = None
+
     # Конвертация DXF → DWG (путь к ODA File Converter, необязательно)
     oda_converter: str | None = None
 
