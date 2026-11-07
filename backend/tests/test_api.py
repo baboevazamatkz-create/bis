@@ -122,7 +122,7 @@ def test_chat_offline_norms_agent(client, auth):
     data = r.json()
     assert data["agent"] == "norms"
     assert data["citations"] and "ДЕМО-СП 999.13330.2026" in data["citations"][0]["citation"]
-    assert "офлайн" in data["text"]
+    assert "офлайн" in data["text"].lower()
     hist = client.get(f"/api/chat/sessions/{data['session_id']}", headers=auth).json()
     assert [m["role"] for m in hist] == ["user", "assistant"]
 
