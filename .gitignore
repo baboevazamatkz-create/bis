@@ -11,3 +11,6 @@ data/
 node_modules/
 frontend/dist/
 *.tsbuildinfo
+dist-demo/
+demo-snapshot.json
+bis-demo.html

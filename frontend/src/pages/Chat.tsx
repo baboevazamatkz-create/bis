@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api, download, getToken, type ChatReply, type Citation, type DocRef } from "../api";
+import { api, download, fetchBlob, type ChatReply, type Citation, type DocRef } from "../api";
 
 interface Msg {
   role: "user" | "assistant";
@@ -85,12 +85,12 @@ export default function Chat() {
 
   async function speak(textToSpeak: string) {
     try {
-      const res = await fetch("/api/voice/speak", {
+      const blob = await fetchBlob("/voice/speak", {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${getToken()}` },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: textToSpeak.slice(0, 4000) }),
       });
-      if (res.ok) void new Audio(URL.createObjectURL(await res.blob())).play();
+      void new Audio(URL.createObjectURL(blob)).play();
     } catch {
       /* озвучивание необязательно */
     }

@@ -57,6 +57,22 @@ cd ../frontend && npm install && npm run dev   # http://localhost:5173
 
 Тесты (нужна БД `bis_test`): `TEST_DATABASE_URL=postgresql+psycopg://bis:bis@localhost:5432/bis_test pytest`.
 
+## Демо-страница без сервера
+
+Статическая демо-версия (интерфейс + снимок данных, записанный с работающего backend):
+
+```bash
+# 1. свежая демо-база и запущенный API
+bis migrate && bis seed-demo && bis run-jobs && uvicorn bis.main:app --port 8000 &
+# 2. снимок: действия (АОСР, КС-2/КС-3, М-29, схема, сверка ПД, чат) выполняются настоящим API
+python backend/scripts/record_demo.py http://localhost:8000 demo-snapshot.json
+# 3. сборка одной HTML-страницы
+cd frontend && VITE_DEMO=1 npx vite build --outDir dist-demo && node scripts/pack-demo.mjs dist-demo ../demo-snapshot.json bis-demo.html
+```
+
+В демо-режиме запросы обслуживает `frontend/src/demo/mock.ts`; поиск по нормам работает в браузере,
+документы показываются предпросмотром.
+
 ## Фоновые задачи
 
 `bis worker` (сервис `worker` в Docker Compose) выполняет по расписанию:

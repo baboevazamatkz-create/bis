@@ -22,13 +22,17 @@ export default function Documents() {
   }, []);
   useEffect(load, [kind, status]);
 
+  const [rejecting, setRejecting] = useState<string | null>(null);
+  const [reason, setReason] = useState("");
+
   async function act(d: DocumentRow, action: "approve" | "reject") {
     setError("");
     try {
       if (action === "reject") {
-        const reason = prompt("Причина отклонения (станет правилом для агента):");
-        if (!reason) return;
+        if (!reason.trim()) return;
         await api(`/documents/${d.id}/reject`, { method: "POST", json: { reason } });
+        setRejecting(null);
+        setReason("");
       } else {
         await api(`/documents/${d.id}/approve`, { method: "POST" });
       }
@@ -133,10 +137,18 @@ export default function Documents() {
                       Утвердить
                     </button>
                   )}{" "}
-                  {d.status === "draft" && (
-                    <button className="btn small" onClick={() => act(d, "reject")}>
+                  {d.status === "draft" && rejecting !== d.id && (
+                    <button className="btn small" onClick={() => { setRejecting(d.id); setReason(""); }}>
                       Отклонить
                     </button>
+                  )}
+                  {rejecting === d.id && (
+                    <div className="row" style={{ marginTop: 6 }}>
+                      <input id={`reason-${d.id}`} value={reason} autoFocus placeholder="Причина (станет правилом для агента)"
+                        onChange={(e) => setReason(e.target.value)} onKeyDown={(e) => e.key === "Enter" && act(d, "reject")} />
+                      <button className="btn small primary" disabled={!reason.trim()} onClick={() => act(d, "reject")}>Отклонить</button>
+                      <button className="btn small" onClick={() => setRejecting(null)}>Отмена</button>
+                    </div>
                   )}
                 </td>
               </tr>

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { api, getToken, setToken, type User } from "./api";
+import { api, DEMO, getToken, setToken, type User } from "./api";
+import { previewFor } from "./demo/mock";
 import Login from "./pages/Login";
 import Chat from "./pages/Chat";
 import Control from "./pages/Control";
@@ -25,20 +26,26 @@ const REGISTRY_GROUPS: [string, string[]][] = [
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(!!getToken());
+  const [loading, setLoading] = useState(!!getToken() || DEMO);
+  const [preview, setPreview] = useState<{ type: string; content: string; title: string } | null | undefined>(undefined);
   const [page, setPage] = useState("chat");
   const [unread, setUnread] = useState(0);
 
   useEffect(() => {
     const onLogout = () => setUser(null);
     window.addEventListener("bis:logout", onLogout);
-    if (getToken()) {
+    const onPreview = (e: Event) => setPreview(previewFor((e as CustomEvent<string>).detail));
+    window.addEventListener("bis:preview", onPreview);
+    if (getToken() || DEMO) {
       api<{ user: User }>("/auth/me")
         .then((r) => setUser(r.user))
         .catch(() => setToken(null))
         .finally(() => setLoading(false));
     }
-    return () => window.removeEventListener("bis:logout", onLogout);
+    return () => {
+      window.removeEventListener("bis:logout", onLogout);
+      window.removeEventListener("bis:preview", onPreview);
+    };
   }, []);
 
   useEffect(() => {
@@ -50,6 +57,7 @@ export default function App() {
   }, [user, page]);
 
   if (loading) return <div className="login muted">Загрузка…</div>;
+  if (!user && DEMO) return <div className="login muted">Демо-данные не загружены</div>;
   if (!user) return <Login onLogin={setUser} />;
 
   const nav = (id: string, label: string, badge?: number) => (
@@ -106,7 +114,29 @@ export default function App() {
           <a href="#" onClick={(e) => { e.preventDefault(); setToken(null); setUser(null); }}>Выйти</a>
         </div>
       </nav>
-      <main className="main">{content}</main>
+      <main className="main">
+        {DEMO && (
+          <div className="demo-banner">
+            Демо-версия BIS: данные вымышленные, языковая модель не подключена, изменения живут до перезагрузки страницы.
+            Действия (КС-2, М-29, АОСР, схема) возвращают результаты, сформированные настоящим сервером.
+          </div>
+        )}
+        {content}
+      </main>
+      {preview !== undefined && (
+        <div className="modal-backdrop" onClick={() => setPreview(undefined)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+              <h2 style={{ margin: 0 }}>{preview?.title ?? "Предпросмотр"}</h2>
+              <button className="btn small" onClick={() => setPreview(undefined)}>Закрыть</button>
+            </div>
+            {!preview && <p className="muted">Предпросмотр этого файла в демо-версии недоступен. На сервере файл скачивается в Word, Excel или DXF.</p>}
+            {preview?.type === "svg" && <img alt="Предпросмотр" src={`data:image/svg+xml;charset=utf-8,${encodeURIComponent(preview.content)}`} style={{ width: "100%", background: "#fff" }} />}
+            {preview?.type === "html" && <div className="doc-preview" dangerouslySetInnerHTML={{ __html: preview.content }} />}
+            {preview && <p className="small muted">В демо-странице файлы не скачиваются; на сервере — кнопка «Скачать» отдаёт оригинал (DOCX, XLSX, DXF).</p>}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

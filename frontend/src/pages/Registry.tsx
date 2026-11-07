@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
+import { ConfirmButton } from "../components";
 
 interface FieldDef {
   key: string;
@@ -272,7 +273,6 @@ export default function Registry({ kind }: { kind: string }) {
   }
 
   async function remove(row: Row) {
-    if (!confirm("Удалить запись?")) return;
     try {
       await api(`${def.path}/${row.id}`, { method: "DELETE" });
       load();
@@ -372,9 +372,7 @@ export default function Registry({ kind }: { kind: string }) {
                   <button className="btn small" onClick={() => edit(r)}>
                     Изменить
                   </button>{" "}
-                  <button className="btn small" onClick={() => remove(r)}>
-                    Удалить
-                  </button>
+                  <ConfirmButton label="Удалить" confirmLabel="Точно?" onConfirm={() => remove(r)} />
                 </td>
               </tr>
             ))}

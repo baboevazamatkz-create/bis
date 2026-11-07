@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, upload, STATUS_LABELS, type Citation, type Source, type User } from "../api";
+import { ConfirmButton } from "../components";
 
 export default function Knowledge({ user }: { user: User }) {
   const [kinds, setKinds] = useState<Record<string, string>>({});
@@ -57,17 +58,16 @@ export default function Knowledge({ user }: { user: User }) {
       await api(`/knowledge/sources/${s.id}`, { method: "PATCH", json: { status } });
       load();
     } catch (e) {
-      alert((e as Error).message);
+      setMsg({ ok: false, text: (e as Error).message });
     }
   }
 
   async function remove(s: Source) {
-    if (!confirm(`Удалить «${s.title}» из базы знаний?`)) return;
     try {
       await api(`/knowledge/sources/${s.id}`, { method: "DELETE" });
       load();
     } catch (e) {
-      alert((e as Error).message);
+      setMsg({ ok: false, text: (e as Error).message });
     }
   }
 
@@ -187,9 +187,7 @@ export default function Knowledge({ user }: { user: User }) {
                 </td>
                 <td>{s.chunk_count}</td>
                 <td>
-                  <button className="btn small" onClick={() => remove(s)}>
-                    Удалить
-                  </button>
+                  <ConfirmButton label="Удалить" confirmLabel="Точно удалить?" onConfirm={() => remove(s)} />
                 </td>
               </tr>
             ))}

@@ -1,4 +1,8 @@
 // Клиент API BIS: JWT в localStorage, JSON и multipart-запросы, скачивание файлов с авторизацией.
+// В демо-сборке (VITE_DEMO=1) запросы обслуживает mock на снимке данных настоящего backend.
+import { mockApi, mockBlob } from "./demo/mock";
+
+export const DEMO = import.meta.env.VITE_DEMO === "1";
 
 const TOKEN_KEY = "bis_token";
 
@@ -35,6 +39,7 @@ function detail(data: unknown): string {
 }
 
 export async function api<T = unknown>(path: string, options: RequestInit & { json?: unknown } = {}): Promise<T> {
+  if (DEMO) return mockApi<T>(path, options.method ?? "GET", options.json ?? options.body);
   const headers = new Headers(options.headers);
   const token = getToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
@@ -58,7 +63,23 @@ export async function upload<T = unknown>(path: string, form: FormData): Promise
   return api<T>(path, { method: "POST", body: form });
 }
 
+/** Файл/предпросмотр с авторизацией как Blob (для изображений и аудио). */
+export async function fetchBlob(path: string, init: RequestInit = {}): Promise<Blob> {
+  if (DEMO) return mockBlob(path);
+  const headers = new Headers(init.headers);
+  const token = getToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const res = await fetch(`/api${path}`, { ...init, headers });
+  if (!res.ok) throw new ApiError(res.status, "Не удалось получить файл");
+  return res.blob();
+}
+
 export async function download(path: string, fallbackName = "document") {
+  if (DEMO) {
+    // в демо-странице скачивание недоступно — показываем предпросмотр документа
+    window.dispatchEvent(new CustomEvent("bis:preview", { detail: path }));
+    return;
+  }
   const token = getToken();
   const res = await fetch(`/api${path}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
   if (!res.ok) throw new ApiError(res.status, "Не удалось скачать файл");

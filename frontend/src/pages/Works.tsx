@@ -27,6 +27,7 @@ export default function Works() {
   const [balance, setBalance] = useState<Balance[]>([]);
   const [created, setCreated] = useState<DocumentRow[]>([]);
   const [estimateFile, setEstimateFile] = useState<File | null>(null);
+  const [imported, setImported] = useState("");
   const { busy, run, Alerts } = useAsync();
   const period = { period_start: start, period_end: end };
 
@@ -47,8 +48,8 @@ export default function Works() {
     if (!estimateFile) return;
     const form = new FormData();
     form.append("file", estimateFile);
-    await run(() => upload<{ imported: number; hidden_works: number; total: number }>(`/contracts/${contractId}/estimate/import`, form))
-      .then((r) => r && alert(`Импортировано позиций: ${r.imported} (скрытых работ: ${r.hidden_works}), сумма ${num(r.total)} руб.`));
+    const r = await run(() => upload<{ imported: number; hidden_works: number; total: number }>(`/contracts/${contractId}/estimate/import`, form));
+    if (r) setImported(`Импортировано позиций: ${r.imported} (скрытых работ: ${r.hidden_works}), сумма ${num(r.total)} руб.`);
   }
 
   return (
@@ -162,6 +163,7 @@ export default function Works() {
           <div className="field"><input type="file" accept=".xlsx" onChange={(e) => setEstimateFile(e.target.files?.[0] ?? null)} /></div>
           <div className="field" style={{ flex: "0 0 auto" }}><button className="btn primary" disabled={!estimateFile || !contractId || busy} onClick={importEstimate}>Импортировать в договор</button></div>
         </div>
+        {imported && <div className="alert ok">{imported}</div>}
       </div>
     </>
   );

@@ -108,3 +108,20 @@ export const tone = (s: string) =>
 export function Badge({ status }: { status: string }) {
   return <span className={`badge t-${tone(status)}`}>{STATUS_RU[status] ?? status}</span>;
 }
+
+/** Кнопка с подтверждением на странице (без системных диалогов). */
+export function ConfirmButton({ label, confirmLabel, onConfirm, className = "btn small" }: {
+  label: string; confirmLabel: string; onConfirm: () => void; className?: string;
+}) {
+  const [armed, setArmed] = useState(false);
+  useEffect(() => {
+    if (!armed) return;
+    const t = setTimeout(() => setArmed(false), 4000);
+    return () => clearTimeout(t);
+  }, [armed]);
+  return armed ? (
+    <button className={`${className} danger`} onClick={() => { setArmed(false); onConfirm(); }}>{confirmLabel}</button>
+  ) : (
+    <button className={className} onClick={() => setArmed(true)}>{label}</button>
+  );
+}

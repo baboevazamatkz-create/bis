@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { api, download, getToken, upload, type DocumentRow } from "../api";
+import { api, DEMO, download, fetchBlob, upload, type DocumentRow } from "../api";
+import { demoSurvey } from "../demo/mock";
 import { Picker, useAsync, useObjects } from "../components";
 
 interface Point {
@@ -45,8 +46,8 @@ export default function Schemes() {
     }));
     if (!d) return;
     setDoc(d);
-    const res = await fetch(`/api/documents/${d.id}/preview`, { headers: { Authorization: `Bearer ${getToken()}` } });
-    if (res.ok) setPreview(URL.createObjectURL(await res.blob()));
+    const blob = await run(() => fetchBlob(`/documents/${d.id}/preview`));
+    if (blob) setPreview(URL.createObjectURL(blob));
   }
 
   const set = (k: keyof typeof form) => (e: { target: { value: string } }) => setForm({ ...form, [k]: e.target.value });
@@ -61,6 +62,14 @@ export default function Schemes() {
       <div className="panel">
         <div className="row">
           <div className="field"><label>Файл съёмки</label><input type="file" onChange={(e) => e.target.files?.[0] && parse(e.target.files[0])} /></div>
+          {DEMO && (
+            <div className="field" style={{ flex: "0 0 auto" }}>
+              <button className="btn" onClick={() => {
+                setPoints(demoSurvey());
+                setForm({ ...form, title: "Исполнительная схема фундаментной плиты Пм1 в осях 1-5/А-Г", code: "ЖК-01-ИГС-01" });
+              }}>Пример съёмки</button>
+            </div>
+          )}
           <div className="field" style={{ flex: "0 0 auto" }}>
             <label><input type="checkbox" style={{ width: "auto" }} checked={geodetic} onChange={(e) => setGeodetic(e.target.checked)} /> X — на север (геодезическая система)</label>
           </div>
@@ -107,7 +116,7 @@ export default function Schemes() {
             </div>
             <div>
               <button className="btn primary" onClick={() => download(`/documents/${doc.id}/file`, doc.file_name ?? "scheme.dxf")}>Скачать DXF</button>{" "}
-              <button className="btn" onClick={() => download(`/documents/${doc.id}/dwg`, "scheme.dwg").catch((e) => alert(e.message))}>DWG</button>
+              <button className="btn" onClick={() => run(() => download(`/documents/${doc.id}/dwg`, "scheme.dwg"))}>DWG</button>
             </div>
           </div>
           {preview && <img src={preview} alt="Предпросмотр схемы" style={{ width: "100%", border: "1px solid var(--border)", background: "#fff" }} />}
