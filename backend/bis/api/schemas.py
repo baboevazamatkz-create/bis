@@ -70,6 +70,7 @@ class ContractIn(BaseModel):
     end_date: dt.date | None = None
     status: str = "active"
     responsible_id: uuid.UUID | None = None
+    document_id: uuid.UUID | None = None
     extra: dict[str, Any] = Field(default_factory=dict)
 
 

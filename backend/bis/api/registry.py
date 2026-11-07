@@ -63,6 +63,7 @@ FK_MODELS: dict[str, Any] = {
     "material_id": Material,
     "supplier_id": Counterparty,
     "aosr_document_id": Document,
+    "document_id": Document,
 }
 
 

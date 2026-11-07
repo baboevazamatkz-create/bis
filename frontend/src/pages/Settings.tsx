@@ -11,7 +11,12 @@ interface Org {
   phone: string | null;
   email: string | null;
   sro: string | null;
-  settings: { default_signer?: { position?: string; name?: string }; letter_number_format?: string };
+  settings: {
+    default_signer?: { position?: string; name?: string };
+    letter_number_format?: string;
+    mailbox?: { enabled?: boolean; host?: string; port?: number; username?: string; password_env?: string; folder?: string };
+    routing?: Record<string, string>;
+  };
 }
 
 interface Memory {
@@ -33,6 +38,7 @@ export default function Settings() {
   const [memory, setMemory] = useState<Memory[]>([]);
   const [rule, setRule] = useState("");
   const [ruleScope, setRuleScope] = useState("*");
+  const [ruleKind, setRuleKind] = useState("rule");
   const [templates, setTemplates] = useState<{ id: string; kind: string; name: string; is_default: boolean }[]>([]);
   const [tplFile, setTplFile] = useState<File | null>(null);
   const [tplKind, setTplKind] = useState("letter");
@@ -94,14 +100,56 @@ export default function Settings() {
       </div>
 
       <div className="panel">
+        <h2>Входящая почта (IMAP)</h2>
+        <p className="muted small">Письма и вложения автоматически регистрируются, попадают в базу знаний и разбираются агентом
+          «Секретарь» (поручения, сроки ответа). Пароль хранится в переменной окружения сервера.</p>
+        <div className="row">
+          <div className="field" style={{ flex: "0 0 auto" }}>
+            <label><input type="checkbox" style={{ width: "auto" }} checked={!!org.settings?.mailbox?.enabled}
+              onChange={(e) => setOrg({ ...org, settings: { ...org.settings, mailbox: { ...org.settings?.mailbox, enabled: e.target.checked } } })} /> Включено</label>
+          </div>
+          {([["host", "Сервер IMAP"], ["port", "Порт"], ["username", "Логин"], ["password_env", "Переменная с паролем"], ["folder", "Папка"]] as const).map(([k, l]) => (
+            <div className="field" key={k}>
+              <label>{l}</label>
+              <input value={String(org.settings?.mailbox?.[k] ?? (k === "port" ? 993 : k === "folder" ? "INBOX" : ""))}
+                onChange={(e) => setOrg({ ...org, settings: { ...org.settings, mailbox: { ...org.settings?.mailbox, [k]: k === "port" ? Number(e.target.value) : e.target.value } } })} />
+            </div>
+          ))}
+        </div>
+        <h2 style={{ marginTop: 12 }}>Маршрутизация поручений</h2>
+        <p className="muted small">Кому направлять поручения из входящих писем по направлению (email пользователя). Пусто — первому пользователю с этой ролью.</p>
+        <div className="row">
+          {([["pto", "ПТО / ИД"], ["lawyer", "Договоры, претензии"], ["supply", "Материалы, поставки"], ["foreman", "Работы на площадке"], ["manager", "Оплата, прочее"], ["secretary", "Ответы на письма"]] as const).map(([k, l]) => (
+            <div className="field" key={k}>
+              <label>{l}</label>
+              <input value={org.settings?.routing?.[k] ?? ""} placeholder="email"
+                onChange={(e) => setOrg({ ...org, settings: { ...org.settings, routing: { ...org.settings?.routing, [k]: e.target.value } } })} />
+            </div>
+          ))}
+        </div>
+        <button className="btn primary" onClick={() => {
+          const { name, short_name, inn, kpp, ogrn, address, phone, email, sro, settings } = org;
+          report(api("/org", { method: "PATCH", json: { name, short_name, inn, kpp, ogrn, address, phone, email, sro, settings } }), "Сохранено");
+        }}>Сохранить</button>
+      </div>
+
+      <div className="panel">
         <h2>Правила и память организации</h2>
         <p className="muted small">
           Правила добавляются в инструкции агентов. Замечания при отклонении документов попадают сюда автоматически — так система
-          подстраивается под компанию.
+          подстраивается под компанию. Термины компании для поиска: тип «term», формат «термин = синоним1; синоним2».
         </p>
         <div className="row">
           <div className="field">
             <input value={rule} placeholder="Например: в письмах заказчику всегда указывать номер договора" onChange={(e) => setRule(e.target.value)} />
+          </div>
+          <div className="field" style={{ flex: "0 0 140px" }}>
+            <select value={ruleKind} onChange={(e) => setRuleKind(e.target.value)}>
+              <option value="rule">Правило</option>
+              <option value="style">Стиль</option>
+              <option value="fact">Факт</option>
+              <option value="term">Термин</option>
+            </select>
           </div>
           <div className="field" style={{ flex: "0 0 180px" }}>
             <select value={ruleScope} onChange={(e) => setRuleScope(e.target.value)}>
@@ -109,12 +157,17 @@ export default function Settings() {
               <option value="secretary">Секретарь</option>
               <option value="pto">ПТО</option>
               <option value="norms">Нормоконтроль</option>
+              <option value="contracts">Договорной</option>
+              <option value="works">Контроль работ</option>
+              <option value="materials">Материалы</option>
+              <option value="closing">Закрытие работ</option>
+              <option value="project">Анализ ПД</option>
               <option value="assistant">Помощник</option>
             </select>
           </div>
           <div className="field" style={{ flex: "0 0 auto" }}>
             <button className="btn primary" disabled={!rule.trim()} onClick={() =>
-              report(api("/memory", { method: "POST", json: { content: rule, scope: ruleScope } }).then(() => {
+              report(api("/memory", { method: "POST", json: { content: rule, scope: ruleScope, kind: ruleKind } }).then(() => {
                 setRule("");
                 loadAll();
               }), "Правило добавлено")}>

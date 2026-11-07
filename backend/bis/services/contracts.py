@@ -161,8 +161,8 @@ def heuristic_extract(text: str, *, kind: str, our_role: str, our_inn: str | Non
                     res.risks.append(f"п. {num}: высокая ставка неустойки {mm.group(1)}% в день")
             else:
                 res.risks.append(f"п. {num}: {label}")
-        if not _OBLIG_RE.search(body) or _PENALTY_RE.search(body):
-            continue
+        if not _OBLIG_RE.search(body) or _PENALTY_RE.search(body) or low.startswith("предмет"):
+            continue  # условие о предмете договора и неустойки — не отдельные обязательства
         first = low[:120]
         pos_ours = _first_pos(first, ours)
         pos_theirs = _first_pos(first, theirs)

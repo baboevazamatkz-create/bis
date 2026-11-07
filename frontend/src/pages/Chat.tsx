@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api, download, type ChatReply, type Citation, type DocRef } from "../api";
+import { api, download, getToken, type ChatReply, type Citation, type DocRef } from "../api";
 
 interface Msg {
   role: "user" | "assistant";
@@ -16,9 +16,12 @@ interface Agent {
 
 const SUGGESTIONS = [
   "Какая допустимая толщина слоя обратной засыпки?",
+  "Что просрочено по договорам и поручениям?",
+  "Покажи план-факт по корпусу 1",
+  "Какой перерасход материалов за май 2026?",
+  "Что можно закрыть в КС-2 за май 2026 по договору ГП-01/2026?",
   "Сделай АОСР на армирование фундаментной плиты в осях 1-5, корпус 1",
   "Подготовь письмо заказчику о направлении исполнительной документации",
-  "Какие договоры есть по корпусу 1?",
 ];
 
 function Citations({ items }: { items: Citation[] }) {
@@ -67,13 +70,61 @@ export default function Chat() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const bottom = useRef<HTMLDivElement>(null);
+  const [voice, setVoice] = useState({ stt: false, tts: false });
+  const [speakReplies, setSpeakReplies] = useState(false);
+  const [recording, setRecording] = useState(false);
+  const recorder = useRef<MediaRecorder | null>(null);
 
   const loadSessions = () => api<{ id: string; title: string }[]>("/chat/sessions").then(setSessions).catch(() => {});
 
   useEffect(() => {
     api<Agent[]>("/agents").then(setAgents).catch(() => {});
+    api<{ stt: boolean; tts: boolean }>("/voice/status").then(setVoice).catch(() => {});
     loadSessions();
   }, []);
+
+  async function speak(textToSpeak: string) {
+    try {
+      const res = await fetch("/api/voice/speak", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${getToken()}` },
+        body: JSON.stringify({ text: textToSpeak.slice(0, 4000) }),
+      });
+      if (res.ok) void new Audio(URL.createObjectURL(await res.blob())).play();
+    } catch {
+      /* озвучивание необязательно */
+    }
+  }
+
+  async function toggleRecording() {
+    if (recording) {
+      recorder.current?.stop();
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const rec = new MediaRecorder(stream);
+      const chunks: Blob[] = [];
+      rec.ondataavailable = (e) => chunks.push(e.data);
+      rec.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        setRecording(false);
+        const form = new FormData();
+        form.append("file", new Blob(chunks, { type: rec.mimeType }), "voice.webm");
+        try {
+          const r = await api<{ text: string }>("/voice/transcribe", { method: "POST", body: form });
+          if (r.text.trim()) send(r.text);
+        } catch (e) {
+          setError((e as Error).message);
+        }
+      };
+      rec.start();
+      recorder.current = rec;
+      setRecording(true);
+    } catch {
+      setError("Нет доступа к микрофону");
+    }
+  }
 
   useEffect(() => {
     // в новых браузерах scrollIntoView возвращает Promise — не отдаём его React как функцию очистки
@@ -98,6 +149,7 @@ export default function Chat() {
       });
       setSessionId(r.session_id);
       setMessages((m) => [...m, { role: "assistant", content: r.text, agent: r.agent, meta: r }]);
+      if (speakReplies) speak(r.text);
       if (!sessionId) loadSessions();
     } catch (e) {
       setError((e as Error).message);
@@ -140,6 +192,13 @@ export default function Chat() {
               ))}
             </select>
           </div>
+          {voice.tts && (
+            <div className="field" style={{ flex: "0 0 auto" }}>
+              <label>
+                <input type="checkbox" style={{ width: "auto" }} checked={speakReplies} onChange={(e) => setSpeakReplies(e.target.checked)} /> Озвучивать ответы
+              </label>
+            </div>
+          )}
         </div>
         <div className="messages">
           {messages.length === 0 && (
@@ -191,6 +250,11 @@ export default function Chat() {
               }
             }}
           />
+          {voice.stt && (
+            <button className={`btn ${recording ? "recording" : ""}`} title="Голосовая команда" onClick={toggleRecording} disabled={busy}>
+              {recording ? "■ Стоп" : "🎤"}
+            </button>
+          )}
           <button className="btn primary" disabled={busy || !text.trim()} onClick={() => send(text)}>
             Отправить
           </button>

@@ -134,6 +134,8 @@ export interface DocumentRow {
   created_by: string | null;
   created_at: string;
   reject_reason: string | null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  data?: Record<string, any>;
 }
 
 export interface Source {
@@ -155,6 +157,7 @@ export const STATUS_LABELS: Record<string, string> = {
   rejected: "Отклонён",
   signed: "Подписан",
   registered: "Зарегистрирован",
+  closed: "Закрыт",
   active: "Действует",
   cancelled: "Отменён",
   replaced: "Заменён",

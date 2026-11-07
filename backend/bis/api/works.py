@@ -153,9 +153,13 @@ class SchemeIn(SchemeData):
 
 @router.post("/schemes", response_model=DocumentOut, status_code=201)
 def create_scheme(body: SchemeIn, db: Session = Depends(get_db), user: User = Depends(require("documents:write"))):
-    if body.object_id:
-        _owned(db, user, ConstructionObject, body.object_id, "Объект")
+    obj = _owned(db, user, ConstructionObject, body.object_id, "Объект") if body.object_id else None
     data = SchemeData.model_validate(body.model_dump(exclude={"object_id"}))
+    from bis.models import Organization
+
+    data.organization = data.organization or db.get(Organization, user.organization_id).name
+    data.object_name = data.object_name or (f"{obj.name}" + (f", {obj.address}" if obj and obj.address else "") if obj else "")
+    data.checker = data.checker or f"{user.position or ''} {user.full_name}".strip()
     if not data.points:
         raise HTTPException(400, "Нет точек съёмки")
     doc = ssvc.create_scheme(db, get_storage(), user.organization_id, data, actor=f"user:{user.id}",

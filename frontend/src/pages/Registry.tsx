@@ -71,6 +71,7 @@ export const REGISTRIES: Record<string, RegistryDef> = {
       { key: "amount", label: "Цена, руб.", type: "number", list: true },
       { key: "start_date", label: "Начало", type: "date" },
       { key: "end_date", label: "Окончание", type: "date", list: true },
+      { key: "responsible_id", label: "Ответственный за исполнение", type: "ref", ref: "persons" },
     ],
   },
   persons: {
@@ -94,6 +95,103 @@ export const REGISTRIES: Record<string, RegistryDef> = {
       { key: "order_date", label: "Дата приказа", type: "date", list: true },
       { key: "valid_from", label: "Действует с", type: "date" },
       { key: "valid_to", label: "Действует по", type: "date" },
+    ],
+  },
+  tasks: {
+    title: "Поручения", path: "/tasks", labelKey: "title",
+    fields: [
+      { key: "title", label: "Поручение", type: "textarea", required: true, list: true },
+      { key: "assignee_person_id", label: "Исполнитель", type: "ref", ref: "persons", list: true },
+      { key: "due_date", label: "Срок", type: "date", list: true },
+      { key: "priority", label: "Приоритет", type: "select", options: { low: "Низкий", normal: "Обычный", high: "Высокий" }, list: true },
+      { key: "status", label: "Статус", type: "select", options: { open: "Открыто", in_progress: "В работе", done: "Исполнено", cancelled: "Отменено" }, list: true },
+      { key: "object_id", label: "Объект", type: "ref", ref: "objects" },
+      { key: "contract_id", label: "Договор", type: "ref", ref: "contracts" },
+      { key: "description", label: "Описание", type: "textarea" },
+      { key: "result", label: "Отчёт об исполнении", type: "textarea" },
+    ],
+  },
+  estimate: {
+    title: "Смета (позиции)", path: "/estimate-items", labelKey: "name",
+    fields: [
+      { key: "contract_id", label: "Договор", type: "ref", ref: "contracts", required: true },
+      { key: "object_id", label: "Объект", type: "ref", ref: "objects" },
+      { key: "code", label: "№ / шифр", list: true },
+      { key: "name", label: "Наименование работ", type: "textarea", required: true, list: true },
+      { key: "unit", label: "Ед. изм.", required: true, list: true },
+      { key: "quantity", label: "Количество", type: "number", required: true, list: true },
+      { key: "unit_price", label: "Цена за ед., руб.", type: "number", list: true },
+      { key: "requires_aosr", label: "Скрытые работы (нужен АОСР)", type: "select", options: { true: "Да", false: "Нет" }, list: true },
+      { key: "section", label: "Раздел" },
+      { key: "ord", label: "Порядок", type: "number" },
+    ],
+  },
+  schedule: {
+    title: "ГПР", path: "/schedule", labelKey: "name",
+    fields: [
+      { key: "object_id", label: "Объект", type: "ref", ref: "objects", required: true },
+      { key: "name", label: "Работа", required: true, list: true },
+      { key: "estimate_item_id", label: "Позиция сметы", type: "ref", ref: "estimate" },
+      { key: "planned_start", label: "Начало", type: "date", required: true, list: true },
+      { key: "planned_end", label: "Окончание", type: "date", required: true, list: true },
+      { key: "planned_quantity", label: "Объём", type: "number", list: true },
+      { key: "unit", label: "Ед.", list: true },
+      { key: "responsible_id", label: "Ответственный", type: "ref", ref: "persons", list: true },
+    ],
+  },
+  volumes: {
+    title: "Выполненные объёмы", path: "/volumes", labelKey: "location",
+    fields: [
+      { key: "object_id", label: "Объект", type: "ref", ref: "objects", required: true },
+      { key: "estimate_item_id", label: "Позиция сметы", type: "ref", ref: "estimate", required: true, list: true },
+      { key: "date", label: "Дата", type: "date", required: true, list: true },
+      { key: "quantity", label: "Объём", type: "number", required: true, list: true },
+      { key: "location", label: "Оси / захватка", list: true },
+      { key: "status", label: "Статус", type: "select", options: { reported: "Заявлено", confirmed: "Подтверждено ПТО", closed: "Закрыто в КС-2" }, list: true },
+      { key: "note", label: "Примечание" },
+    ],
+  },
+  materials: {
+    title: "Материалы", path: "/materials", labelKey: "name",
+    fields: [
+      { key: "name", label: "Наименование", required: true, list: true },
+      { key: "unit", label: "Ед. изм.", required: true, list: true },
+      { key: "code", label: "Код (1С)", list: true },
+      { key: "category", label: "Категория", list: true },
+    ],
+  },
+  norms: {
+    title: "Нормы расхода", path: "/material-norms", labelKey: "rate",
+    fields: [
+      { key: "estimate_item_id", label: "Позиция сметы", type: "ref", ref: "estimate", required: true, list: true },
+      { key: "material_id", label: "Материал", type: "ref", ref: "materials", required: true, list: true },
+      { key: "rate", label: "Норма на ед. работ", type: "number", required: true, list: true },
+      { key: "loss_percent", label: "Потери, %", type: "number", list: true },
+      { key: "source", label: "Источник нормы", list: true },
+    ],
+  },
+  receipts: {
+    title: "Приход материалов", path: "/material-receipts", labelKey: "document_ref",
+    fields: [
+      { key: "object_id", label: "Объект", type: "ref", ref: "objects", required: true },
+      { key: "material_id", label: "Материал", type: "ref", ref: "materials", required: true, list: true },
+      { key: "date", label: "Дата", type: "date", required: true, list: true },
+      { key: "quantity", label: "Количество", type: "number", required: true, list: true },
+      { key: "price", label: "Цена без НДС", type: "number", list: true },
+      { key: "document_ref", label: "УПД / накладная", list: true },
+      { key: "quality_doc", label: "Документ о качестве", list: true },
+      { key: "supplier_id", label: "Поставщик", type: "ref", ref: "counterparties" },
+    ],
+  },
+  usage: {
+    title: "Расход материалов", path: "/material-usage", labelKey: "note",
+    fields: [
+      { key: "object_id", label: "Объект", type: "ref", ref: "objects", required: true },
+      { key: "material_id", label: "Материал", type: "ref", ref: "materials", required: true, list: true },
+      { key: "date", label: "Дата", type: "date", required: true, list: true },
+      { key: "quantity", label: "Количество", type: "number", required: true, list: true },
+      { key: "estimate_item_id", label: "На работу", type: "ref", ref: "estimate", list: true },
+      { key: "note", label: "Примечание" },
     ],
   },
   obligations: {
@@ -127,7 +225,7 @@ export default function Registry({ kind }: { kind: string }) {
   useEffect(() => {
     load();
     const needed = [...new Set(def.fields.filter((f) => f.ref).map((f) => f.ref!))];
-    Promise.all(needed.map((r) => api<Row[]>(REGISTRIES[r].path).then((data) => [r, data] as const))).then((pairs) =>
+    Promise.all(needed.map((r) => api<Row[]>(`${REGISTRIES[r].path}?limit=500`).then((data) => [r, data] as const))).then((pairs) =>
       setRefs(Object.fromEntries(pairs)),
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -142,6 +240,7 @@ export default function Registry({ kind }: { kind: string }) {
     if (v === null || v === undefined || v === "") return "";
     if (f.type === "ref") return refLabel(f.ref!, v);
     if (f.type === "select") return f.options?.[String(v)] ?? String(v);
+    if (f.type === "textarea") return String(v).length > 160 ? String(v).slice(0, 160) + "…" : String(v);
     if (f.type === "number") return Number(v).toLocaleString("ru-RU");
     return String(v);
   };
@@ -159,7 +258,7 @@ export default function Registry({ kind }: { kind: string }) {
     for (const f of def.fields) {
       const v = form[f.key] ?? "";
       if (v === "" && !editId) continue;
-      body[f.key] = v === "" ? null : f.type === "number" ? Number(v) : v;
+      body[f.key] = v === "" ? null : f.type === "number" ? Number(v) : v === "true" ? true : v === "false" ? false : v;
     }
     try {
       if (editId) await api(`${def.path}/${editId}`, { method: "PATCH", json: body });

@@ -4,6 +4,7 @@
 # Профили:
 #   --profile ai   — сервер эмбеддингов bge-m3 (CPU) в закрытом контуре
 #   --profile gpu  — локальная LLM на vLLM (нужна видеокарта NVIDIA и nvidia-container-toolkit)
+#   --profile voice — распознавание речи (faster-whisper, OpenAI-совместимый API) в закрытом контуре
 
 services:
   db:
@@ -35,6 +36,26 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    # фоновые задачи: контроль сроков, план-факт, приём почты
+    build: ../backend
+    command: ["bis", "worker"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      BIS_DATABASE_URL: postgresql+psycopg://bis:${POSTGRES_PASSWORD:-bis}@db:5432/bis
+      BIS_LLM_CONFIG_FILE: /config/llm.json
+    volumes:
+      - files:/data/files
+      - ./config:/config:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      api:
+        condition: service_started
     restart: unless-stopped
 
   web:
@@ -71,6 +92,14 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+    restart: unless-stopped
+
+  stt:
+    profiles: ["voice"]
+    # закрепите версию образа при установке у заказчика
+    image: ${STT_IMAGE:-ghcr.io/speaches-ai/speaches:latest-cpu}
+    volumes:
+      - hf-cache:/home/ubuntu/.cache/huggingface
     restart: unless-stopped
 
 volumes:
