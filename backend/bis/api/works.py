@@ -1,0 +1,141 @@
+"""Учёт работ, материалов и закрытие: импорт сметы, план-факт, подтверждение объёмов, М-29, списание, КС-2/КС-3."""
+
+import datetime as dt
+import uuid
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
+from bis.api.deps import require
+from bis.api.schemas import DocumentOut
+from bis.db import get_db
+from bis.models import ConstructionObject, Contract, Document, User, WorkVolume
+from bis.services import closing as csvc
+from bis.services import works as wsvc
+from bis.services.audit import audit
+from bis.services.storage import get_storage
+
+router = APIRouter(tags=["works"])
+
+
+def _owned(db: Session, user: User, model, item_id: uuid.UUID, what: str):
+    row = db.get(model, item_id)
+    if row is None or row.organization_id != user.organization_id:
+        raise HTTPException(404, f"{what} не найден(а)")
+    return row
+
+
+@router.post("/contracts/{contract_id}/estimate/import")
+async def import_estimate(contract_id: uuid.UUID, file: UploadFile = File(...), replace: bool = Form(False),
+                          db: Session = Depends(get_db), user: User = Depends(require("registry:write"))):
+    """Импорт сметы / ведомости объёмов из Excel: заголовки определяются автоматически."""
+    c = _owned(db, user, Contract, contract_id, "Договор")
+    try:
+        items = csvc.import_estimate(db, c, await file.read(), replace=replace)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    audit(db, user.organization_id, actor_type="user", actor=str(user.id), action="estimate.import",
+          entity_type="contract", entity_id=c.id, details={"items": len(items), "file": file.filename})
+    db.commit()
+    return {"imported": len(items), "hidden_works": sum(1 for i in items if i.requires_aosr),
+            "total": float(sum((i.quantity * (i.unit_price or 0)) for i in items))}
+
+
+@router.get("/objects/{object_id}/plan-fact")
+def plan_fact(object_id: uuid.UUID, on_date: dt.date | None = None, db: Session = Depends(get_db),
+              user: User = Depends(require("registry:read"))):
+    obj = _owned(db, user, ConstructionObject, object_id, "Объект")
+    return wsvc.plan_fact(db, user.organization_id, obj.id, on_date)
+
+
+@router.get("/objects/{object_id}/materials/balance")
+def balance(object_id: uuid.UUID, on_date: dt.date | None = None, db: Session = Depends(get_db),
+            user: User = Depends(require("registry:read"))):
+    obj = _owned(db, user, ConstructionObject, object_id, "Объект")
+    return wsvc.material_balance(db, user.organization_id, obj.id, on_date)
+
+
+class ConfirmIn(BaseModel):
+    volume_ids: list[uuid.UUID]
+    aosr_document_id: uuid.UUID | None = None
+
+
+@router.post("/volumes/confirm")
+def confirm(body: ConfirmIn, db: Session = Depends(get_db), user: User = Depends(require("registry:write"))):
+    aosr = _owned(db, user, Document, body.aosr_document_id, "АОСР") if body.aosr_document_id else None
+    if aosr is not None and aosr.kind != "aosr":
+        raise HTTPException(400, "Документ не является АОСР")
+    for vid in body.volume_ids:
+        v = _owned(db, user, WorkVolume, vid, "Объём")
+        if v.status == "closed":
+            raise HTTPException(400, "Объём уже закрыт в КС-2")
+        v.status = "confirmed"
+        if aosr:
+            v.aosr_document_id = aosr.id
+    audit(db, user.organization_id, actor_type="user", actor=str(user.id), action="volume.confirm",
+          details={"volumes": [str(v) for v in body.volume_ids]})
+    db.commit()
+    return {"confirmed": len(body.volume_ids)}
+
+
+class PeriodIn(BaseModel):
+    period_start: dt.date
+    period_end: dt.date
+
+
+class ObjectPeriodIn(PeriodIn):
+    object_id: uuid.UUID
+    commission: list[str] = []
+
+
+@router.post("/materials/m29/preview")
+def m29_preview(body: ObjectPeriodIn, db: Session = Depends(get_db), user: User = Depends(require("registry:read"))):
+    obj = _owned(db, user, ConstructionObject, body.object_id, "Объект")
+    return csvc._jsonable(wsvc.m29(db, user.organization_id, obj.id, body.period_start, body.period_end))
+
+
+@router.post("/materials/m29", response_model=DocumentOut, status_code=201)
+def m29_create(body: ObjectPeriodIn, db: Session = Depends(get_db), user: User = Depends(require("documents:write"))):
+    obj = _owned(db, user, ConstructionObject, body.object_id, "Объект")
+    doc, _ = csvc.create_m29(db, get_storage(), user.organization_id, obj.id, body.period_start, body.period_end,
+                             actor=f"user:{user.id}", signer=user.full_name)
+    db.commit()
+    return doc
+
+
+@router.post("/materials/write-off", response_model=DocumentOut, status_code=201)
+def writeoff(body: ObjectPeriodIn, db: Session = Depends(get_db), user: User = Depends(require("documents:write"))):
+    obj = _owned(db, user, ConstructionObject, body.object_id, "Объект")
+    try:
+        doc, _ = csvc.create_writeoff(db, get_storage(), user.organization_id, obj.id, body.period_start,
+                                      body.period_end, actor=f"user:{user.id}", commission=body.commission)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    db.commit()
+    return doc
+
+
+class ClosingIn(PeriodIn):
+    only_confirmed: bool = True
+
+
+@router.post("/contracts/{contract_id}/closing/check")
+def closing_check(contract_id: uuid.UUID, body: ClosingIn, db: Session = Depends(get_db),
+                  user: User = Depends(require("registry:read"))):
+    c = _owned(db, user, Contract, contract_id, "Договор")
+    return csvc._jsonable(wsvc.closing_check(db, c, body.period_start, body.period_end, only_confirmed=body.only_confirmed))
+
+
+@router.post("/contracts/{contract_id}/closing/ks2", status_code=201)
+def create_ks2(contract_id: uuid.UUID, body: ClosingIn, db: Session = Depends(get_db),
+               user: User = Depends(require("documents:write"))):
+    c = _owned(db, user, Contract, contract_id, "Договор")
+    try:
+        res = csvc.create_ks2_ks3(db, get_storage(), c, body.period_start, body.period_end, actor=f"user:{user.id}",
+                                  only_confirmed=body.only_confirmed)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    db.commit()
+    return {"ks2": DocumentOut.model_validate(res["ks2"]), "ks3": DocumentOut.model_validate(res["ks3"]),
+            "total": float(res["check"]["total"]), "vat": float(res["check"]["vat"]), "issues": res["check"]["issues"]}

@@ -200,3 +200,76 @@ class MemoryOut(ORM):
     source: str | None
     is_active: bool
     created_at: datetime
+
+
+class EstimateItemIn(BaseModel):
+    contract_id: uuid.UUID
+    object_id: uuid.UUID | None = None
+    ord: int = 0
+    section: str | None = None
+    code: str | None = None
+    name: str
+    unit: str
+    quantity: Decimal
+    unit_price: Decimal | None = None
+    requires_aosr: bool = False
+
+
+class ScheduleTaskIn(BaseModel):
+    object_id: uuid.UUID
+    estimate_item_id: uuid.UUID | None = None
+    name: str
+    planned_start: dt.date
+    planned_end: dt.date
+    planned_quantity: Decimal | None = None
+    unit: str | None = None
+    responsible_id: uuid.UUID | None = None
+    ord: int = 0
+
+
+class WorkVolumeIn(BaseModel):
+    object_id: uuid.UUID
+    estimate_item_id: uuid.UUID
+    date: dt.date
+    quantity: Decimal
+    location: str | None = None
+    status: str = "reported"
+    aosr_document_id: uuid.UUID | None = None
+    note: str | None = None
+
+
+class MaterialIn(BaseModel):
+    name: str
+    unit: str
+    code: str | None = None
+    category: str | None = None
+
+
+class MaterialNormIn(BaseModel):
+    estimate_item_id: uuid.UUID
+    material_id: uuid.UUID
+    rate: Decimal
+    loss_percent: Decimal = Decimal(0)
+    source: str | None = None
+
+
+class MaterialReceiptIn(BaseModel):
+    object_id: uuid.UUID
+    material_id: uuid.UUID
+    date: dt.date
+    quantity: Decimal
+    price: Decimal | None = None
+    supplier_id: uuid.UUID | None = None
+    contract_id: uuid.UUID | None = None
+    document_ref: str | None = None
+    quality_doc: str | None = None
+    is_customer_supplied: bool = False
+
+
+class MaterialUsageIn(BaseModel):
+    object_id: uuid.UUID
+    material_id: uuid.UUID
+    estimate_item_id: uuid.UUID | None = None
+    date: dt.date
+    quantity: Decimal
+    note: str | None = None

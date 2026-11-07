@@ -172,6 +172,10 @@ def approve_document(db: Session, doc: Document, user: User) -> Document:
     doc.approved_by_id = user.id
     doc.approved_at = datetime.now(UTC)
     doc.reject_reason = None
+    if doc.kind == "ks2":
+        from bis.services.works import on_ks2_status
+
+        on_ks2_status(db, doc, "approved")
     audit(db, doc.organization_id, actor_type="user", actor=str(user.id), action="document.approve",
           entity_type="document", entity_id=doc.id)
     return doc
@@ -180,6 +184,10 @@ def approve_document(db: Session, doc: Document, user: User) -> Document:
 def reject_document(db: Session, doc: Document, user: User, reason: str) -> Document:
     doc.status = "rejected"
     doc.reject_reason = reason
+    if doc.kind == "ks2":
+        from bis.services.works import on_ks2_status
+
+        on_ks2_status(db, doc, "rejected")
     audit(db, doc.organization_id, actor_type="user", actor=str(user.id), action="document.reject",
           entity_type="document", entity_id=doc.id, details={"reason": reason})
     # Обучение на замечаниях: причина отклонения становится правилом для агента, создавшего черновик.

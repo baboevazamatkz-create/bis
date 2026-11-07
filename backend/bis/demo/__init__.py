@@ -118,6 +118,8 @@ def seed_demo(db: Session, storage: Storage, embedder: Embedder) -> Organization
                  kind="contract", title="Договор генподряда № ГП-01/2026", document_id=doc.id)
     analyze_contract(db, storage, None, general, actor="system:demo")
 
+    _seed_works(db, org.id, obj.id, general.id, responsible_id)
+
     has_demo_norm = db.scalar(select(KnowledgeSource).where(KnowledgeSource.designation == "ДЕМО-СП 999.13330.2026"))
     if not has_demo_norm:
         data = (Path(__file__).parent / "demo_sp.txt").read_bytes()
@@ -126,3 +128,65 @@ def seed_demo(db: Session, storage: Storage, embedder: Embedder) -> Organization
                      designation="ДЕМО-СП 999.13330.2026", status="active")
     db.flush()
     return org
+
+
+def _seed_works(db: Session, org_id, object_id, contract_id, responsible_id) -> None:
+    """Смета, ГПР, материалы, нормы, приход, расход и объёмы за май 2026 — для демонстрации учёта и закрытия."""
+    from decimal import Decimal as D
+
+    from bis.models import (
+        EstimateItem,
+        Material,
+        MaterialNorm,
+        MaterialReceipt,
+        MaterialUsage,
+        ScheduleTask,
+        WorkVolume,
+    )
+
+    items_spec = [
+        ("1.1", "Устройство бетонной подготовки под фундаментную плиту, бетон B7,5", "м3", "120", "6500", True),
+        ("1.2", "Армирование фундаментной плиты Пм1", "т", "85", "98000", True),
+        ("1.3", "Бетонирование фундаментной плиты Пм1, бетон B25 W8", "м3", "1450", "9800", False),
+        ("1.4", "Гидроизоляция фундаментной плиты", "м2", "2100", "1250", True),
+        ("1.5", "Обратная засыпка пазух котлована с уплотнением", "м3", "3200", "450", True),
+    ]
+    items = []
+    for i, (code, name, unit, qty, price, hidden) in enumerate(items_spec, 1):
+        it = EstimateItem(organization_id=org_id, contract_id=contract_id, object_id=object_id, ord=i,
+                          section="Раздел 1. Фундаменты", code=code, name=name, unit=unit, quantity=D(qty),
+                          unit_price=D(price), requires_aosr=hidden)
+        db.add(it)
+        items.append(it)
+    db.flush()
+    plan = [(0, date(2026, 5, 4), date(2026, 5, 10)), (1, date(2026, 5, 11), date(2026, 6, 10)),
+            (2, date(2026, 5, 18), date(2026, 6, 30)), (3, date(2026, 6, 15), date(2026, 7, 15)),
+            (4, date(2026, 7, 1), date(2026, 8, 15))]
+    for n, (idx, start, end) in enumerate(plan, 1):
+        db.add(ScheduleTask(organization_id=org_id, object_id=object_id, estimate_item_id=items[idx].id,
+                            name=items[idx].name, planned_start=start, planned_end=end, planned_quantity=items[idx].quantity,
+                            unit=items[idx].unit, responsible_id=responsible_id, ord=n))
+    mats = {}
+    for key, name, unit, code in [("b25", "Бетон B25 W8 F150", "м3", "00-001"), ("b75", "Бетон B7,5", "м3", "00-002"),
+                                  ("a500", "Арматура А500С", "т", "00-010"), ("membrane", "Мембрана гидроизоляционная ПВХ", "м2", "00-020"),
+                                  ("sand", "Песок средней крупности", "м3", "00-030")]:
+        mats[key] = Material(organization_id=org_id, name=name, unit=unit, code=code, category="Основные материалы")
+        db.add(mats[key])
+    db.flush()
+    for idx, key, rate, loss in [(0, "b75", "1", "1.5"), (1, "a500", "1", "2"), (2, "b25", "1", "1.5"),
+                                 (3, "membrane", "1.15", "0"), (4, "sand", "1.15", "0")]:
+        db.add(MaterialNorm(organization_id=org_id, estimate_item_id=items[idx].id, material_id=mats[key].id,
+                            rate=D(rate), loss_percent=D(loss), source="Норма компании (демо)"))
+    for key, qty, price, ref, day in [("b75", "125", "5600", "УПД № 101 от 05.05.2026", 5), ("b25", "620", "7200", "УПД № 214 от 20.05.2026", 20),
+                                      ("a500", "45", "72000", "УПД № 88 от 12.05.2026", 12)]:
+        db.add(MaterialReceipt(organization_id=org_id, object_id=object_id, material_id=mats[key].id, date=date(2026, 5, day),
+                               quantity=D(qty), price=D(price), document_ref=ref, quality_doc="Документ о качестве (демо)"))
+    for key, qty, day in [("b75", "121", 8), ("b25", "625", 28)]:
+        db.add(MaterialUsage(organization_id=org_id, object_id=object_id, material_id=mats[key].id, date=date(2026, 5, day),
+                             quantity=D(qty), note="Отчёт прораба (демо)"))
+    for idx, qty, day, status, loc in [(0, "60", 6, "confirmed", "оси 1-5/А-В"), (0, "60", 8, "confirmed", "оси 5-9/А-В"),
+                                       (2, "300", 22, "confirmed", "захватка 1"), (2, "300", 28, "confirmed", "захватка 2"),
+                                       (1, "40", 25, "reported", "захватки 1-2")]:
+        db.add(WorkVolume(organization_id=org_id, object_id=object_id, estimate_item_id=items[idx].id,
+                          date=date(2026, 5, day), quantity=D(qty), location=loc, status=status, reported_by="Демо"))
+    db.flush()

@@ -17,6 +17,15 @@ from bis.models.core import (
     User,
 )
 from bis.models.knowledge import KnowledgeChunk, KnowledgeSource
+from bis.models.works import (
+    EstimateItem,
+    Material,
+    MaterialNorm,
+    MaterialReceipt,
+    MaterialUsage,
+    ScheduleTask,
+    WorkVolume,
+)
 
 __all__ = [
     "Appointment",
@@ -30,6 +39,13 @@ __all__ = [
     "Counterparty",
     "Document",
     "DocumentTemplate",
+    "EstimateItem",
+    "Material",
+    "MaterialNorm",
+    "MaterialReceipt",
+    "MaterialUsage",
+    "ScheduleTask",
+    "WorkVolume",
     "JobRun",
     "Notification",
     "Task",

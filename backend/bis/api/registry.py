@@ -14,10 +14,17 @@ from bis.api.schemas import (
     AppointmentIn,
     ContractIn,
     CounterpartyIn,
+    EstimateItemIn,
+    MaterialIn,
+    MaterialNormIn,
+    MaterialReceiptIn,
+    MaterialUsageIn,
     ObjectIn,
     ObligationIn,
     PersonIn,
+    ScheduleTaskIn,
     TaskIn,
+    WorkVolumeIn,
     partial,
     read_model,
 )
@@ -28,9 +35,17 @@ from bis.models import (
     Contract,
     ContractObligation,
     Counterparty,
+    Document,
+    EstimateItem,
+    Material,
+    MaterialNorm,
+    MaterialReceipt,
+    MaterialUsage,
     Person,
+    ScheduleTask,
     Task,
     User,
+    WorkVolume,
 )
 from bis.services.audit import audit
 
@@ -44,6 +59,10 @@ FK_MODELS: dict[str, Any] = {
     "responsible_id": Person,
     "assignee_person_id": Person,
     "assignee_user_id": User,
+    "estimate_item_id": EstimateItem,
+    "material_id": Material,
+    "supplier_id": Counterparty,
+    "aosr_document_id": Document,
 }
 
 
@@ -133,4 +152,16 @@ routers = [
                 filters=("contract_id", "status", "party")),
     crud_router("/tasks", Task, TaskIn, ("title", "description"), "task",
                 filters=("status", "assignee_person_id", "assignee_user_id", "object_id")),
+    crud_router("/estimate-items", EstimateItem, EstimateItemIn, ("name", "code", "section"), "estimate_item",
+                filters=("contract_id", "object_id")),
+    crud_router("/schedule", ScheduleTask, ScheduleTaskIn, ("name",), "schedule_task", filters=("object_id",)),
+    crud_router("/volumes", WorkVolume, WorkVolumeIn, ("location", "note"), "work_volume",
+                filters=("object_id", "estimate_item_id", "status")),
+    crud_router("/materials", Material, MaterialIn, ("name", "code"), "material"),
+    crud_router("/material-norms", MaterialNorm, MaterialNormIn, (), "material_norm",
+                filters=("estimate_item_id", "material_id")),
+    crud_router("/material-receipts", MaterialReceipt, MaterialReceiptIn, ("document_ref",), "material_receipt",
+                filters=("object_id", "material_id")),
+    crud_router("/material-usage", MaterialUsage, MaterialUsageIn, ("note",), "material_usage",
+                filters=("object_id", "material_id")),
 ]
