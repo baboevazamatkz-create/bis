@@ -25,7 +25,9 @@ _state: dict[str, Any] = {"cad": None}
 
 
 def _cad() -> bridge.Backend:
-    if _state["cad"] is None:
+    """Подключение при каждом обращении, пока работаем в DXF: CAD могли запустить позже."""
+    cad = _state["cad"]
+    if cad is None or (cad.name == "dxf" and not _state.get("dxf_forced") and cad.count() == 0):
         _state["cad"] = bridge.connect("auto")
     return _state["cad"]
 
@@ -43,6 +45,7 @@ def status() -> dict:
 def connect(target: str = "auto") -> dict:
     """target: auto | autocad | nanocad | dxf"""
     _state["cad"] = bridge.connect(target)
+    _state["dxf_forced"] = target == "dxf"
     return status()
 
 
