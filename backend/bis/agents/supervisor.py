@@ -38,9 +38,13 @@ class Supervisor:
         if scores:
             best = max(scores.values())
             top = sorted((n for n, s in scores.items() if s == best), key=lambda n: -self.agents[n].priority)
+            top_priority = self.agents[top[0]].priority
+            top = [n for n in top if self.agents[n].priority == top_priority]  # исполнитель важнее справочного агента
             if len(top) == 1:
                 return top[0], "по ключевым словам"
-            chosen = self._llm_route(text, gateway, top)
+            # несколько разных исполнителей — возможно, составная задача: оркестратор тоже кандидат
+            candidates = top + ([self.default] if len(top) > 1 and self.default not in top else [])
+            chosen = self._llm_route(text, gateway, candidates)
             return (chosen, "моделью") if chosen else (top[0], "по ключевым словам (неоднозначно)")
         chosen = self._llm_route(text, gateway, list(self.agents))
         return (chosen, "моделью") if chosen else (self.default, "по умолчанию")

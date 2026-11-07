@@ -41,6 +41,12 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("run-jobs", help="Однократно выполнить фоновые задачи (для cron)")
     p.add_argument("names", nargs="*")
 
+    p = sub.add_parser("eval", help="Оценка качества поиска, маршрутизации и ответов на наборе вопросов")
+    p.add_argument("cases", type=Path, nargs="?", help="JSON-набор; по умолчанию демо-набор")
+    p.add_argument("--org-inn", required=True)
+    p.add_argument("--k", type=int, default=5)
+    p.add_argument("--answers", action="store_true", help="Проверять ответы агентов (нужна модель)")
+
     p = sub.add_parser("serve", help="Запустить API")
     p.add_argument("--host", default="0.0.0.0")
     p.add_argument("--port", type=int, default=8000)
@@ -97,6 +103,38 @@ def main(argv: list[str] | None = None) -> int:
                                              platform_admin=args.platform_admin)
             db.commit()
             print(f"Создана организация {org.name} ({org.id}), администратор {admin.email}")
+        elif args.cmd == "eval":
+            import json as _json
+
+            from bis.evals import EvalCase, run_eval
+            from bis.llm.gateway import get_gateway
+            from bis.plugins.sdk import get_registry
+
+            org = db.scalar(select(Organization).where(Organization.inn == args.org_inn))
+            if org is None:
+                print(f"Организация с ИНН {args.org_inn} не найдена", file=sys.stderr)
+                return 1
+            path = args.cases or Path(__file__).parent / "demo" / "eval_demo.json"
+            cases = [EvalCase.model_validate(c) for c in _json.loads(path.read_text(encoding="utf-8"))]
+            sup = get_registry().supervisor()
+            answer_fn = None
+            if args.answers:
+                from bis.agents.base import AgentContext
+                from bis.models import User
+
+                admin = db.scalar(select(User).where(User.organization_id == org.id, User.role == "admin"))
+                reg = get_registry()
+
+                def answer_fn(q: str) -> str:
+                    ctx = AgentContext(db=db, org_id=org.id, user=admin, gateway=get_gateway(), embedder=get_embedder(),
+                                       storage=get_storage(), agents=reg.agents, tool_registry=reg.tools)
+                    name, _ = sup.route(q, get_gateway())
+                    return reg.agents[name].run(ctx, reg.tools, [], q).text
+
+            report = run_eval(db, get_embedder(), org.id, cases, k=args.k, answer_fn=answer_fn,
+                              route_fn=lambda q: sup.route(q)[0])
+            db.rollback()  # оценка не меняет данные
+            print(_json.dumps(report, ensure_ascii=False, indent=2, default=str))
         elif args.cmd == "ingest":
             from bis.rag.ingest import ingest_bytes
 

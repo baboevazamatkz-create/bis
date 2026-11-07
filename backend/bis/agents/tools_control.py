@@ -287,3 +287,32 @@ def process_incoming_letter(ctx: AgentContext, args: DocumentArgs) -> dict:
 
 CONTROL_TOOLS = [get_document, process_incoming_letter, find_persons, get_contract_details, analyze_contract, list_obligations, update_obligation,
                  calc_penalty_tool, list_tasks, create_task, update_task]
+
+
+class DelegateArgs(BaseModel):
+    agent: str = Field(description="Имя агента: norms, secretary, pto, contracts, control, works, materials, closing, "
+                       "cad, project")
+    task: str = Field(description="Самодостаточное задание для агента со всеми нужными данными")
+
+
+@tool("delegate_to_agent", "Передать часть задачи профильному агенту и получить результат (для составных задач).")
+def delegate_to_agent(ctx: AgentContext, args: DelegateArgs) -> dict:
+    if ctx.depth >= 1:
+        raise ValueError("Повторное делегирование запрещено — выполни задачу сам")
+    if not ctx.agents or args.agent not in ctx.agents:
+        raise LookupError(f"Агент «{args.agent}» не найден")
+    caller = ctx.agent_name
+    sub = ctx.agents[args.agent]
+    if sub.name == caller:
+        raise ValueError("Нельзя делегировать самому себе")
+    ctx.depth += 1
+    try:
+        result = sub.run(ctx, ctx.tool_registry, [], args.task)
+    finally:
+        ctx.depth -= 1
+        ctx.agent_name = caller
+    return {"agent": sub.name, "title": sub.title, "answer": result.text,
+            "documents": [d for d in result.documents]}
+
+
+CONTROL_TOOLS.append(delegate_to_agent)

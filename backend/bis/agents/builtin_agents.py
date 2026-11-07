@@ -8,9 +8,12 @@ NORMS = Agent(
     name="norms",
     title="Нормоконтроль",
     description="Вопросы по нормативам: СП, ГОСТ, СНиП, приказы; требования, допуски, ссылки на пункты.",
-    keywords=r"\bсп\b|гост|снип|санпин|норматив|норм[аы]?\b|требовани|допуск|допустим|свод[а-я]* правил|пункт",
+    keywords=r"\bсп\b|гост|снип|санпин|норматив|норм[аы]?\b|требовани|допуск|допустим|свод[а-я]* правил|пункт|"
+             r"засыпк|бетон|арматур|армирова|опалубк|кладк|сварн|гидроизоляц|грунт|уплотнени",
     tools=["search_knowledge"],
     priority=1,
+    require_citations=True,
+    verify=True,
     instructions="""Отвечай на вопросы о нормативных требованиях только на основании найденных фрагментов.
 Порядок:
 1. Вызови search_knowledge (scope=norms); при необходимости уточни запрос и повтори поиск.
@@ -27,7 +30,7 @@ SECRETARY = Agent(
     keywords=r"письм|ответ[а-я]* на|исходящ|входящ|обращени|уведомлени|сопроводительн|корреспонденц",
     tools=["search_knowledge", "find_counterparties", "find_objects", "find_contracts", "list_documents", "get_document",
            "process_incoming_letter", "get_organization_info", "create_letter_draft", "find_persons", "list_tasks",
-           "create_task", "update_task"],
+           "create_task", "update_task", "delegate_to_agent"],
     priority=2,
     instructions="""Ведёшь корреспонденцию организации по ГОСТ Р 7.0.97-2016.
 Входящие:
@@ -63,12 +66,17 @@ PTO = Agent(
 ASSISTANT = Agent(
     name="assistant",
     title="Помощник",
-    description="Общие вопросы по данным компании: объекты, договоры, документы, поиск по базе знаний.",
+    description="Общие вопросы по данным компании и составные задачи из нескольких действий (оркестратор).",
     tools=["search_knowledge", "find_objects", "find_counterparties", "find_contracts", "list_documents",
-           "get_organization_info"],
-    instructions="""Помогаешь сотрудникам находить информацию в данных компании и базе знаний.
-Используй инструменты поиска; отвечай со ссылками [n] на найденные фрагменты. Если вопрос относится к подготовке
-письма или исполнительной документации — подскажи, что это сделает агент «Секретарь» или «ПТО».""",
+           "get_organization_info", "list_tasks", "delegate_to_agent"],
+    require_citations=True,
+    instructions="""Помогаешь сотрудникам и координируешь профильных агентов.
+- Простые вопросы по данным — отвечай сам инструментами поиска, со ссылками [n].
+- Составная задача (например, «оформи АОСР и отправь заказчику письмо») — разбей на шаги и по очереди передай
+  их агентам delegate_to_agent (pto — АОСР и ИД, secretary — письма, contracts — договоры и претензии,
+  closing — КС-2/КС-3, materials — материалы и М-29, works — объёмы и план-факт, cad — схемы, project — ПД).
+  В задание включай все данные из предыдущих шагов (номера документов, суммы, даты).
+- В итоге кратко перечисли, что сделано каждым агентом, и какие документы ждут утверждения.""",
 )
 
 CONTRACTS = Agent(
@@ -79,7 +87,8 @@ CONTRACTS = Agent(
     priority=2,
     tools=["find_contracts", "get_contract_details", "analyze_contract", "list_obligations", "update_obligation",
            "calc_penalty", "find_counterparties", "find_persons", "search_knowledge", "get_organization_info",
-           "create_letter_draft", "create_task"],
+           "create_letter_draft", "create_task", "delegate_to_agent"],
+    verify=True,
     instructions="""Ведёшь договорную работу строительной организации.
 - Карточка договора и обязательства — get_contract_details; если обязательств нет, а файл есть — analyze_contract.
 - Риски объясняй со ссылкой на пункт договора и предлагай формулировку протокола разногласий.

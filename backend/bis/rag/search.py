@@ -16,6 +16,7 @@ from bis.config import get_settings
 from bis.models import KnowledgeChunk, KnowledgeSource
 from bis.rag.chunking import parse_reference
 from bis.rag.embeddings import Embedder
+from bis.rag.thesaurus import expand, org_terms
 
 _TOKEN_RE = re.compile(r"[а-яёa-z]{3,}|\d+", re.IGNORECASE)
 RRF_K = 60
@@ -66,7 +67,7 @@ def build_tsquery(query: str) -> str | None:
     for t in _TOKEN_RE.findall(query.lower()):
         if t not in tokens:
             tokens.append(t)
-    return " | ".join(tokens[:30]) or None
+    return " | ".join(tokens[:40]) or None
 
 
 def _base_filter(stmt: Select, org_id: uuid.UUID | None, kinds: list[str] | None, include_global: bool,
@@ -121,8 +122,10 @@ def hybrid_search(
     pool = max(k * 4, 20)
     flt = dict(org_id=org_id, kinds=kinds, include_global=include_global, only_active=only_active, source_ids=source_ids)
     ranked: list[list[tuple[KnowledgeChunk, KnowledgeSource]]] = []
+    weights: list[float] = []
 
     qvec = embedder.embed_query(query)
+    expansions = expand(query, org_terms(db, org_id))
 
     # 1. Точная ссылка на пункт
     designation, clause = parse_reference(query)
@@ -136,23 +139,30 @@ def hybrid_search(
         else:
             stmt = stmt.order_by(KnowledgeChunk.embedding.cosine_distance(qvec)).limit(pool)
             ranked.append(list(db.execute(stmt).all()))
+        weights.append(3.0)
 
-    # 2. Векторный поиск
-    stmt = _base_filter(select(KnowledgeChunk, KnowledgeSource), **flt).where(KnowledgeChunk.embedding.is_not(None))
-    stmt = stmt.order_by(KnowledgeChunk.embedding.cosine_distance(qvec)).limit(pool)
-    ranked.append(list(db.execute(stmt).all()))
+    # 2. Векторный поиск: исходный запрос и запрос, расширенный терминами тезауруса
+    vectors = [(qvec, 1.0)]
+    if expansions:
+        vectors.append((embedder.embed_query(query + ". " + "; ".join(expansions)), 0.7))
+    for vec, weight in vectors:
+        stmt = _base_filter(select(KnowledgeChunk, KnowledgeSource), **flt).where(KnowledgeChunk.embedding.is_not(None))
+        stmt = stmt.order_by(KnowledgeChunk.embedding.cosine_distance(vec)).limit(pool)
+        ranked.append(list(db.execute(stmt).all()))
+        weights.append(weight)
 
-    # 3. Полнотекстовый поиск
-    tsq_text = build_tsquery(query)
+    # 3. Полнотекстовый поиск (с синонимами)
+    tsq_text = build_tsquery(" ".join([query, *expansions]))
     if tsq_text:
         tsq = func.to_tsquery("russian", tsq_text)
         stmt = _base_filter(select(KnowledgeChunk, KnowledgeSource), **flt).where(KnowledgeChunk.tsv.op("@@")(tsq))
         stmt = stmt.order_by(func.ts_rank_cd(KnowledgeChunk.tsv, tsq).desc()).limit(pool)
         ranked.append(list(db.execute(stmt).all()))
+        weights.append(1.0)
 
     scores: dict[uuid.UUID, float] = {}
     rows: dict[uuid.UUID, tuple[KnowledgeChunk, KnowledgeSource]] = {}
-    for weight, lst in zip(_weights(len(ranked), bool(designation)), ranked, strict=True):
+    for weight, lst in zip(weights, ranked, strict=True):
         for rank, (chunk, src) in enumerate(lst):
             scores[chunk.id] = scores.get(chunk.id, 0.0) + weight / (RRF_K + rank + 1)
             rows[chunk.id] = (chunk, src)
@@ -166,12 +176,6 @@ def hybrid_search(
     for i, h in enumerate(hits, 1):
         h.n = i
     return hits
-
-
-def _weights(n: int, has_reference: bool) -> list[float]:
-    if has_reference:
-        return [3.0] + [1.0] * (n - 1)
-    return [1.0] * n
 
 
 def rerank(query: str, hits: list[SearchHit]) -> list[SearchHit]:

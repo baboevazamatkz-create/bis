@@ -1,0 +1,12 @@
+[
+  {"question": "Какой толщиной слоями выполнять засыпку пазух?", "expect_citation": "ДЕМО-СП 999.13330.2026, п. 3.1.2", "expect_agent": "norms", "scope": "norms"},
+  {"question": "Когда можно снимать несущую опалубку?", "expect_citation": "ДЕМО-СП 999.13330.2026, п. 4.1.2", "scope": "norms"},
+  {"question": "Допуск толщины защитного слоя бетона", "expect_citation": "ДЕМО-СП 999.13330.2026, п. 4.2.2", "expect_agent": "norms", "scope": "norms"},
+  {"question": "Сколько дней ухаживать за бетоном?", "expect_citation": "ДЕМО-СП 999.13330.2026, п. 4.3.2", "scope": "norms"},
+  {"question": "Что предъявляют при приемке работ?", "expect_citation": "ДЕМО-СП 999.13330.2026, п. 5.1", "scope": "norms"},
+  {"question": "Нужен ли АОСР на армирование перед бетонированием?", "expect_citation": "ДЕМО-СП 999.13330.2026, п. 4.2.3", "expect_agent": "pto", "scope": "norms"},
+  {"question": "Высота сбрасывания бетонной смеси для колонн", "expect_citation": "ДЕМО-СП 999.13330.2026, п. 4.3.1", "scope": "norms"},
+  {"question": "Посчитай неустойку по договору генподряда за просрочку", "expect_agent": "contracts"},
+  {"question": "Сформируй КС-2 за май", "expect_agent": "closing"},
+  {"question": "Какой перерасход бетона за май?", "expect_agent": "materials"}
+]

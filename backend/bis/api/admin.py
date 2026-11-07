@@ -103,3 +103,20 @@ def audit_log(limit: int = 200, db: Session = Depends(get_db), user: User = Depe
                       .order_by(AuditLog.created_at.desc()).limit(min(limit, 1000)))
     return [{"created_at": r.created_at, "actor_type": r.actor_type, "actor": r.actor, "action": r.action,
              "entity_type": r.entity_type, "entity_id": r.entity_id, "details": r.details} for r in rows]
+
+
+@router.post("/evals/run")
+def run_evals(cases: list[dict] | None = None, k: int = 5, db: Session = Depends(get_db),
+              user: User = Depends(require("audit:read"))):
+    """Оценка поиска и маршрутизации на наборе вопросов (по умолчанию — демо-набор)."""
+    import json
+    from pathlib import Path
+
+    from bis.evals import EvalCase, run_eval
+    from bis.rag.embeddings import get_embedder
+
+    if not cases:
+        cases = json.loads((Path(__file__).parents[1] / "demo" / "eval_demo.json").read_text(encoding="utf-8"))
+    parsed = [EvalCase.model_validate(c) for c in cases]
+    sup = get_registry().supervisor()
+    return run_eval(db, get_embedder(), user.organization_id, parsed, k=k, route_fn=lambda q: sup.route(q)[0])

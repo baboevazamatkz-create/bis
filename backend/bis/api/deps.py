@@ -47,7 +47,10 @@ def require(scope: str) -> Callable[..., User]:
 
 
 def agent_context(db: Session, user: User) -> AgentContext:
+    from bis.plugins.sdk import get_registry
+
+    reg = get_registry()
     return AgentContext(
         db=db, org_id=user.organization_id, user=user, gateway=get_gateway(), embedder=get_embedder(),
-        storage=get_storage(),
+        storage=get_storage(), agents=reg.agents, tool_registry=reg.tools,
     )

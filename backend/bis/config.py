@@ -82,6 +82,16 @@ class Settings(BaseSettings):
     # Уведомления в Telegram (бот организации); chat_id задаётся у пользователя
     telegram_bot_token: str | None = None
 
+    # Голос (OpenAI-совместимые серверы в закрытом контуре)
+    stt_url: str | None = None  # например http://stt:8000/v1 (faster-whisper / speaches)
+    stt_model: str = "Systran/faster-whisper-large-v3"
+    stt_language: str = "ru"
+    stt_api_key: str | None = None
+    tts_url: str | None = None
+    tts_model: str = "tts-1"
+    tts_voice: str = "alloy"
+    tts_api_key: str | None = None
+
     # Конвертация DXF → DWG (путь к ODA File Converter, необязательно)
     oda_converter: str | None = None
 
