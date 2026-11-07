@@ -8,13 +8,14 @@ from typing import Any
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import Computed, Date, DateTime, ForeignKey, Index, Integer, String, Text, func
-from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, REAL, TSVECTOR, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from bis.config import get_settings
 from bis.db import Base, IdMixin
 
 EMBEDDING_DIM = get_settings().embedding_dim
+VECTOR = get_settings().vector_enabled
 
 
 class KnowledgeSource(IdMixin, Base):
@@ -45,12 +46,8 @@ class KnowledgeChunk(IdMixin, Base):
     __tablename__ = "knowledge_chunks"
     __table_args__ = (
         Index("ix_knowledge_chunks_tsv", "tsv", postgresql_using="gin"),
-        Index(
-            "ix_knowledge_chunks_embedding",
-            "embedding",
-            postgresql_using="hnsw",
-            postgresql_ops={"embedding": "vector_cosine_ops"},
-        ),
+        *([Index("ix_knowledge_chunks_embedding", "embedding", postgresql_using="hnsw",
+                 postgresql_ops={"embedding": "vector_cosine_ops"})] if VECTOR else []),
     )
 
     source_id: Mapped[uuid.UUID] = mapped_column(
@@ -63,7 +60,7 @@ class KnowledgeChunk(IdMixin, Base):
     heading: Mapped[str | None] = mapped_column(Text)
     content: Mapped[str] = mapped_column(Text)
     page: Mapped[int | None] = mapped_column(Integer)
-    embedding: Mapped[list[float] | None] = mapped_column(Vector(EMBEDDING_DIM))
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(EMBEDDING_DIM) if VECTOR else ARRAY(REAL))
     tsv: Mapped[Any] = mapped_column(
         TSVECTOR,
         Computed(

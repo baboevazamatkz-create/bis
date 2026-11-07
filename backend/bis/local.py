@@ -33,7 +33,8 @@ def start_database(data_dir: Path) -> str:
     pg_dir = data_dir / "pg"
     pg_dir.mkdir(parents=True, exist_ok=True)
     server = pgserver.get_server(str(pg_dir), cleanup_mode="stop")
-    server.psql("CREATE EXTENSION IF NOT EXISTS vector;")
+    if os.environ.get("BIS_VECTOR_ENABLED", "false").lower() in ("1", "true", "yes"):
+        server.psql("CREATE EXTENSION IF NOT EXISTS vector;")
     uri = server.get_uri()
     return uri.replace("postgresql://", "postgresql+psycopg://", 1)
 
@@ -42,6 +43,8 @@ def prepare(workdir: Path) -> Path:
     """Окружение, база и миграции. Возвращает папку данных."""
     os.chdir(workdir)
     load_env(workdir / ".env")
+    # pgvector из встроенной сборки падает на части процессоров — по умолчанию поиск полнотекстовый
+    os.environ.setdefault("BIS_VECTOR_ENABLED", "false")
     data = Path(os.environ.get("BIS_DATA_DIR") or (workdir / "data"))
     os.environ["BIS_DATABASE_URL"] = start_database(data)
     os.environ.setdefault("BIS_STORAGE_DIR", str(data / "files"))

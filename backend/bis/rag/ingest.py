@@ -79,7 +79,10 @@ def index_pages(db: Session, embedder: Embedder, source: KnowledgeSource, pages:
     else:
         chunks = GenericChunker().chunk(pages)
     texts = [embedding_text(source.designation or source.title, c.section_path, c.heading, c.content) for c in chunks]
-    vectors = embedder.embed_documents(texts) if texts else []
+    from bis.models.knowledge import VECTOR
+
+    # без pgvector векторы не нужны: поиск полнотекстовый и по номерам пунктов
+    vectors = embedder.embed_documents(texts) if texts and VECTOR else [None] * len(texts)
     for c, vec in zip(chunks, vectors, strict=True):
         db.add(
             KnowledgeChunk(

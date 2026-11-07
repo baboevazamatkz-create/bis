@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from bis.config import get_settings
 from bis.models import KnowledgeChunk, KnowledgeSource
+from bis.models.knowledge import VECTOR
 from bis.rag.chunking import parse_reference
 from bis.rag.embeddings import Embedder
 from bis.rag.thesaurus import expand, org_terms
@@ -136,14 +137,16 @@ def hybrid_search(
         if clause:
             stmt = stmt.where(or_(KnowledgeChunk.clause == clause, KnowledgeChunk.clause.like(clause + ".%")))
             ranked.append(list(db.execute(stmt.order_by(KnowledgeChunk.ord).limit(5)).all()))
-        else:
+        elif VECTOR:
             stmt = stmt.order_by(KnowledgeChunk.embedding.cosine_distance(qvec)).limit(pool)
             ranked.append(list(db.execute(stmt).all()))
+        else:
+            ranked.append(list(db.execute(stmt.order_by(KnowledgeChunk.ord).limit(pool)).all()))
         weights.append(3.0)
 
     # 2. Векторный поиск: исходный запрос и запрос, расширенный терминами тезауруса
-    vectors = [(qvec, 1.0)]
-    if expansions:
+    vectors = [(qvec, 1.0)] if VECTOR else []
+    if expansions and VECTOR:
         vectors.append((embedder.embed_query(query + ". " + "; ".join(expansions)), 0.7))
     for vec, weight in vectors:
         stmt = _base_filter(select(KnowledgeChunk, KnowledgeSource), **flt).where(KnowledgeChunk.embedding.is_not(None))

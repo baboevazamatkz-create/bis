@@ -18,6 +18,15 @@ $Root = "C:\BIS"
 try { New-Item -ItemType Directory $Root -Force | Out-Null } catch { $Root = "C:\Users\Public\BIS"; New-Item -ItemType Directory $Root -Force | Out-Null }
 $App = Join-Path $Root "app"; $Venv = Join-Path $Root "venv"; $EnvFile = Join-Path $Root ".env"
 $Bis = Join-Path $Venv "Scripts\bis.exe"
+$Data = Join-Path $Root "data"; $Ready = Join-Path $Data ".ready"
+
+# Остановить BIS и встроенную базу, если запущены (обновление, прошлая неудачная попытка)
+Get-Process postgres, pg_ctl, bis -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "$Root*" } | Stop-Process -Force -ErrorAction SilentlyContinue
+Start-Sleep 2
+if ((Test-Path $Data) -and -not (Test-Path $Ready)) {
+  Write-Host "Удаляю недоустановленную базу от прошлой попытки..."
+  Remove-Item $Data -Recurse -Force
+}
 
 Say "1/6 Python 3.12"
 function Find-Python {
@@ -51,8 +60,8 @@ if (-not (Test-Path $Bis)) { & $Py -m venv $Venv }
 & (Join-Path $Venv "Scripts\python.exe") -m pip install -q (Join-Path $App "backend") pgserver imageio-ffmpeg
 if (-not (Test-Path $Bis)) { Write-Host "Не удалось установить BIS — пришлите текст ошибки выше." -ForegroundColor Red; return }
 
-$first = -not (Test-Path $EnvFile)
-if ($first) {
+$first = -not (Test-Path $Ready)
+if (-not (Test-Path $EnvFile)) {
   Say "4/6 Настройки"
   Write-Host "Вставляйте правой кнопкой мыши и нажимайте Enter."
   $key = (Read-Host "Секретный API-ключ Yandex AI Studio (AQVN...)").Trim()
@@ -90,6 +99,8 @@ if ($first) {
 } else {
   & $Bis local --dir $Root --setup
 }
+if ($LASTEXITCODE -ne 0) { Write-Host "База данных не подготовилась — пришлите текст выше." -ForegroundColor Red; return }
+New-Item -ItemType File $Ready -Force | Out-Null
 
 Say "6/6 Ярлык и запуск"
 $cmd = Join-Path $Root "BIS.cmd"

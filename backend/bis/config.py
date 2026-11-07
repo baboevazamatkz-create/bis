@@ -77,6 +77,8 @@ class Settings(BaseSettings):
     embedding_model: str = "BAAI/bge-m3"
     embedding_api_key: str | None = None
     embedding_dim: int = 1024
+    # pgvector: false — без векторного расширения (старые процессоры, встроенная БД): поиск полнотекстовый
+    vector_enabled: bool = True
     embedding_query_prefix: str = ""
     embedding_document_prefix: str = ""
 
