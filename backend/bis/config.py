@@ -92,6 +92,10 @@ class Settings(BaseSettings):
     llm_routes_json: str | None = None
 
     # Telegram-бот: приём фото, голосовых и документов с площадки, уведомления, решения по предложениям ИИ
+    # сводка дня руководителям и напоминание прорабам (местное время BIS)
+    digest_hour: int = 18
+    remind_hour: int = 16
+    digest_sunday: bool = False
     # вход без пароля с этого же компьютера (локальный запуск на время разработки)
     auto_login: bool = False
     telegram_bot_token: str | None = None

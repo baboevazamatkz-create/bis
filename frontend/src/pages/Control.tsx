@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import { Badge, date, Stat, useAsync } from "../components";
+import { Badge, date, PageHead, Stat, useAsync } from "../components";
 
 interface Summary {
   obligations_overdue: number;
@@ -31,6 +31,7 @@ export default function Control() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [contracts, setContracts] = useState<Record<string, string>>({});
+  const [digest, setDigest] = useState<string>("");
   const { run, Alerts } = useAsync();
 
   const load = () => {
@@ -44,6 +45,7 @@ export default function Control() {
     api<{ id: string; number: string }[]>("/contracts").then((rows) =>
       setContracts(Object.fromEntries(rows.map((c) => [c.id, c.number]))));
     api<Job[]>("/jobs").then(setJobs).catch(() => setJobs([]));
+    api<{ text: string }>("/control/digest").then((d) => setDigest(d.text)).catch(() => setDigest(""));
   };
   useEffect(load, []);
 
@@ -55,8 +57,10 @@ export default function Control() {
 
   return (
     <>
-      <h1>Контроль исполнения</h1>
+      <PageHead title="Контроль исполнения" hint={<>Сводка дня приходит руководителям в Telegram вечером (BIS_DIGEST_HOUR,
+        по умолчанию 18:00); прорабам, которые ничего не прислали, днём приходит напоминание (BIS_REMIND_HOUR, 16:00).</>} />
       <Alerts />
+      {digest && <pre className="panel digest">{digest}</pre>}
       {summary && (
         <div className="stats">
           <Stat label="Просрочено обязательств" value={summary.obligations_overdue} tone={summary.obligations_overdue ? "bad" : "ok"} />

@@ -27,6 +27,8 @@ class FakeBot:
         self.files = files or {}
         self.sent: list[dict] = []
         self.answers: list[dict] = []
+        self.documents: list[bytes] = []
+        self.actions: list[str] = []
         self.api = tg.TelegramAPI("T", "https://tg.test", client=httpx.Client(transport=httpx.MockTransport(self.handle)))
 
     def handle(self, request: httpx.Request) -> httpx.Response:
@@ -34,7 +36,12 @@ class FakeBot:
         if path.startswith("/file/botT/"):
             return httpx.Response(200, content=self.files[path.rsplit("/", 1)[-1]])
         method = path.rsplit("/", 1)[-1]
+        if method == "sendDocument":  # multipart: файл
+            self.documents.append(request.content)
+            return httpx.Response(200, json={"ok": True, "result": {"message_id": 2}})
         body = json.loads(request.content or b"{}")
+        if method == "sendChatAction":
+            self.actions.append(body["action"])
         if method == "getFile":
             return httpx.Response(200, json={"ok": True, "result": {"file_path": f"docs/{body['file_id']}"}})
         if method == "sendMessage":
@@ -151,3 +158,32 @@ def test_link_endpoint(client, auth, tg_token):
     r = client.post("/api/telegram/link", headers=auth).json()
     assert r["command"].startswith("/start ") and r["deep_link"].startswith("https://t.me/bis_demo_bot?start=")
     assert tg.parse_link_code(r["code"]) is not None
+
+
+def test_question_is_answered_with_documents(db, demo, monkeypatch):
+    """Вопрос прораба — не отчёт: ИИ отвечает и присылает найденные документы файлами (как TrunkText)."""
+    from bis.agents.base import AgentResult
+    from bis.models import ChatMessage, Document
+    from bis.plugins.sdk import get_registry
+
+    bot = FakeBot()
+    link(db, bot)
+    doc = db.scalars(select(Document).where(Document.organization_id == demo.id, Document.file_key.is_not(None))).first()
+    seen = {}
+
+    def fake_run(self, ctx, registry, history, text):
+        seen["question"], seen["agent"] = text, self.name
+        return AgentResult(text=f"Ответ по документу [{doc.title}](document:{doc.id}) **важно**", agent=self.name,
+                           documents=[{"id": str(doc.id), "title": doc.title}])
+
+    reg = get_registry()
+    monkeypatch.setattr(type(next(iter(reg.agents.values()))), "run", fake_run)
+    r = tg.handle_update(db, bot.api, msg(20, text="Какая марка бетона на плиту Пм1?"))
+    assert r.startswith("answer:") and r.endswith(":1")
+    assert seen["question"] == "Какая марка бетона на плиту Пм1?" and "typing" in bot.actions
+    assert bot.last == f"Ответ по документу {doc.title} важно" and len(bot.documents) == 1
+    assert not db.scalar(select(IntakeEvent).where(IntakeEvent.source == "telegram"))  # не ушло в разбор как отчёт
+    assert db.scalar(select(ChatMessage).where(ChatMessage.content == "Какая марка бетона на плиту Пм1?"))
+    tg.handle_update(db, bot.api, msg(21, text="/вопрос пришли АОСР на армирование"))
+    assert seen["question"] == "пришли АОСР на армирование"
+    assert tg.handle_update(db, bot.api, msg(22, text="Залили бетон плиты Пм1 — 300 м3")).startswith("event:")

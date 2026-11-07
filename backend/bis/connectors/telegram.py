@@ -14,6 +14,7 @@ import contextlib
 import hashlib
 import hmac
 import logging
+import re
 import struct
 import time
 import uuid
@@ -33,7 +34,14 @@ MAX_FILE = 20 * 1024 * 1024  # Bot API отдаёт ботам файлы до 2
 LINK_TTL = 15 * 60
 HELP = ("Пришлите с объекта фото, голосовое, документ (УПД, сертификат, протокол, письмо, съёмку) или текст — "
         "ИИ разберёт: внесёт объёмы и расход, приход материалов, привяжет сертификаты, соберёт АОСР, поставит поручения.\n"
-        "Команды: /объект <шифр> — объект для следующих сообщений; /ждут — что ждёт вашего решения; /помощь.")
+        "Спросите что угодно по объекту — «какая арматура на плиту Фм1?», «пришли АОСР на гидроизоляцию» — ИИ найдёт "
+        "в документах, ответит со ссылками и пришлёт файлы.\n"
+        "Команды: /объект <шифр> — объект для следующих сообщений; /ждут — что ждёт вашего решения; /вопрос <текст>; /помощь.")
+# вопрос, а не отчёт с площадки: знак вопроса или вопросительное/просительное слово в начале
+QUESTION = re.compile(r"\?\s*$|^\s*(?:/вопрос|/q)\b|^\s*(?:какой|какая|какое|какие|каков\w*|сколько|где|когда|кто|почему|"
+                      r"зачем|нужн[ао]? ли|можно ли|есть ли|найди|покажи|пришли|скинь|дай|открой|подскажи|напомни|"
+                      r"расскажи|объясни|проверь)\b", re.IGNORECASE)
+MAX_UPLOAD = 45 * 1024 * 1024  # бот может отправить файл до 50 МБ
 
 
 class TelegramError(Exception):
@@ -58,6 +66,19 @@ class TelegramAPI:
         if r.status_code != 200:
             raise TelegramError(f"Файл не получен: {r.status_code}")
         return r.content
+
+    def send_document(self, chat_id: str | int, data: bytes, filename: str, caption: str | None = None) -> Any:
+        r = self.client.post(f"{self.base}/bot{self.token}/sendDocument",
+                             data={k: v for k, v in {"chat_id": str(chat_id), "caption": (caption or "")[:1000]}.items() if v},
+                             files={"document": (filename, data)})
+        payload = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+        if r.status_code != 200 or not payload.get("ok"):
+            raise TelegramError(f"sendDocument: {payload.get('description') or r.status_code}")
+        return payload["result"]
+
+    def typing(self, chat_id: str | int) -> None:
+        with contextlib.suppress(Exception):
+            self.call("sendChatAction", chat_id=chat_id, action="typing")
 
     def send(self, chat_id: str | int, text: str, *, reply_to: int | None = None,
              buttons: list[list[dict[str, str]]] | None = None) -> Any:
@@ -214,12 +235,15 @@ def handle_update(db: Session, api: TelegramAPI, update: dict[str, Any], *, env_
                      buttons=_buttons(list(pending)) if has_scope(user.role, "documents:write") else None)
         return "pending"
 
+    info = _file_of(msg)
+    if not info and text and QUESTION.search(text):
+        return answer_question(db, api, user, chat_id, mid, re.sub(r"^\s*/(?:вопрос|q)\b\s*", "", text, flags=re.I))
+
     update_id = update.get("update_id")
     if update_id is not None and db.scalar(select(IntakeEvent.id).where(
             IntakeEvent.source == "telegram", IntakeEvent.result["telegram"]["update_id"].astext == str(update_id))):
         return "duplicate"
     data = file_name = mime = None
-    info = _file_of(msg)
     if info:
         file_id, file_name, mime, size = info
         if size > MAX_FILE:
@@ -245,6 +269,67 @@ def handle_update(db: Session, api: TelegramAPI, update: dict[str, Any], *, env_
     can_review = has_scope(user.role, "documents:write")
     api.send(chat_id, reply, reply_to=mid, buttons=_buttons(actions) if can_review else None)
     return f"event:{event.status}"
+
+
+_LINK = re.compile(r"\[([^\]]+)\]\([^)\s]+\)")
+
+
+def answer_question(db: Session, api: TelegramAPI, user: User, chat_id: str, mid: int | None, question: str) -> str:
+    """Вопрос с объекта → ИИ-специалист ищет в документах и данных, отвечает со ссылками и присылает файлы."""
+    from datetime import UTC, datetime, timedelta
+
+    from bis.api.deps import agent_context
+    from bis.llm.gateway import get_gateway
+    from bis.llm.types import Message
+    from bis.models import ChatMessage, ChatSession, Document
+    from bis.plugins.sdk import get_registry
+    from bis.services.storage import get_storage
+
+    if not question.strip():
+        api.send(chat_id, "Напишите вопрос: /вопрос какая арматура на плиту Фм1?", reply_to=mid)
+        return "question:empty"
+    if not has_scope(user.role, "knowledge:read"):
+        api.send(chat_id, "Недостаточно прав для поиска по документам.", reply_to=mid)
+        return "question:forbidden"
+    api.typing(chat_id)
+    session = db.scalar(select(ChatSession).where(ChatSession.user_id == user.id, ChatSession.title == "Telegram"))
+    if session is None:
+        session = ChatSession(organization_id=user.organization_id, user_id=user.id, title="Telegram")
+        db.add(session)
+        db.flush()
+    rows = db.scalars(select(ChatMessage).where(ChatMessage.session_id == session.id)
+                      .order_by(ChatMessage.created_at.desc()).limit(6)).all()
+    history = [Message(role=m.role, content=m.content) for m in reversed(rows)]
+    reg = get_registry()
+    agent_name, _ = reg.supervisor().route(question, get_gateway())
+    result = reg.agents[agent_name].run(agent_context(db, user), reg.tools, history, question)
+    now = datetime.now(UTC)
+    db.add(ChatMessage(session_id=session.id, role="user", content=question, created_at=now))
+    db.add(ChatMessage(session_id=session.id, role="assistant", content=result.text, agent=agent_name,
+                       created_at=now + timedelta(microseconds=1),
+                       meta={"citations": result.citations, "documents": result.documents, "source": "telegram"}))
+    db.commit()
+
+    text = _LINK.sub(r"\1", result.text).replace("**", "")
+    used = [c for c in result.citations if c.get("used")][:3]
+    if used:
+        text += "\n\nИсточники: " + "; ".join(c["citation"] for c in used)
+    api.send(chat_id, text, reply_to=mid)
+    sent = 0
+    storage = get_storage()
+    for ref in result.documents[:3]:  # найденные документы — файлами, как в ответе в веб-интерфейсе
+        doc = db.get(Document, uuid.UUID(ref["id"]))
+        if doc is None or not doc.file_key or doc.organization_id != user.organization_id:
+            continue
+        try:
+            data = storage.get(doc.file_key)
+            if len(data) > MAX_UPLOAD:
+                continue
+            api.send_document(chat_id, data, doc.file_name or f"{doc.title}.pdf", caption=doc.title)
+            sent += 1
+        except Exception as e:  # noqa: BLE001 — ответ уже отправлен, файл — дополнение
+            log.warning("Telegram: файл %s не отправлен: %s", doc.id, e)
+    return f"answer:{agent_name}:{sent}"
 
 
 def _default_env(db: Session, user: User) -> cv.Env:

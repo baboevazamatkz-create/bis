@@ -306,3 +306,4 @@ code { background: var(--track); padding: 1px 6px; border-radius: 4px; font-size
 .doc-chip { max-width: 100%; }
 .doc-chip-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 360px; }
 .bubble .link { padding: 0; font: inherit; }
+.digest { white-space: pre-wrap; font: inherit; line-height: 1.55; margin-top: 0; }
