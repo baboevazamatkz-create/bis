@@ -20,6 +20,13 @@ interface Snapshot {
   demo_period: [string, string];
   demo_contract_id: string;
   pd_doc_id: string | null;
+  ai?: {
+    events: Any[];
+    specialists: Any;
+    files: Record<string, { mime: string; data: string }>;
+    samples: { id: string; title: string; hint: string; event: Any }[];
+    sample_documents: Any[];
+  };
 }
 
 class DemoError extends Error {
@@ -247,6 +254,7 @@ function route_(path: string, method: string, body: Any): Any {
   const parts = p.split("/").filter(Boolean);
   const a = s.actions;
 
+  if (p.startsWith("/ai/") || p === "/intake" || p.startsWith("/telegram/")) return aiRoute(p, q, method, body);
   if (body instanceof FormData) {
     if (p === "/schemes/survey") return parseSurvey(body);
     if (p === "/voice/transcribe") throw new DemoError(503, "Распознавание речи не подключено в демо-версии");
@@ -350,6 +358,14 @@ async function parseSurvey(form: FormData): Promise<Any> {
 
 export async function mockBlob(path: string): Promise<Blob> {
   const s = snap();
+  if (path.startsWith("/intake/")) {
+    const f = s.ai?.files[path.split("/")[2]];
+    if (!f) throw new Error("Файл недоступен в демо-версии");
+    const bin = atob(f.data);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new Blob([bytes], { type: f.mime });
+  }
   const id = path.split("/")[2];
   const pv = s.previews[id];
   if (path.endsWith("/preview") && pv?.type === "svg") return new Blob([pv.content], { type: "image/svg+xml" });
@@ -363,4 +379,382 @@ export function previewFor(path: string): { type: "html" | "svg"; content: strin
   const pv = s.previews[id];
   if (!pv) return null;
   return { ...pv, title: doc?.title ?? "Документ" };
+}
+
+// --- ИИ-конвейер в демо ------------------------------------------------------------------------
+// Лента и примеры записаны с настоящего сервера (scripts/demo_ai_scenario.py, record_demo.py).
+// Решения людей меняют данные в памяти страницы; свой текст прораба разбирается упрощённо в браузере.
+
+const EDITABLE: Record<string, string[]> = {
+  create_receipt: ["material_id", "quantity", "price", "object_id", "date", "quality_doc"],
+  report_volume: ["estimate_item_id", "quantity", "location", "object_id", "date"],
+  record_usage: ["material_id", "quantity", "object_id", "date"],
+  create_task: ["title", "role", "due_days", "priority"],
+  draft_aosr: ["works", "project_docs", "materials", "executive_docs", "norms", "next_works"],
+  import_contract: ["kind", "our_role", "object_id"],
+  link_certificate: ["receipt_ids", "text"],
+};
+const KIND_TITLES: Record<string, string> = {
+  report_volume: "Выполненный объём", record_usage: "Расход материала", create_task: "Поручение", flag_issue: "Замечание",
+  info: "Сведения", create_receipt: "Приход материала",
+};
+const SPEC_TITLES: Record<string, string> = { dispatcher: "Диспетчер", hearing: "Слух", verifier: "Контролёр", reader: "Чтец документов" };
+let autonomyModes: Record<string, string> | null = null;
+
+function ai() {
+  const s = snap();
+  if (!s.ai) throw new DemoError(404, "Лента ИИ не записана в этой демо-версии");
+  return s.ai;
+}
+
+function allActions(): Any[] {
+  return ai().events.flatMap((e: Any) => e.actions);
+}
+
+function findAction(id: string): [Any, Any] {
+  for (const e of ai().events) {
+    const a = e.actions.find((x: Any) => x.id === id);
+    if (a) return [e, a];
+  }
+  throw new DemoError(404, "Действие не найдено");
+}
+
+function feed(q: URLSearchParams): Any {
+  let evs = ai().events;
+  const only = q.get("only") ?? "all";
+  if (only === "pending") evs = evs.filter((e: Any) => e.actions.some((a: Any) => ["proposed", "failed"].includes(a.status)));
+  if (only === "issues") evs = evs.filter((e: Any) => e.actions.some((a: Any) => a.kind === "flag_issue" && a.severity !== "info"));
+  if (q.get("object_id")) evs = evs.filter((e: Any) => e.object_id === q.get("object_id"));
+  if (q.get("specialist")) evs = evs.filter((e: Any) => e.actions.some((a: Any) => a.specialist === q.get("specialist")));
+  const pending = allActions().filter((a) => ["proposed", "failed"].includes(a.status)).length;
+  return { events: structuredClone(evs.slice(0, Number(q.get("limit") ?? 30))), pending };
+}
+
+function avgPrice(materialId: string, exceptId: string): number | null {
+  const rows = snap().lists["material-receipts"].filter((r) => r.material_id === materialId && r.id !== exceptId && r.price != null);
+  const qty = rows.reduce((t, r) => t + Number(r.quantity), 0);
+  return qty ? rows.reduce((t, r) => t + Number(r.quantity) * Number(r.price), 0) / qty : null;
+}
+
+function act(ev: Any, specialist: string, kind: string, title: string, summary: string, extra: Any = {}): Any {
+  const a = {
+    id: uid(), event_id: ev.id, specialist, specialist_title: SPEC_TITLES[specialist] ?? specialist, kind,
+    kind_title: KIND_TITLES[kind] ?? kind, title, summary, payload: {}, evidence: [], confidence: 0.9, severity: "info",
+    status: "applied", auto: true, corrected: false, result: {}, object_id: ev.object_id, reviewed_at: null, reason: null,
+    created_at: now(), editable: EDITABLE[kind] ?? [], ...extra,
+  };
+  ev.actions.push(a);
+  return a;
+}
+
+/** Применить действие к данным страницы (то, что на сервере делает конвейер). */
+function applyDemo(ev: Any, a: Any): void {
+  const s = snap();
+  const p = a.payload;
+  if (a.kind === "create_receipt") {
+    let materialId = p.material_id;
+    if (!materialId && p.new_material) {
+      const m = { id: uid(), name: p.new_material.name, unit: p.new_material.unit, code: null, category: "Из накладных (ИИ)" };
+      s.lists.materials.push(m);
+      materialId = m.id;
+      a.result.material_created = true;
+    }
+    const r = { id: uid(), object_id: p.object_id, material_id: materialId, date: p.date, quantity: p.quantity, price: p.price,
+      document_ref: p.document_ref, quality_doc: p.quality_doc, supplier_id: p.supplier_id ?? null, created_at: now() };
+    s.lists["material-receipts"].unshift(r);
+    a.result = { ...a.result, receipt_id: r.id, material_id: materialId };
+    const avg = p.price ? avgPrice(materialId, r.id) : null;
+    if (avg && p.price > avg * 1.15) {
+      const name = s.lists.materials.find((m) => m.id === materialId)?.name ?? "материал";
+      act(ev, "verifier", "flag_issue", `Цена выше обычной: ${name}`,
+        `${p.price.toLocaleString("ru-RU")} руб. против средней ${Math.round(avg).toLocaleString("ru-RU")} руб. (+${Math.round((p.price / avg - 1) * 100)}%) — проверьте договор поставки.`,
+        { severity: "warning", specialist_title: "Контролёр" });
+    }
+  } else if (a.kind === "report_volume") {
+    const v = { id: uid(), object_id: p.object_id, estimate_item_id: p.estimate_item_id, date: p.date, quantity: p.quantity,
+      location: p.location, status: "reported", reported_by: `ИИ (${a.specialist_title})`, note: p.note, created_at: now() };
+    s.lists.volumes.unshift(v);
+    a.result = { volume_id: v.id };
+  } else if (a.kind === "record_usage") {
+    const u = { id: uid(), object_id: p.object_id, material_id: p.material_id, date: p.date, quantity: p.quantity, note: p.note, created_at: now() };
+    s.lists["material-usage"].unshift(u);
+    a.result = { usage_id: u.id };
+  } else if (a.kind === "create_task") {
+    const due = new Date(Date.now() + Number(p.due_days ?? 2) * 864e5).toISOString().slice(0, 10);
+    const t = { id: uid(), title: p.title, status: "open", priority: p.priority ?? "normal", due_date: due, object_id: p.object_id,
+      source_type: "agent", created_by: `agent:${a.specialist}`, created_at: now() };
+    s.lists.tasks.unshift(t);
+    a.result = { ...a.result, task_id: t.id };
+  } else if (a.kind === "import_contract") {
+    throw new DemoError(400, "В демо-версии договор не импортируется: на сервере юрист извлечёт сроки, суммы и неустойки и поставит обязательства на контроль.");
+  }
+}
+
+function undoDemo(a: Any): void {
+  const s = snap();
+  const r = a.result ?? {};
+  const drop = (list: string, id?: string) => {
+    if (!id) return;
+    const i = s.lists[list].findIndex((x) => x.id === id);
+    if (i >= 0) s.lists[list].splice(i, 1);
+  };
+  drop("material-receipts", r.receipt_id);
+  drop("volumes", r.volume_id);
+  drop("material-usage", r.usage_id);
+  if (r.material_created) drop("materials", r.material_id);
+  const task = s.lists.tasks.find((t) => t.id === r.task_id);
+  if (task && ["open", "in_progress"].includes(task.status)) task.status = "cancelled";
+  const doc = s.documents.find((d) => d.id === r.document_id);
+  if (doc && ["draft", "registered"].includes(doc.status) && ["draft_aosr", "build_scheme", "register_document"].includes(a.kind)) {
+    Object.assign(doc, { status: "rejected", reject_reason: "Отклонено в ленте ИИ" });
+  }
+}
+
+function review(id: string, body: Any): Any {
+  const [ev, a] = findAction(id);
+  if (a.reviewed_at || a.status === "rejected") throw new DemoError(400, "Действие уже рассмотрено");
+  const s = snap();
+  if (body.approve) {
+    const changes = Object.fromEntries(Object.entries(body.changes ?? {}).filter(([k]) => (EDITABLE[a.kind] ?? []).includes(k)));
+    if (Object.keys(changes).length) {
+      if (a.status === "applied") undoDemo(a);
+      if (changes.material_id && a.payload.source_name) {
+        s.memory.unshift({ id: uid(), kind: "alias", scope: "alias:materials", content: a.payload.source_name,
+          source: changes.material_id, is_active: true, created_at: now() });
+      }
+      a.payload = { ...a.payload, ...changes, ...(changes.material_id ? { new_material: null } : {}) };
+      a.corrected = true;
+      a.status = "proposed";
+    }
+    if (["proposed", "failed"].includes(a.status)) {
+      applyDemo(ev, a);
+      a.status = "applied";
+      a.auto = false;
+    }
+  } else {
+    if (a.status === "applied") undoDemo(a);
+    a.status = "rejected";
+    if (body.reason) {
+      s.memory.unshift({ id: uid(), kind: "feedback", scope: a.specialist, content: `«${a.title}» отклонено: ${body.reason}`,
+        source: `ai_action:${a.id}`, is_active: true, created_at: now() });
+    }
+  }
+  a.reviewed_at = now();
+  a.reason = body.reason ?? null;
+  return { action: structuredClone(a), created: [] };
+}
+
+function stats(): Record<string, Any> {
+  const out: Record<string, Any> = {};
+  for (const a of allActions()) {
+    const st = (out[a.specialist] ??= { total: 0, auto: 0, approved: 0, corrected: 0, rejected: 0, pending: 0, failed: 0 });
+    st.total += 1;
+    if (a.status === "rejected") st.rejected += 1;
+    else if (a.status === "proposed") st.pending += 1;
+    else if (a.status === "failed") st.failed += 1;
+    else if (a.corrected) st.corrected += 1;
+    else if (a.reviewed_at) st.approved += 1;
+    else if (a.auto) st.auto += 1;
+  }
+  for (const st of Object.values(out)) {
+    const decided = st.approved + st.corrected + st.rejected;
+    st.accuracy = decided ? Math.round((st.approved / decided) * 1000) / 10 : null;
+  }
+  return out;
+}
+
+function specialists(): Any {
+  const base = structuredClone(ai().specialists);
+  autonomyModes ??= Object.fromEntries(base.autonomy.map((x: Any) => [x.kind, x.mode]));
+  const st = stats();
+  base.specialists = base.specialists.map((x: Any) => ({ ...x, stats: st[x.name] ?? {} }));
+  base.autonomy = base.autonomy.map((x: Any) => ({ ...x, mode: autonomyModes![x.kind] ?? x.mode }));
+  return base;
+}
+
+// упрощённый разбор сообщения прораба (на сервере — полноценный конвейер с моделями и правилами)
+const stems5 = (t: string) => new Set((t.toLowerCase().replace(/ё/g, "е").match(/[a-zа-я0-9]+/g) ?? []).filter((w) => w.length > 2 || /\d/.test(w)).map((w) => w.slice(0, 5)));
+function similarity(a: string, b: string): number {
+  const sa = stems5(a), sb = stems5(b);
+  if (!sa.size || !sb.size) return 0;
+  const inter = [...sa].filter((x) => sb.has(x)).length;
+  return (inter / new Set([...sa, ...sb]).size) * 0.5 + (inter / sa.size) * 0.5;
+}
+const UNIT = "шт|м3|м2|м³|м²|п\\.\\s?м|т|кг|компл|м|л";
+const normUnit = (u: string) => u.toLowerCase().replace(/\s|\./g, "").replace("м³", "м3").replace("м²", "м2").replace(/^пм$/, "п.м");
+const QTY = new RegExp(`(?<![\\wа-яё.,])((?:\\d{1,3}(?:[ \\u00a0]\\d{3})+|\\d+)(?:[.,]\\d+)?)\\s*(${UNIT})(?![а-яa-z0-9])`, "i");
+const LOC = /(захватк\S*\s*№?\s*\d+|в\s+осях\s+[^\s,.]+|\d+\s*этаж\S*|этаж\S*\s*\d+)/i;
+const PROBLEM = /не привез|не завез|простой|простаива|сломал|поломк|не хватает|нехватк|задерж|авари|травм|проблем|не было/i;
+const USAGE = /израсходова\S*|ушл[оаи]|расход\S*|использова\S*|потрати\S*/i;
+const COMPLETE = /закончил|заверш|готов\S* к (?:при[её]мк|освидетельств)|предъяв/i;
+
+function understand(text: string, objectId: string | null, user: Any): Any {
+  const s = snap();
+  const objects = s.lists.objects.filter((o) => o.status === "active");
+  const obj = objects.find((o) => o.id === objectId) ?? (objects.length === 1 ? objects[0] : null);
+  const ev: Any = {
+    id: uid(), created_at: now(), source: "upload", kind: "text", text, file_name: null, mime: null, file_url: null,
+    object_id: obj?.id ?? null, object_name: obj?.name ?? null, sender: user?.full_name ?? null, status: "done",
+    detected_type: "foreman_report", dispatcher: { type: "foreman_report", title: "Отчёт с площадки о выполненных работах, расходе, проблемах", confidence: 0.8, by: "rules" },
+    transcript: null, excerpt: text.slice(0, 600), reply: null, needs_ocr: false, vision: null, error: null, document_id: null, actions: [],
+  };
+  const today = new Date().toISOString().slice(0, 10);
+  const items = s.lists["estimate-items"].filter((i) => !obj || i.object_id === obj.id);
+  for (const sent of text.split(/(?<=[.!?;])\s+|\n/).map((x) => x.trim()).filter(Boolean)) {
+    const q = QTY.exec(sent);
+    if (PROBLEM.test(sent)) {
+      act(ev, "dispatcher", "create_task", `Проблема на объекте: ${sent.slice(0, 150)}`, "Поручение руководителю участка.",
+        { payload: { title: sent, role: "manager", due_days: 1, priority: "high", object_id: ev.object_id }, status: "new", confidence: 0.85 });
+      continue;
+    }
+    const verb = USAGE.exec(sent);
+    if (verb && q) {
+      const clean = (t: string) => t.replace(QTY, "").replace(/^\s*(на|по)\s.*$/i, "").replace(/^[\s,.:—-]+|[\s,.:—-]+$/g, "").trim();
+      const name = clean(sent.slice(verb.index + verb[0].length)) || clean(sent.slice(0, verb.index)).replace(/^(сегодня|вчера|всего|итого)\s+/i, "");
+      const unit = normUnit(q[2]);
+      // материал по норме работы из того же сообщения весит больше: «бетона ушло» — бетон той работы, что залили
+      const prefer = new Set(s.lists["material-norms"].filter((n) => ev.actions.some((a: Any) => a.kind === "report_volume"
+        && a.payload.estimate_item_id === n.estimate_item_id)).map((n) => n.material_id));
+      const cands = s.lists.materials.filter((m) => normUnit(m.unit) === unit)
+        .map((m) => [m, Math.min(1, similarity(name, m.name) + (prefer.has(m.id) && similarity(name, m.name) > 0 ? 0.15 : 0))] as [Any, number])
+        .sort((x, y) => y[1] - x[1]);
+      const [mat, score] = cands[0] ?? [null, 0];
+      const qty = Number(q[1].replace(/[\s ]/g, "").replace(",", "."));
+      if (!mat || score < 0.3) {
+        act(ev, "dispatcher", "flag_issue", `Материал не найден в справочнике: ${name}`, `Расход ${qty} ${unit} не учтён — выберите материал, ИИ запомнит название.`, { severity: "warning", status: "applied" });
+      } else {
+        act(ev, "dispatcher", "record_usage", `Расход: ${mat.name} — ${qty} ${mat.unit}`, `Из сообщения прораба. Совпадение со справочником ${Math.round(score * 100)}%.`,
+          { payload: { object_id: ev.object_id, material_id: mat.id, quantity: qty, date: today, note: "из отчёта с площадки", source_name: name }, status: "new", confidence: Math.min(0.95, 0.5 + score * 0.6) });
+      }
+      continue;
+    }
+    if (q) {
+      const unit = normUnit(q[2]);
+      const qty = Number(q[1].replace(/[\s ]/g, "").replace(",", "."));
+      const cands = items.filter((i) => normUnit(i.unit) === unit).map((i) => [i, similarity(sent, `${i.code ?? ""} ${i.name} ${i.section ?? ""}`)] as [Any, number]).sort((x, y) => y[1] - x[1]);
+      const [item, score] = cands[0] ?? [null, 0];
+      const loc = LOC.exec(sent)?.[1] ?? null;
+      if (!item || score < 0.2) {
+        act(ev, "dispatcher", "flag_issue", `Не сопоставлено со сметой: ${sent.slice(0, 120)}`, "Не найдена позиция сметы с такой единицей — исправьте позицию в ленте, ИИ запомнит.", { severity: "warning" });
+      } else {
+        act(ev, "dispatcher", "report_volume", `${item.name}: ${qty} ${item.unit}${loc ? `, ${loc}` : ""}`,
+          `Из сообщения: «${sent.slice(0, 200)}». Позиция сметы ${item.code ?? ""} (совпадение ${Math.round(score * 100)}%).` + (COMPLETE.test(text) && item.requires_aosr ? " На сервере инженер ПТО сразу соберёт АОСР по этой захватке." : ""),
+          { payload: { object_id: ev.object_id ?? item.object_id, estimate_item_id: item.id, quantity: qty, location: loc, date: today, note: sent, source_text: sent },
+            status: "new", confidence: Math.min(0.95, 0.55 + score * 0.6), evidence: [{ type: "estimate_item", id: item.id, label: `${item.code ?? ""} ${item.name}`.trim() }] });
+      }
+    }
+  }
+  if (!ev.actions.length) act(ev, "dispatcher", "info", "Сообщение сохранено", "Работ, расхода или проблем не найдено.");
+  // контроль списания: расход против нормы на сообщённый объём
+  for (const u of ev.actions.filter((a: Any) => a.kind === "record_usage")) {
+    let norm = 0;
+    const parts: string[] = [];
+    for (const v of ev.actions.filter((a: Any) => a.kind === "report_volume")) {
+      const n = s.lists["material-norms"].find((x) => x.estimate_item_id === v.payload.estimate_item_id && x.material_id === u.payload.material_id);
+      if (!n) continue;
+      norm += v.payload.quantity * Number(n.rate) * (1 + Number(n.loss_percent) / 100);
+      parts.push(`${v.payload.quantity} × ${Number(n.rate)}${Number(n.loss_percent) ? ` + ${Number(n.loss_percent)}% потерь` : ""}`);
+    }
+    if (!norm) continue;
+    const diff = ((u.payload.quantity - norm) / norm) * 100;
+    const r2 = (x: number) => Math.round(x * 100) / 100;
+    u.summary += ` По норме ${r2(norm)} (${parts.join("; ")}): ${diff <= 2 ? "в пределах." : `перерасход +${diff.toFixed(1)}%.`}`;
+    if (diff > 2) {
+      act(ev, "verifier", "flag_issue", `Перерасход к норме: ${u.title.replace(/^Расход: /, "").split(" — ")[0]} +${diff.toFixed(1)}%`,
+        `Списано ${u.payload.quantity} при норме ${r2(norm)} на сообщённый объём — без объяснения не войдёт в акт списания; уточните у прораба.`,
+        { severity: "warning", specialist_title: "Контролёр" });
+    }
+  }
+  for (const a of ev.actions) {
+    if (a.status !== "new") continue;
+    if (!a.payload.object_id && ["report_volume", "record_usage"].includes(a.kind)) { a.status = "proposed"; a.summary += " Укажите объект."; continue; }
+    const mode = (autonomyModes ?? {})[a.kind] ?? "auto";
+    if (mode === "auto" && a.confidence >= 0.7) applyDemo(ev, a);
+    else { a.status = "proposed"; a.auto = false; continue; }
+    a.status = "applied";
+  }
+  ev.reply = ["Понял: отчёт с площадки.", ...ev.actions.map((a: Any) => `${a.status === "applied" ? "✓" : "?"} ${a.title}`)].join("\n");
+  ai().events.unshift(ev);
+  return ev;
+}
+
+function replaySample(id: string): Any {
+  const sample = ai().samples.find((x) => x.id === id);
+  if (!sample) throw new DemoError(404, "Пример не найден");
+  const s = snap();
+  const ev = structuredClone(sample.event);
+  const oldId = ev.id;
+  ev.id = uid();
+  ev.created_at = now();
+  if (s.ai!.files[oldId]) {
+    s.ai!.files[ev.id] = s.ai!.files[oldId];
+    ev.file_url = `/api/intake/${ev.id}/file`;
+  }
+  for (const a of ev.actions) {
+    a.id = uid();
+    a.event_id = ev.id;
+    a.created_at = now();
+    const docId = a.result?.document_id;
+    const doc = docId && ai().sample_documents.find((d: Any) => d.id === docId);
+    if (doc && a.status === "applied") a.result.document_id = addDocument(doc).id;
+    if (a.status === "applied" && ["report_volume", "record_usage", "create_task"].includes(a.kind)) {
+      applyDemo(ev, a);
+    }
+  }
+  ai().events.unshift(ev);
+  return ev;
+}
+
+function aiRoute(p: string, q: URLSearchParams, method: string, body: Any): Any {
+  const parts = p.split("/").filter(Boolean);
+  if (p === "/ai/feed") return feed(q);
+  if (p === "/ai/samples") return ai().samples.map(({ id, title, hint }) => ({ id, title, hint }));
+  if (p === "/ai/specialists") return specialists();
+  if (p === "/ai/autonomy" && method === "PUT") {
+    specialists();
+    Object.assign(autonomyModes!, body.modes);
+    return { autonomy: autonomyModes };
+  }
+  if (parts[1] === "events" && parts[2]) {
+    const ev = ai().events.find((e: Any) => e.id === parts[2]);
+    if (!ev) throw new DemoError(404, "Сообщение не найдено");
+    return structuredClone(ev);
+  }
+  if (parts[1] === "actions" && parts[3] === "review") return review(parts[2], body);
+  if (p === "/ai/actions/review-batch") {
+    let done = 0;
+    const errors: Any[] = [];
+    for (const id of body.ids ?? []) {
+      try { review(id, body); done += 1; } catch (e) { errors.push({ id, error: (e as Error).message }); }
+    }
+    return { done, errors };
+  }
+  if (p === "/ai/assemble-aosr") throw new DemoError(400, "В демо-версии АОСР собирается по сообщению о завершении работ (пример в ленте).");
+  if (p === "/telegram/link") {
+    throw new DemoError(400, "В демо-версии бот не подключён. На сервере задайте токен бота (BIS_TELEGRAM_BOT_TOKEN) — и каждый сотрудник привяжет свой Telegram здесь, одной командой.");
+  }
+  if (p === "/intake" && body instanceof FormData) {
+    const sample = body.get("sample");
+    if (sample) return replaySample(String(sample));
+    const file = body.get("file") as File | null;
+    const user = snap().get["/auth/me"]?.user;
+    if (file && file.name === "voice.webm") {
+      const ev: Any = { id: uid(), created_at: now(), source: "upload", kind: "voice", text: null, file_name: file.name, mime: file.type,
+        file_url: null, object_id: null, object_name: null, sender: user?.full_name ?? null, status: "done", detected_type: null,
+        dispatcher: null, transcript: null, excerpt: null, reply: null, needs_ocr: false, vision: null, error: null, document_id: null, actions: [] };
+      act(ev, "hearing", "flag_issue", "Голосовое сохранено, но не распознано",
+        "Распознавание речи не подключено (сервер STT). Подключите — и голосовые прорабов станут объёмами, расходом и поручениями.", { severity: "warning", specialist_title: "Слух" });
+      ai().events.unshift(ev);
+      return ev;
+    }
+    if (file) {
+      const match = ai().samples.find((x) => x.event.file_name === file.name);
+      if (match) return replaySample(match.id);
+      throw new DemoError(400, "В демо-версии ИИ разбирает примеры (кнопки ниже) и текстовые сообщения о работах. На сервере — любой файл: фото, голосовое, PDF, DOCX, XLSX, CSV.");
+    }
+    const text = String(body.get("text") ?? "").trim();
+    if (!text) throw new DemoError(400, "Пришлите файл, фото, голосовое или текст");
+    return understand(text, (body.get("object_id") as string) || null, user);
+  }
+  throw new DemoError(404, "Этот раздел недоступен в демо-версии");
 }

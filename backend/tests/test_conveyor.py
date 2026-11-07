@@ -161,12 +161,14 @@ def test_foreman_report_completion_assembles_aosr(db, demo):
     assert "Армирование фундаментной плиты Пм1" in doc.data["works"] and "захватка 3" in doc.data["works"]
     assert any("Арматура А500С" in m for m in doc.data["materials"])
     linked = db.scalars(select(WorkVolume).where(WorkVolume.aosr_document_id == doc.id)).all()
-    assert len(linked) == 2  # объём из сообщения + ранее внесённые 40 т без АОСР
+    assert [v.location for v in linked] == ["захватка 3"]  # акт на сданную захватку, а не на всё накопленное
     assert "исполнительная схема" in aosr.summary  # честно говорит, чего не хватает
 
-    # повторное сообщение не плодит черновики
-    _, again = run(env, text="Закончили армирование фундаментной плиты Пм1 захватка 4, 3 т, готово к освидетельствованию")
+    # по той же захватке черновик уже ждёт подписи — второй не нужен; новая захватка — свой акт
+    _, again = run(env, text="Закончили армирование фундаментной плиты Пм1 захватка 3, 1 т, готово к освидетельствованию")
     assert not by_kind(again, "draft_aosr")
+    _, other = run(env, text="Закончили армирование фундаментной плиты Пм1 захватка 4, 3 т, готово к освидетельствованию")
+    assert "захватка 4" in by_kind(other, "draft_aosr")[0].title
 
     # отклонение черновика откатывает привязку объёмов
     cv.review(env, aosr, approve=False, user=env.user)
@@ -327,3 +329,18 @@ def test_api_intake_feed_review(client, auth, db, demo):
     pto = login(client, "pto@demo.bis")
     assert client.put("/api/ai/autonomy", headers=pto, json={"modes": {"create_receipt": "auto"}}).status_code == 403
     assert client.post("/api/intake", headers=auth, data={}).status_code == 400
+
+
+def test_usage_matched_by_context_and_checked_against_norm(db, demo):
+    env = make_env(db, demo)
+    _, actions = run(env, text="Залили бетон плиты Пм1 захватка 4 — 290 м3. Бетона ушло 310 м3.")
+    usage = by_kind(actions, "record_usage")[0]
+    # «бетона» подходит и к B7,5, и к B25 — выбран бетон по норме работы из того же сообщения
+    assert usage.payload["material_id"] == str(material(db, demo, "Бетон B25 W8 F150").id)
+    assert "По норме 294.35 м3" in usage.summary and "перерасход" in usage.summary  # 290 × 1 + 1,5% потерь
+    over = [a for a in actions if a.kind == "flag_issue" and "Перерасход к норме" in a.title]
+    assert over and "+5.3%" in over[0].title
+
+    _, ok = run(env, text="Залили бетон плиты Пм1 захватка 5 — 100 м3. Бетона ушло 101 м3.")
+    assert "в пределах" in by_kind(ok, "record_usage")[0].summary
+    assert not [a for a in ok if "Перерасход к норме" in a.title]

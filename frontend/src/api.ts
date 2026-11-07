@@ -184,3 +184,64 @@ export const STATUS_LABELS: Record<string, string> = {
   replaced: "Заменён",
   unknown: "Не проверен",
 };
+
+// --- ИИ-конвейер ---------------------------------------------------------------------------------
+
+export interface Evidence {
+  type: string;
+  label: string | null;
+  id?: string;
+  event_id?: string;
+}
+
+export interface AIAction {
+  id: string;
+  event_id: string | null;
+  specialist: string;
+  specialist_title: string;
+  kind: string;
+  kind_title: string;
+  title: string;
+  summary: string | null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  payload: Record<string, any>;
+  evidence: Evidence[];
+  confidence: number;
+  severity: "info" | "warning" | "critical";
+  status: "proposed" | "applied" | "rejected" | "failed" | "new";
+  auto: boolean;
+  corrected: boolean;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  result: Record<string, any>;
+  object_id: string | null;
+  reviewed_at: string | null;
+  reason: string | null;
+  created_at: string | null;
+  editable: string[];
+}
+
+export interface IntakeEvent {
+  id: string;
+  created_at: string | null;
+  source: string;
+  kind: "photo" | "voice" | "document" | "text";
+  text: string | null;
+  file_name: string | null;
+  mime: string | null;
+  file_url: string | null;
+  object_id: string | null;
+  object_name: string | null;
+  sender: string | null;
+  status: string;
+  detected_type: string | null;
+  dispatcher: { type: string; title: string; confidence: number; by: string } | null;
+  transcript: string | null;
+  excerpt: string | null;
+  reply: string | null;
+  needs_ocr: boolean;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  vision: Record<string, any> | null;
+  error: string | null;
+  document_id: string | null;
+  actions: AIAction[];
+}

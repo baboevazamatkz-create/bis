@@ -129,7 +129,8 @@ def ingest(env: Env, *, source: str, text: str | None = None, data: bytes | None
     if data is not None:
         file_name = file_name or "file"
         key = env.storage.put(data, file_name, prefix=f"intake/{env.org_id}")
-    event = IntakeEvent(organization_id=env.org_id, source=source, kind=detect_kind(file_name, mime) if key else "text",
+    event = IntakeEvent(organization_id=env.org_id, created_at=now(), source=source,
+                        kind=detect_kind(file_name, mime) if key else "text",
                         text=(text or "").strip() or None, file_key=key, file_name=file_name,
                         mime=mime or (mimetypes.guess_type(file_name)[0] if file_name else None), object_id=object_id,
                         user_id=env.user.id if env.user else None,
@@ -235,6 +236,21 @@ def reply_text(event: IntakeEvent, actions: list[AIAction]) -> str:
     return "\n".join(lines[:15])
 
 
+def now() -> dt.datetime:
+    """Время с микросекундами: порядок событий и действий внутри одной транзакции сохраняется."""
+    return dt.datetime.now(dt.UTC)
+
+
+def plural(n: int, forms: tuple[str, str, str]) -> str:
+    n100, n10 = abs(n) % 100, abs(n) % 10
+    return forms[2] if 11 <= n100 <= 14 else forms[0] if n10 == 1 else forms[1] if 2 <= n10 <= 4 else forms[2]
+
+
+def fmt(v: Any) -> str:
+    """Число без лишних нулей: 52, 5.5, 0.125."""
+    return f"{float(v):.3f}".rstrip("0").rstrip(".")
+
+
 # --- привязка к объекту ----------------------------------------------------------------------------
 
 GENERIC_NAME_STEMS = wsvc._stems("жилой дом корпус строительство объект комплекс здание секция этап очередь улица")
@@ -306,8 +322,11 @@ def hints(env: Env, specialist: str) -> str:
     return "\n\nПравила и замечания организации (учитывай):\n" + "\n".join(f"- {m.content}" for m in rows)
 
 
-def match_material(env: Env, name: str, unit: str | None) -> tuple[Material | None, float]:
+def match_material(env: Env, name: str, unit: str | None,
+                   prefer: set[uuid.UUID] | None = None) -> tuple[Material | None, float]:
+    """prefer — материалы по нормам работ из того же сообщения: «бетона ушло» — это бетон той работы, что залили."""
     mats = {m.id: m for m in env.db.scalars(select(Material).where(Material.organization_id == env.org_id))}
+    bonus = lambda m: 0.15 if prefer and m.id in prefer else 0.0  # noqa: E731
 
     def ok_unit(m: Material) -> bool:
         return not unit or und.norm_unit(m.unit) == und.norm_unit(unit)
@@ -323,6 +342,7 @@ def match_material(env: Env, name: str, unit: str | None) -> tuple[Material | No
     for m in mats.values():
         if ok_unit(m):
             s = wsvc.similarity(name, m.name)
+            s = min(1.0, s + bonus(m)) if s > 0 else s
             if s > score:
                 best, score = m, s
     return (best, score) if score >= 0.3 else (None, score)
@@ -369,7 +389,8 @@ def _act(env: Env, event: IntakeEvent | None, specialist: str, kind: str, title:
          payload: dict[str, Any], confidence: float, *, severity: str = "info",
          evidence: list[dict[str, Any]] | None = None) -> AIAction:
     obj = payload.get("object_id") or (event.object_id if event else None)
-    a = AIAction(organization_id=env.org_id, event_id=event.id if event else None, specialist=specialist, kind=kind,
+    a = AIAction(organization_id=env.org_id, created_at=now(), event_id=event.id if event else None, specialist=specialist,
+                 kind=kind,
                  title=title[:500], summary=summary, payload=_json(payload), confidence=round(min(max(confidence, 0), 1), 2),
                  severity=severity, status="new", evidence=_json(evidence or []), result={}, object_id=_uuid(obj))
     env.db.add(a)
@@ -439,7 +460,7 @@ def _supply(env: Env, event: IntakeEvent, text: str, images) -> None:
         mat, score = match_material(env, item.name, item.unit)
         conf = (0.92 if not res.used_fallback else 0.82) * (max(score, 0.8) if mat else 0.75)
         price = f" Цена {item.price:,.2f} руб./{item.unit}.".replace(",", " ") if item.price else ""
-        _act(env, event, "reader", "create_receipt", f"Приход: {item.name} — {item.quantity:g} {item.unit}",
+        _act(env, event, "reader", "create_receipt", f"Приход: {item.name} — {fmt(item.quantity)} {item.unit}",
              f"{ref}{f', {doc.supplier}' if doc.supplier else ''}. "
              + (f"Материал в справочнике: «{mat.name}» (совпадение {score:.0%})." if mat else
                 "Такого материала нет в справочнике — будет добавлен.") + price + f" Прочитано {method}.",
@@ -513,15 +534,18 @@ def _report(env: Env, event: IntakeEvent, text: str, images) -> None:
     res = und.read_report(env.gateway, text, hints=hints(env, spec))
     r = res.data or und.FieldReport()
     complete = bool(COMPLETE_RE.search(text))
+    matched: list[EstimateItem] = []
     for w in r.works:
         item, score = match_work(env, w.description, w.unit, event.object_id)
+        if item is not None and w.quantity and score >= 0.2:
+            matched.append(item)
         if item is None or not w.quantity or score < 0.2:
             _act(env, event, spec, "flag_issue", f"Не сопоставлено со сметой: {w.description[:120]}",
                  ("Не указан объём. " if not w.quantity else "")
                  + "Не найдена позиция сметы с такой единицей — исправьте позицию в ленте, ИИ запомнит.",
                  {"audience": "pto"}, 0.8, severity="warning", evidence=_file_evidence(event))
             continue
-        _act(env, event, spec, "report_volume", f"{item.name}: {w.quantity:g} {item.unit}" + (f", {w.location}" if w.location else ""),
+        _act(env, event, spec, "report_volume", f"{item.name}: {fmt(w.quantity)} {item.unit}" + (f", {w.location}" if w.location else ""),
              f"Из сообщения: «{w.description[:200]}». Позиция сметы {item.code or ''} (совпадение {score:.0%}).",
              {"object_id": event.object_id or item.object_id, "estimate_item_id": item.id, "quantity": w.quantity,
               "location": w.location, "date": dt.date.today(), "note": w.description[:500], "source_text": w.description,
@@ -529,15 +553,18 @@ def _report(env: Env, event: IntakeEvent, text: str, images) -> None:
              min(0.95, 0.55 + score * 0.6),
              evidence=_file_evidence(event) + [{"type": "estimate_item", "id": str(item.id),
                                                 "label": f"{item.code or ''} {item.name}".strip()}])
+    prefer = set(env.db.scalars(select(MaterialNorm.material_id).where(
+        MaterialNorm.estimate_item_id.in_([i.id for i in matched])))) if matched else set()
     for m in r.materials:
-        mat, score = match_material(env, m.name, m.unit)
+        mat, score = match_material(env, m.name, m.unit, prefer=prefer)
         if mat is None:
             _act(env, event, spec, "flag_issue", f"Материал не найден в справочнике: {m.name}",
                  f"Расход {m.quantity:g} {m.unit} не учтён — выберите материал, ИИ запомнит название.", {"audience": "supply"},
                  0.8, severity="warning")
             continue
-        _act(env, event, spec, "record_usage", f"Расход: {mat.name} — {m.quantity:g} {mat.unit}",
-             f"Из сообщения прораба. Совпадение со справочником {score:.0%}.",
+        _act(env, event, spec, "record_usage", f"Расход: {mat.name} — {fmt(m.quantity)} {mat.unit}",
+             f"Из сообщения прораба. Совпадение со справочником {score:.0%}"
+             + (" — материал по норме работы из этого сообщения." if mat.id in prefer else "."),
              {"object_id": event.object_id, "material_id": mat.id, "quantity": m.quantity, "date": dt.date.today(),
               "note": "из отчёта с площадки", "source_name": m.name}, min(0.95, 0.5 + score * 0.6),
              evidence=[{"type": "material", "id": str(mat.id), "label": mat.name}])
@@ -577,18 +604,21 @@ def _survey(env: Env, event: IntakeEvent, text: str, images) -> None:
     from bis.cad.scheme import SchemeData, check_points, parse_survey, summary
 
     pts = parse_survey(env.storage.get(event.file_key), event.file_name or "survey.csv")
-    data = SchemeData(title=f"Исполнительная схема по съёмке {Path(event.file_name or '').stem}".strip(), points=pts,
+    stem = re.sub(r"^(?:исп\w*[\s_-]*)?(?:съ[её]мк\w*|survey)[\s_-]*", "", Path(event.file_name or "").stem,
+                  flags=re.IGNORECASE).replace("_", " ").strip()
+    data = SchemeData(title=f"Исполнительная схема{': ' + stem if stem else ''}", points=pts,
                       date=f"{dt.date.today():%d.%m.%Y}")
     info = summary(check_points(data), data)
-    _register(env, event, "survey", f"Съёмка {event.file_name or ''}".strip(), "surveyor")
-    _act(env, event, "surveyor", "build_scheme", f"Исполнительная схема: {len(pts)} точек",
+    _register(env, event, "survey", f"Геодезическая съёмка: {Path(event.file_name or 'съёмка').stem}", "surveyor")
+    _act(env, event, "surveyor", "build_scheme", f"Исполнительная схема по съёмке ({len(pts)} {plural(len(pts), ('точка', 'точки', 'точек'))})",
          f"{info['conclusion']}. Макс. отклонение в плане {info['max_plan_mm']} мм"
          + (f", по высоте {info['max_height_mm']} мм" if info["max_height_mm"] is not None else "")
          + ". Оси и контур в съёмке не заданы — добавьте в схеме перед подписанием.",
          {"scheme": data.model_dump(mode="json"), "object_id": event.object_id}, 0.9,
          severity="warning" if info["out_of_tolerance"] else "info", evidence=_file_evidence(event))
     if info["out_of_tolerance"]:
-        _act(env, event, "surveyor", "flag_issue", f"Превышение допусков: {', '.join(info['out_of_tolerance'][:6])}",
+        bad = info["out_of_tolerance"]
+        _act(env, event, "surveyor", "flag_issue", f"Превышение допусков в {'точке' if len(bad) == 1 else 'точках'} {', '.join(bad[:6])}",
              f"Допуск в плане {info['tolerance_plan_mm']:g} мм, по высоте {info['tolerance_height_mm']:g} мм. Нужна оценка "
              "проектировщика до освидетельствования.", {"audience": "pto"}, 0.95, severity="warning")
 
@@ -697,11 +727,12 @@ def verify(env: Env, event: IntakeEvent | None, actions: list[AIAction]) -> None
                          {"audience": "manager", "object_id": rec.object_id}, 0.9, severity="warning",
                          evidence=[{"type": "receipt", "id": str(rec.id), "label": rec.document_ref}])
         elif a.kind == "record_usage":
+            _check_norm(env, event, a, actions)
             bal = next((b for b in wsvc.material_balance(env.db, env.org_id, uuid.UUID(a.payload["object_id"]))
                         if b["material_id"] == a.payload["material_id"]), None)
             if bal and bal["balance"] < 0:
                 _act(env, event, "verifier", "flag_issue", f"Расход больше прихода: {bal['material']}",
-                     f"Остаток {bal['balance']:g} {bal['unit']}: нет документов на поступление или ошибка в расходе.",
+                     f"Остаток {fmt(bal['balance'])} {bal['unit']}: нет документов на поступление или ошибка в расходе.",
                      {"audience": "supply", "object_id": a.payload["object_id"]}, 0.9, severity="warning")
         elif a.kind == "report_volume":
             item = env.db.get(EstimateItem, uuid.UUID(a.payload["estimate_item_id"]))
@@ -711,26 +742,66 @@ def verify(env: Env, event: IntakeEvent | None, actions: list[AIAction]) -> None
             before = done - Decimal(str(a.payload["quantity"]))
             if done > item.quantity >= before:
                 _act(env, event, "verifier", "flag_issue", f"Сверх сметы: {item.name[:100]}",
-                     f"Накоплено {done:g} {item.unit} при сметных {item.quantity:g} — нужно допсоглашение или проверка объёмов.",
+                     f"Накоплено {fmt(done)} {item.unit} при сметных {fmt(item.quantity)} — нужно допсоглашение или проверка объёмов.",
                      {"audience": "manager", "object_id": object_id}, 0.9, severity="warning",
                      evidence=[{"type": "estimate_item", "id": str(item.id), "label": item.name}])
             if item.requires_aosr and (a.payload.get("complete") or done >= item.quantity):
-                assemble_aosr(env, event, item, object_id)
+                assemble_aosr(env, event, item, object_id, location=a.payload.get("location") if a.payload.get("complete") else None)
+
+
+def _check_norm(env: Env, event: IntakeEvent | None, usage: AIAction, actions: list[AIAction]) -> None:
+    """Расход против нормы на объём, сообщённый в том же сигнале (контроль списания материалов)."""
+    mat_id = uuid.UUID(usage.payload["material_id"])
+    norm_total, parts = Decimal(0), []
+    for v in actions:
+        if v.kind != "report_volume" or v.status != "applied":
+            continue
+        norm = env.db.scalar(select(MaterialNorm).where(MaterialNorm.estimate_item_id == uuid.UUID(v.payload["estimate_item_id"]),
+                                                        MaterialNorm.material_id == mat_id))
+        if norm:
+            qty = Decimal(str(v.payload["quantity"]))
+            norm_total += qty * norm.rate * (1 + norm.loss_percent / 100)
+            parts.append(f"{fmt(qty)} × {fmt(norm.rate)}" + (f" + {fmt(norm.loss_percent)}% потерь" if norm.loss_percent else ""))
+    if not norm_total:
+        return
+    used = Decimal(str(usage.payload["quantity"]))
+    diff = float((used - norm_total) / norm_total * 100)
+    unit = env.db.get(Material, mat_id).unit
+    usage.summary = ((usage.summary or "") + f" По норме {fmt(norm_total)} {unit} ({'; '.join(parts)}): "
+                     + ("в пределах." if diff <= 2 else f"перерасход {diff:+.1f}%.")).strip()
+    if diff > 2:
+        name = env.db.get(Material, mat_id).name
+        _act(env, event, "verifier", "flag_issue", f"Перерасход к норме: {name} {diff:+.1f}%",
+             f"Списано {fmt(used)} {unit} при норме {fmt(norm_total)} {unit} на сообщённый объём — без объяснения не войдёт "
+             "в акт списания; уточните у прораба (потери, брак, ошибка в объёме).", {"audience": "supply",
+                                                                                    "object_id": usage.payload["object_id"]},
+             0.9, severity="warning")
 
 
 # --- инженер ПТО: АОСР из фактов -------------------------------------------------------------------
 
 
-def assemble_aosr(env: Env, event: IntakeEvent | None, item: EstimateItem, object_id: uuid.UUID) -> AIAction | None:
-    """Собирает черновик АОСР по скрытой работе из того, что уже знает система."""
+def _loc_key(v: str | None) -> str:
+    return re.sub(r"[^\w]+", " ", (v or "").lower().replace("№", "")).strip()
+
+
+def assemble_aosr(env: Env, event: IntakeEvent | None, item: EstimateItem, object_id: uuid.UUID, *,
+                  location: str | None = None) -> AIAction | None:
+    """Собирает черновик АОСР по скрытой работе из того, что уже знает система.
+
+    location — захватка/оси из сообщения о завершении: акт только на этот участок, а не на всё накопленное."""
     from bis.rag.search import hybrid_search
 
     drafts = env.db.scalars(select(Document).where(Document.organization_id == env.org_id, Document.kind == "aosr",
                                                    Document.status == "draft", Document.object_id == object_id)).all()
-    if any((d.data or {}).get("estimate_item_id") == str(item.id) for d in drafts):
+    if any((d.data or {}).get("estimate_item_id") == str(item.id) and (d.data or {}).get("location") == _loc_key(location)
+           for d in drafts):
         return None  # черновик по этой работе уже ждёт подписи
     vols = env.db.scalars(select(WorkVolume).where(WorkVolume.estimate_item_id == item.id, WorkVolume.object_id == object_id,
                                                    WorkVolume.aosr_document_id.is_(None)).order_by(WorkVolume.date)).all()
+    if location:
+        here = [v for v in vols if _loc_key(v.location) == _loc_key(location)]
+        vols = here or vols
     if not vols:
         return None
     start, end = vols[0].date, vols[-1].date
@@ -765,7 +836,7 @@ def assemble_aosr(env: Env, event: IntakeEvent | None, item: EstimateItem, objec
     idx = next((i for i, t in enumerate(tasks) if t.estimate_item_id == item.id), None)
     next_works = tasks[idx + 1].name if idx is not None and idx + 1 < len(tasks) else None
     payload = {
-        "object_id": object_id, "estimate_item_id": item.id, "volume_ids": [v.id for v in vols],
+        "object_id": object_id, "estimate_item_id": item.id, "volume_ids": [v.id for v in vols], "location": _loc_key(location),
         "works": item.name + (f" ({', '.join(locations)})" if locations else ""),
         "project_docs": rd_best.title if rd_best else "[уточнить шифр и листы РД]",
         "materials": materials, "executive_docs": exec_docs or ["[приложить исполнительную схему]"],
@@ -774,8 +845,9 @@ def assemble_aosr(env: Env, event: IntakeEvent | None, item: EstimateItem, objec
     gaps = (["документы о качестве: " + ", ".join(missing)] if missing else []) + \
         ([] if exec_docs else ["исполнительная схема"]) + ([] if rd_best else ["шифр РД"])
     total = sum((v.quantity for v in vols), Decimal(0))
-    return _act(env, event, "pto", "draft_aosr", f"АОСР собран из фактов: {item.name[:120]}",
-                f"{len(vols)} записей объёмов ({total:g} {item.unit}) за {start:%d.%m}–{end:%d.%m.%Y}; материалы и документы "
+    period = f"{start:%d.%m.%Y}" if start == end else f"{start:%d.%m}–{end:%d.%m.%Y}"
+    return _act(env, event, "pto", "draft_aosr", f"АОСР собран из фактов: {item.name[:110]}" + (f", {location}" if location else ""),
+                f"{len(vols)} {plural(len(vols), ('запись', 'записи', 'записей'))} объёмов ({fmt(total)} {item.unit}) за {period}; материалы и документы "
                 f"о качестве — из поступлений; нормы — {', '.join(norms) or 'не найдены в базе'}."
                 + (f" Не хватает: {'; '.join(gaps)}." if gaps else " Данных достаточно — на подпись."),
                 payload, 0.85 if not gaps else 0.72, severity="warning" if gaps else "info",
@@ -934,7 +1006,8 @@ def _apply_aosr(env: Env, a: AIAction) -> dict:
                        storage=env.storage, agent_name="pto")
     ref = create_aosr_draft.handler(ctx, args)
     doc = env.db.get(Document, uuid.UUID(ref["id"]))
-    doc.data = {**(doc.data or {}), "estimate_item_id": str(p["estimate_item_id"]), "ai_action_id": str(a.id)}
+    doc.data = {**(doc.data or {}), "estimate_item_id": str(p["estimate_item_id"]), "ai_action_id": str(a.id),
+                "location": p.get("location") or ""}
     for vid in p.get("volume_ids", []):
         v = env.db.get(WorkVolume, _uuid(vid))
         if v and v.aosr_document_id is None:
@@ -955,12 +1028,33 @@ def _apply_scheme(env: Env, a: AIAction) -> dict:
     return {"document_id": str(doc.id)}
 
 
+ROLE_RU = {"pto": "ПТО", "lawyer": "юрист", "supply": "снабжение", "foreman": "прораб", "manager": "руководитель",
+           "secretary": "секретарь"}
+
+
+def letter_outcome(doc: Document) -> tuple[str, str]:
+    """Заголовок и суть разбора письма секретарём — для ленты и ответа в Telegram."""
+    an = (doc.data or {}).get("analysis") or {}
+    tasks = (doc.data or {}).get("tasks") or []
+    parts = [an.get("summary") or an.get("subject") or ""]
+    if an.get("response_required"):
+        due = an.get("response_due")
+        parts.append("Нужен ответ" + (f" до {dt.date.fromisoformat(due):%d.%m.%Y}" if due else "") + ".")
+    roles = sorted({ROLE_RU.get(r.get("role"), r.get("role")) for r in an.get("requests") or []})
+    if tasks:
+        parts.append(f"Поручений: {len(tasks)}" + (f" ({', '.join(roles)})" if roles else "") + ".")
+    if an.get("urgency") == "high":
+        parts.append("Срочно.")
+    return doc.title, " ".join(p for p in parts if p).strip()
+
+
 def _apply_letter(env: Env, a: AIAction) -> dict:
     from bis.services.correspondence import process_incoming
 
     doc = _ensure_document(env, _event(env, a))
     text = parse_file(env.storage.get(doc.file_key), doc.file_name or "letter.txt", doc.mime).text
     analysis = process_incoming(env.db, env.storage, env.gateway, doc, actor="agent:secretary", text=text)
+    a.title, a.summary = letter_outcome(doc)
     return {"document_id": str(doc.id), "number": doc.number, "category": analysis.category,
             "tasks": len((doc.data or {}).get("tasks", []))}
 
@@ -979,6 +1073,10 @@ def _apply_contract(env: Env, a: AIAction) -> dict:
     if extracted.number:
         c.number = extracted.number[:100]
     doc.title = f"Договор № {c.number}" + (f" от {c.date:%d.%m.%Y}" if c.date else "")
+    a.title = f"{doc.title}: обязательства на контроле"
+    a.summary = (f"Обязательств поставлено на контроль: {added}." + (f" Сумма {c.amount:,.0f} руб.".replace(",", " ") if c.amount else "")
+                 + (f" Срок: {c.end_date:%d.%m.%Y}." if c.end_date else "")
+                 + (f" Риски: {'; '.join(extracted.risks[:3])}." if extracted.risks else ""))
     return {"contract_id": str(c.id), "obligations_added": added, "risks": extracted.risks[:5]}
 
 
@@ -1025,6 +1123,12 @@ def _undo(env: Env, a: AIAction) -> None:
         t = env.db.get(Task, uuid.UUID(r["task_id"]))
         if t and t.status in ("open", "in_progress"):
             t.status = "cancelled"
+    if a.kind == "process_letter" and r.get("document_id"):  # поручения по письму больше не нужны
+        letter = env.db.get(Document, uuid.UUID(r["document_id"]))
+        for tid in ((letter.data or {}).get("tasks") or []) if letter else []:
+            t = env.db.get(Task, uuid.UUID(tid))
+            if t and t.status in ("open", "in_progress"):
+                t.status = "cancelled"
     if a.kind == "import_contract" and r.get("contract_id"):
         c = env.db.get(Contract, uuid.UUID(r["contract_id"]))
         if c:

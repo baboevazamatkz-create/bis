@@ -108,6 +108,11 @@ def heuristic_incoming(text: str, *, received: dt.date, sender: str | None = Non
         a.their_number = m.group(1).rstrip(".,")
         dates = find_dates(m.group(0))
         a.their_date = dates[0][1] if dates else None
+    if not a.subject:  # «ПРЕТЕНЗИЯ / о нарушении срока…» → «Претензия о нарушении срока…»
+        tm = re.search(r"^\s*(ПРЕТЕНЗИЯ|УВЕДОМЛЕНИЕ|ПРЕДПИСАНИЕ|ТРЕБОВАНИЕ|ЗАПРОС)\s*\n\s*([оО]б?\s+[^\n]{5,200})$", text,
+                       re.MULTILINE)
+        if tm:
+            a.subject = f"{tm.group(1).capitalize()} {tm.group(2).strip()}"
     if not a.subject:
         sm = re.search(r"^\s*(О[б]?\s+[^\n]{5,200})$", text, re.MULTILINE)
         a.subject = sm.group(1).strip() if sm else None

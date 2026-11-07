@@ -15,6 +15,7 @@ import contextlib
 import datetime as dt
 import email
 import email.policy
+import email.utils
 import imaplib
 import logging
 import os
@@ -70,7 +71,7 @@ def import_message(db: Session, org: Organization, raw: bytes, *, gateway=None) 
         if not name or not payload:
             continue
         if to_conveyor(db, org, gateway, name=name, data=payload, mime=part.get_content_type(), subject=subject,
-                       sender=str(msg.get("From", "")), message_id=message_id):
+                       sender=display_name(str(msg.get("From", ""))), message_id=message_id):
             routed.append(name)
             continue
         att = save_document(db, storage, org_id=org.id, kind="other", title=f"Вложение: {name}",
@@ -95,7 +96,46 @@ def import_message(db: Session, org: Organization, raw: bytes, *, gateway=None) 
         doc.data = {**(doc.data or {}), "routed_to_ai": routed}
     process_incoming(db, storage, gateway, doc, actor="agent:secretary", text=text,
                      sender_hint=str(msg.get("From", "")), subject_hint=subject)
+    an = (doc.data or {}).get("analysis") or {}
+    cover_only = routed and not an.get("requests") and not an.get("response_required") and an.get("category") in (
+        "other", "documents", None)
+    if not cover_only:  # сопроводительное «во вложении УПД» в ленту не попадает — там уже вложения
+        _to_feed(db, org, doc, sender=display_name(str(msg.get("From", ""))), subject=subject, text=text, routed=routed)
     return doc
+
+
+def _to_feed(db: Session, org: Organization, doc: Document, *, sender: str, subject: str, text: str,
+             routed: list[str]) -> None:
+    """Письмо — в «Ленту ИИ»: что пришло и что сделал секретарь."""
+    from bis.models import AIAction, IntakeEvent
+
+    event = IntakeEvent(organization_id=org.id, created_at=cv.now(), source="email", kind="document", text=None,
+                        file_key=doc.file_key,
+                        file_name=f"{subject[:120]}.eml", mime="message/rfc822", object_id=doc.object_id, sender=sender[:300],
+                        status="done", detected_type="letter", document_id=doc.id,
+                        result={"dispatcher": {"type": "letter", "title": und.TYPES["letter"], "confidence": 1.0, "by": "rules"},
+                                "excerpt": text[:600], "email": {"subject": subject[:300]}})
+    db.add(event)
+    db.flush()
+    title, summary = cv.letter_outcome(doc)
+    an = (doc.data or {}).get("analysis") or {}
+    db.add(AIAction(organization_id=org.id, created_at=cv.now(), event_id=event.id, specialist="secretary",
+                    kind="process_letter", title=title[:500],
+                    summary=summary, payload={}, evidence=[], confidence=0.9, status="applied", auto=True,
+                    severity="warning" if an.get("category") in ("claim", "instruction") else "info",
+                    result={"document_id": str(doc.id), "number": doc.number, "category": an.get("category"),
+                            "tasks": len((doc.data or {}).get("tasks") or [])}, object_id=doc.object_id))
+    if routed:
+        db.add(AIAction(organization_id=org.id, created_at=cv.now(), event_id=event.id, specialist="dispatcher", kind="info",
+                        title=f"Вложения переданы специалистам: {', '.join(routed)[:400]}", summary="Каждое разобрано отдельно — см. ленту.",
+                        payload={}, evidence=[], confidence=1.0, status="applied", auto=True, result={},
+                        object_id=doc.object_id))
+
+
+def display_name(from_header: str) -> str:
+    """«ООО «Ромашка» <office@romashka.ru>» → «ООО «Ромашка»»; без имени — адрес."""
+    name, addr = email.utils.parseaddr(from_header)
+    return (name or addr or from_header).strip()
 
 
 def to_conveyor(db: Session, org: Organization, gateway, *, name: str, data: bytes, mime: str | None, subject: str,

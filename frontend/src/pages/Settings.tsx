@@ -99,6 +99,8 @@ export default function Settings() {
         </button>
       </div>
 
+      <TelegramPanel />
+
       <div className="panel">
         <h2>Входящая почта (IMAP)</h2>
         <p className="muted small">Письма и вложения автоматически регистрируются, попадают в базу знаний и разбираются агентом
@@ -276,5 +278,36 @@ export default function Settings() {
         </div>
       )}
     </>
+  );
+}
+
+function TelegramPanel() {
+  const [link, setLink] = useState<{ command: string; deep_link: string | null; expires_in: number; linked: boolean } | null>(null);
+  const [error, setError] = useState("");
+  async function getLink() {
+    setError("");
+    try {
+      setLink(await api("/telegram/link", { method: "POST" }));
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+  return (
+    <div className="panel">
+      <h2>Telegram: сообщения с площадки</h2>
+      <p className="muted small">
+        Прорабы, мастера и снабженцы отправляют боту фото, голосовые, УПД, сертификаты и текст — ИИ разбирает, вносит данные
+        и отвечает, что сделал. Предложения ИИ можно принять кнопкой прямо в чате. Каждый подключает свой аккаунт.
+      </p>
+      <button className="btn" onClick={() => void getLink()}>Подключить мой Telegram</button>
+      {error && <div className="alert error" style={{ marginTop: 10 }}>{error}</div>}
+      {link && (
+        <div className="note" style={{ marginTop: 10 }}>
+          {link.deep_link ? <>Откройте ссылку: <a href={link.deep_link} target="_blank" rel="noreferrer">{link.deep_link}</a><br /></> : null}
+          Или отправьте боту команду: <code>{link.command}</code>
+          <div className="small muted">Код действует {Math.round(link.expires_in / 60)} мин.{link.linked ? " Сейчас аккаунт уже привязан — новая привязка заменит старую." : ""}</div>
+        </div>
+      )}
+    </div>
   );
 }

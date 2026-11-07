@@ -62,16 +62,54 @@ cd ../frontend && npm install && npm run dev   # http://localhost:5173
 Статическая демо-версия (интерфейс + снимок данных, записанный с работающего backend):
 
 ```bash
-# 1. свежая демо-база и запущенный API
+# 1. свежая демо-база и запущенный API (BIS_DATABASE_URL, BIS_STORAGE_DIR, BIS_SECRET_KEY — одинаковые для шагов 1 и 2)
 bis migrate && bis seed-demo && bis run-jobs && uvicorn bis.main:app --port 8000 &
-# 2. снимок: действия (АОСР, КС-2/КС-3, М-29, схема, сверка ПД, чат) выполняются настоящим API
+# 2. снимок: рабочий день через ИИ-конвейер (scripts/demo_ai_scenario.py: почта и Telegram с имитацией транспорта),
+#    затем действия (АОСР, КС-2/КС-3, М-29, схема, сверка ПД, чат, примеры для ленты) — настоящим API
 python backend/scripts/record_demo.py http://localhost:8000 demo-snapshot.json
 # 3. сборка одной HTML-страницы
 cd frontend && VITE_DEMO=1 npx vite build --outDir dist-demo && node scripts/pack-demo.mjs dist-demo ../demo-snapshot.json bis-demo.html
 ```
 
 В демо-режиме запросы обслуживает `frontend/src/demo/mock.ts`; поиск по нормам работает в браузере,
-документы показываются предпросмотром.
+документы показываются предпросмотром. Лента ИИ и примеры воспроизводят записанные результаты сервера;
+решения людей меняют данные страницы; свой текст прораба разбирается упрощённой версией правил в браузере.
+
+## ИИ-конвейер и «Лента ИИ»
+
+Любой сигнал с объекта проходит один путь: `bis/ai/conveyor.py`.
+
+1. **Приём** — `POST /api/intake` (файл и/или текст, необязательно `object_id`), Telegram, почта.
+2. **Восприятие** — голос → STT, фото → модель зрения (если подключена), документ → текст (PDF, DOCX, XLSX, EML, TXT, CSV).
+3. **Диспетчер** определяет тип (`bis/ai/understanding.py`): правила, при неуверенности — модель (маршрут `route`).
+4. **Специалист** извлекает данные (модель по схеме, без модели — правила) и создаёт действия `AIAction`.
+5. **Политика самостоятельности** решает: выполнить сразу (`auto`, при уверенности ≥ 0,7) или предложить.
+   По умолчанию сам: объёмы, расход, привязка сертификатов, поручения, замечания, АОСР, схемы, письма;
+   спрашивает: приход материалов, импорт договоров. Меняется в «ИИ-специалисты» или `PUT /api/ai/autonomy`.
+6. **Контролёр и инженер ПТО** проверяют выполненное и собирают документы.
+
+API: `GET /api/ai/feed?only=all|pending|issues`, `POST /api/ai/actions/{id}/review`
+(`{"approve": true, "changes": {"material_id": "…"}}` или `{"approve": false, "reason": "…"}`),
+`POST /api/ai/actions/review-batch`, `GET /api/ai/specialists`, `POST /api/ai/assemble-aosr`.
+
+Модели специалистов задаются маршрутами шлюза (`routes` в `llm.json`): `route` — диспетчер, `extract` — чтение
+документов и сообщений, `vision` — фото (провайдер с `"capabilities": ["text", "vision"]`), `analysis` — юрист.
+
+## Telegram-бот
+
+```bash
+export BIS_TELEGRAM_BOT_TOKEN=…              # токен от @BotFather
+export BIS_TELEGRAM_BOT_USERNAME=my_bis_bot  # для ссылки привязки
+export BIS_PUBLIC_URL=https://bis.example.ru # ссылки на ленту в ответах
+```
+
+- **Webhook** (есть входящий HTTPS): задайте `BIS_TELEGRAM_WEBHOOK_SECRET` и зарегистрируйте
+  `https://<сервер>/api/telegram/webhook` методом `setWebhook` с `secret_token`.
+- **Опрос** (закрытый контур, только исходящие): `bis telegram-poll`. Для полностью закрытого контура —
+  локальный Bot API сервер и `BIS_TELEGRAM_API_BASE`.
+- Сотрудник: «Настройки» → «Подключить мой Telegram» → команда `/start <код>` боту.
+  Команды: `/объект ЖК-01`, `/ждут`, `/помощь`. В группе объекта выключите privacy mode бота.
+- Ботам доступны файлы до 20 МБ.
 
 ## Фоновые задачи
 
@@ -134,7 +172,8 @@ backend/bis/
   rag/         парсеры, разбиение на фрагменты, эмбеддинги, гибридный поиск
   documents/   формы документов: АОСР, письмо (DOCX), КС-2, КС-3, М-29, акт списания (XLSX)
   cad/         исполнительные схемы (DXF, SVG-предпросмотр)
-  connectors/  внешние источники: почта IMAP
+  ai/          ИИ-конвейер: специалисты, понимание входящих, действия, контролёр, обучение
+  connectors/  каналы: почта IMAP, Telegram-бот
   jobs.py      фоновые задачи;  evals.py — оценка качества;  voice.py — голос
   plugins/     SDK плагинов
   services/    договоры, корреспонденция, работы и материалы, закрытие, ПД, схемы, уведомления

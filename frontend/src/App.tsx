@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { api, DEMO, getToken, setToken, type User } from "./api";
 import { previewFor } from "./demo/mock";
 import Login from "./pages/Login";
+import Feed from "./pages/Feed";
+import Specialists from "./pages/Specialists";
 import Chat from "./pages/Chat";
 import Control from "./pages/Control";
 import Contracts from "./pages/Contracts";
@@ -28,8 +30,18 @@ export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(!!getToken() || DEMO);
   const [preview, setPreview] = useState<{ type: string; content: string; title: string } | null | undefined>(undefined);
-  const [page, setPage] = useState("chat");
+  const [page, setPage] = useState("feed");
   const [unread, setUnread] = useState(0);
+  const [pendingAI, setPendingAI] = useState(0);
+  const [dataOpen, setDataOpen] = useState(() => {
+    try { return localStorage.getItem("bis_nav_data") === "1"; } catch { return false; }
+  });
+  const toggleData = () => {
+    setDataOpen((v) => {
+      try { localStorage.setItem("bis_nav_data", v ? "0" : "1"); } catch { /* необязательно */ }
+      return !v;
+    });
+  };
 
   useEffect(() => {
     const onLogout = () => setUser(null);
@@ -50,7 +62,10 @@ export default function App() {
 
   useEffect(() => {
     if (!user) return;
-    const poll = () => api<{ notifications_unread: number }>("/control/summary").then((s) => setUnread(s.notifications_unread)).catch(() => {});
+    const poll = () => {
+      api<{ notifications_unread: number }>("/control/summary").then((s) => setUnread(s.notifications_unread)).catch(() => {});
+      api<{ pending: number }>("/ai/feed?limit=1").then((r) => setPendingAI(r.pending)).catch(() => {});
+    };
     poll();
     const t = setInterval(poll, 60000);
     return () => clearInterval(t);
@@ -69,6 +84,8 @@ export default function App() {
 
   let content;
   switch (page) {
+    case "feed": content = <Feed onPending={setPendingAI} />; break;
+    case "specialists": content = <Specialists user={user} />; break;
     case "chat": content = <Chat />; break;
     case "control": content = <Control />; break;
     case "contracts": content = <Contracts />; break;
@@ -88,22 +105,31 @@ export default function App() {
         <div className="brand">
           BIS<small>строительная ИИ-платформа</small>
         </div>
+        {nav("feed", "Лента ИИ", pendingAI)}
         {nav("chat", "Ассистент")}
+        {nav("specialists", "ИИ-специалисты")}
         {nav("control", "Контроль", unread)}
+        <div className="nav-group">Что сделал ИИ</div>
         {nav("documents", "Документы")}
-        <div className="nav-group">Работа</div>
-        {nav("aosr", "Новый АОСР")}
-        {nav("contracts", "Договоры")}
         {nav("works", "Работы и закрытие")}
         {nav("schemes", "Исполнительные схемы")}
+        {nav("contracts", "Договоры")}
         {nav("project", "Проектная документация")}
-        {nav("knowledge", "База знаний")}
-        {REGISTRY_GROUPS.map(([group, keys]) => (
-          <div key={group} className="nav-section">
-            <div className="nav-group">{group}</div>
-            {keys.map((k) => nav(`registry:${k}`, REGISTRIES[k].title))}
-          </div>
-        ))}
+        <button className="nav-group nav-toggle" onClick={toggleData} aria-expanded={dataOpen}>
+          {dataOpen ? "▾" : "▸"} Данные и ручной ввод
+        </button>
+        {dataOpen && (
+          <>
+            {nav("knowledge", "База знаний")}
+            {nav("aosr", "АОСР вручную")}
+            {REGISTRY_GROUPS.map(([group, keys]) => (
+              <div key={group} className="nav-section">
+                <div className="nav-group sub">{group}</div>
+                {keys.map((k) => nav(`registry:${k}`, REGISTRIES[k].title))}
+              </div>
+            ))}
+          </>
+        )}
         <div className="nav-group">Организация</div>
         {nav("settings", "Настройки")}
         <div className="sidebar-footer">
@@ -117,8 +143,8 @@ export default function App() {
       <main className="main">
         {DEMO && (
           <div className="demo-banner">
-            Демо-версия BIS: данные вымышленные, языковая модель не подключена, изменения живут до перезагрузки страницы.
-            Действия (КС-2, М-29, АОСР, схема) возвращают результаты, сформированные настоящим сервером.
+            Демо-версия BIS: данные вымышленные, модели ИИ не подключены (работают алгоритмы и правила), изменения живут до
+            перезагрузки страницы. Лента и примеры записаны с настоящего сервера; свой текст разбирается упрощённо в браузере.
           </div>
         )}
         {content}

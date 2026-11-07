@@ -1,14 +1,17 @@
 """Запись снимка демо-данных с работающего backend BIS для статической демо-страницы.
 
-Запуск (на свежей демо-базе: bis migrate && bis seed-demo && bis run-jobs):
+Запуск (на свежей демо-базе: bis migrate && bis seed-demo && bis run-jobs; сервер и скрипт — с одинаковыми
+BIS_DATABASE_URL, BIS_STORAGE_DIR и BIS_SECRET_KEY):
     python scripts/record_demo.py http://localhost:8000 ../frontend/demo-snapshot.json
 
-Скрипт выполняет типовые действия через настоящий API (АОСР, письмо, КС-2/КС-3, М-29, акт списания,
-схема, сверка ПД, чат) и сохраняет ответы; демо-страница воспроизводит их без сервера.
+Сначала проходит рабочий день на объекте через ИИ-конвейер (scripts/demo_ai_scenario.py: почта и Telegram),
+затем скрипт выполняет типовые действия через настоящий API (АОСР, письмо, КС-2/КС-3, М-29, акт списания,
+схема, сверка ПД, чат, примеры для ленты ИИ) и сохраняет ответы; демо-страница воспроизводит их без сервера.
 """
 
 from __future__ import annotations
 
+import base64
 import html
 import io
 import json
@@ -17,16 +20,44 @@ from pathlib import Path
 
 import httpx
 
-KZH_SPEC = """ЖК-01-КЖ1. Фундаментная плита Пм1
-Спецификация
-Поз. | Наименование | Ед. | Кол.
-1 | Бетонирование фундаментной плиты Пм1, бетон B25 W8 | м3 | 1530
-2 | Армирование фундаментной плиты Пм1 | т | 84,2
-3 | Закладные детали МН-1 | шт | 48
-"""
 SURVEY = ("Точка;Xпр;Yпр;Xф;Yф;Hпр;Hф\n1;0;0;0,008;-0,005;-3,200;-3,195\n2;24;0;24,012;0,004;-3,200;-3,214\n"
           "3;24;18;23,990;18,021;-3,200;-3,203\n4;0;18;-0,003;18,006;-3,200;-3,199\n")
 PERIOD = {"period_start": "2026-05-01", "period_end": "2026-05-31"}
+UPD2 = """Универсальный передаточный документ
+Счет-фактура № 322 от 07.11.2026
+Продавец: ООО «ИзолПром» ИНН 7708000021
+1 | Мембрана гидроизоляционная ПВХ | м2 | 1200 | 410,00 | 492 000,00
+2 | Песок средней крупности | м3 | 300 | 900,00 | 270 000,00
+Сертификат соответствия № РОСС RU.АЯ12.Н00123 на мембрану ПВХ
+Всего к оплате 762 000,00"""
+PROTOCOL_OK = """ПРОТОКОЛ ИСПЫТАНИЙ № 57 от 07.11.2026
+Испытательная лаборатория ООО «СтройЛаб»
+Определение прочности бетона на сжатие
+Конструкция: фундаментная плита Пм1, захватка 3
+Требуемая прочность: 32,7 МПа (B25)
+Фактическая прочность: 34,6 МПа
+Заключение: соответствует требованиям"""
+SURVEY2 = ("Точка;Xпр;Yпр;Xф;Yф;Hпр;Hф\n1;24;0;24,004;-0,003;-3,200;-3,197\n2;48;0;48,006;0,002;-3,200;-3,204\n"
+           "3;48;18;47,995;18,004;-3,200;-3,202\n4;24;18;24,003;18,005;-3,200;-3,199\n")
+CLAIM = """АО «Заказчик-Девелопмент»
+ИНН 7702000003
+Исх. № 230/ЮР от 07.11.2026
+ПРЕТЕНЗИЯ
+о нарушении срока предоставления исполнительной документации
+По договору генподряда № ГП-01/2026 Генподрядчик не передал исполнительную документацию на устройство бетонной подготовки.
+Требуем в течение 10 дней передать документацию и уплатить неустойку 0,05% от стоимости работ за каждый день просрочки.
+Директор по правовым вопросам Котова Е.А."""
+SAMPLES = [
+    ("foreman", "Сообщение прораба", "Текст с площадки: объём, расход, простой",
+     "Залили бетон плиты Пм1 захватка 4 — 290 м3. Бетона ушло 296 м3. Кран простаивал 2 часа — не было стропальщика.", None),
+    ("upd", "УПД поставщика", "Накладная → приход на подтверждение", None, ("УПД_322.txt", UPD2, "text/plain")),
+    ("protocol", "Протокол испытаний", "Лаборатория подтверждает прочность", None, ("Протокол_57.txt", PROTOCOL_OK, "text/plain")),
+    ("survey", "Съёмка геодезиста", "CSV проект/факт → исполнительная схема", None,
+     ("съёмка_Пм1_захватка4.csv", SURVEY2, "text/csv")),
+    ("photo", "Фото с площадки", "Без модели зрения фото только сохраняется", "Захватка 4, опалубка борта плиты", "PHOTO"),
+    ("claim", "Претензия заказчика", "Секретарь регистрирует, юрист получает поручение", None,
+     ("Претензия_230-ЮР.txt", CLAIM, "text/plain")),
+]
 LISTS = ["objects", "counterparties", "contracts", "persons", "appointments", "tasks", "obligations", "estimate-items",
          "schedule", "volumes", "materials", "material-norms", "material-receipts", "material-usage"]
 CHAT = [
@@ -106,6 +137,9 @@ def xlsx_html(data: bytes) -> str:
 
 
 def main(base: str, out: Path) -> None:
+    import demo_ai_scenario
+
+    print("Рабочий день через ИИ-конвейер:", demo_ai_scenario.run())
     c = httpx.Client(base_url=base.rstrip("/") + "/api", timeout=120)
     token = c.post("/auth/login", json={"email": "admin@demo.bis", "password": "demo12345"}).json()["access_token"]
     c.headers["Authorization"] = f"Bearer {token}"
@@ -125,17 +159,14 @@ def main(base: str, out: Path) -> None:
     obj = objects[0]["id"]
     contract = next(x for x in get("/contracts") if x["number"] == "ГП-01/2026")
 
-    # проектная документация объекта (входит в исходное состояние демо)
-    pd_doc = None
+    # проектная документация объекта (входит в исходное состояние демо; КЖ1 пришёл от проектировщика в сценарии)
     for name, text in [("ЖК-01-ПЗ Пояснительная записка.txt", "Пояснительная записка"),
                        ("ЖК-01-АР Архитектурные решения.txt", "Объёмно-планировочные и архитектурные решения"),
                        ("ЖК-01-КР Конструктивные решения.txt", "Конструктивные решения"),
-                       ("ЖК-01-ИОС1 Электроснабжение.txt", "Система электроснабжения"),
-                       ("ЖК-01-КЖ1 Фундаментная плита.txt", KZH_SPEC)]:
-        d = post("/documents/upload", data={"kind": "project_doc", "object_id": obj, "title": name.rsplit(".", 1)[0]},
-                 files={"file": (name, text.encode(), "text/plain")})
-        if "КЖ1" in name:
-            pd_doc = d
+                       ("ЖК-01-ИОС1 Электроснабжение.txt", "Система электроснабжения")]:
+        post("/documents/upload", data={"kind": "project_doc", "object_id": obj, "title": name.rsplit(".", 1)[0]},
+             files={"file": (name, text.encode(), "text/plain")})
+    pd_doc = next((d for d in get("/documents?kind=project_doc&limit=100") if "КЖ1" in d["title"]), None)
 
     snap: dict = {"get": {}, "lists": {}, "actions": {}, "previews": {}, "chat": [], "chunks": [],
                   "demo_period": [PERIOD["period_start"], PERIOD["period_end"]], "demo_contract_id": contract["id"],
@@ -149,6 +180,17 @@ def main(base: str, out: Path) -> None:
         for suffix in ("plan-fact", "materials/balance", "pd-completeness"):
             snap["get"][f"/objects/{o['id']}/{suffix}"] = get(f"/objects/{o['id']}/{suffix}")
     snap["documents"] = get("/documents?limit=500")
+    feed = get("/ai/feed?limit=100")
+    snap["ai"] = {"events": feed["events"], "specialists": get("/ai/specialists"), "files": {}, "samples": [],
+                  "sample_documents": []}
+
+    def keep_photo(ev: dict) -> None:
+        if ev["kind"] == "photo" and ev.get("file_url"):
+            raw = c.get(ev["file_url"].removeprefix("/api")).content
+            snap["ai"]["files"][ev["id"]] = {"mime": ev["mime"] or "image/jpeg", "data": base64.b64encode(raw).decode()}
+
+    for ev in feed["events"]:
+        keep_photo(ev)
     snap["notifications"] = get("/notifications?limit=200")
     snap["memory"] = get("/memory")
     snap["users"] = get("/users")
@@ -205,9 +247,21 @@ def main(base: str, out: Path) -> None:
     for q in CHAT:
         snap["chat"].append({"question": q, "reply": post("/chat", json={"message": q})})
 
+    # примеры для ленты ИИ: настоящий разбор сервером, демо воспроизводит результат по кнопке
+    before = {d["id"] for d in get("/documents?limit=1000")}
+    for sid, title, hint, text, file in SAMPLES:
+        if file == "PHOTO":
+            file = ("photo.jpg", demo_ai_scenario.photo(), "image/jpeg")
+        elif file:
+            file = (file[0], file[1].encode(), file[2])
+        ev = post("/intake", data={"text": text} if text else {}, files={"file": file} if file else None)
+        keep_photo(ev)
+        snap["ai"]["samples"].append({"id": sid, "title": title, "hint": hint, "event": ev})
+    snap["ai"]["sample_documents"] = [d for d in get("/documents?limit=1000") if d["id"] not in before]
+
     # предпросмотры файлов
     docs = [a["aosr_doc"], a["letter_doc"], a["ks2"]["ks2"], a["ks2"]["ks3"], a["m29_doc"], a["writeoff_doc"],
-            a["scheme_doc"], *snap["documents"]]
+            a["scheme_doc"], *snap["documents"], *snap["ai"]["sample_documents"]]
     for d in docs:
         if not d.get("file_name") or d["id"] in snap["previews"]:
             continue
