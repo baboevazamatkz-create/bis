@@ -1,5 +1,10 @@
 # Установка BIS в Yandex Cloud
 
+> Нужен только для доступа сотрудников из любого места. Чтобы попробовать на своём компьютере с Windows —
+> без платной виртуальной машины: откройте PowerShell и выполните
+> `irm https://raw.githubusercontent.com/baboevazamatkz-create/bis/claude/construction-ai-automation-system-lya9lz/deploy/install.ps1 | iex`
+> (нужен Docker Desktop — скрипт поставит его сам).
+
 Около 15 минут. Понадобятся: доступ к консоли Yandex Cloud, секретный ключ AI Studio (`AQVN…`) и идентификатор
 каталога (`b1g…`). Сервисному аккаунту ключа нужны роли `ai.languageModels.user`, `ai.speechkit-stt.user`,
 `ai.vision.user` в этом каталоге.
