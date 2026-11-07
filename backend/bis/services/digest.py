@@ -74,7 +74,11 @@ def build(db: Session, org_id: uuid.UUID, day: dt.date) -> dict[str, Any]:
                                                                      Task.due_date == day + dt.timedelta(days=1))) or 0
     events = db.scalar(select(func.count()).select_from(IntakeEvent).where(
         IntakeEvent.organization_id == org_id, IntakeEvent.created_at >= start, IntakeEvent.created_at < end)) or 0
+    from bis.services.risk import ranking
+
+    risks = [r for r in ranking(db, org_id, day) if r["level"] != "low"][:3]
     return {"date": day.isoformat(), "done": done, "received": received, "issues": issues, "pending": pending,
+            "risks": [{"object": r["object"], "level": r["level"], "reasons": r["reasons"][:3]} for r in risks],
             "overdue_tasks": overdue, "tasks_tomorrow": tomorrow, "events": events,
             "silent_foremen": [u.full_name for u in silent_foremen(db, org_id, day)]}
 
@@ -118,6 +122,8 @@ def text(d: dict[str, Any]) -> str:
         lines.append("Внимание: " + ", ".join(tail) + ".")
     if d["silent_foremen"]:
         lines.append("Не отчитались: " + ", ".join(d["silent_foremen"]) + ".")
+    for r in d.get("risks") or []:
+        lines.append(f"{'🔴' if r['level'] == 'high' else '🟠'} Риск — {r['object']}: " + "; ".join(r["reasons"]) + ".")
     return "\n".join(lines)
 
 

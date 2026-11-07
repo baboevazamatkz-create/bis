@@ -155,6 +155,14 @@ def control_summary(db: Session = Depends(get_db), user: User = Depends(require(
     }
 
 
+@router.get("/control/risks")
+def control_risks(db: Session = Depends(get_db), user: User = Depends(require("registry:read"))):
+    """Рейтинг рисков объектов: балл и причины (просрочки, замечания, скрытые работы без АОСР, поставки без сертификатов)."""
+    from bis.services.risk import ranking
+
+    return ranking(db, user.organization_id)
+
+
 @router.get("/control/digest")
 def control_digest(date: dt.date | None = None, db: Session = Depends(get_db), user: User = Depends(require("registry:read"))):
     """Сводка дня: сделано, пришло, замечания, ждёт решения, сроки, кто из прорабов не отчитался."""

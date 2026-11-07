@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import { Badge, date, PageHead, Stat, useAsync } from "../components";
+import { Badge, date, Hint, PageHead, Stat, useAsync } from "../components";
 
 interface Summary {
   obligations_overdue: number;
@@ -32,6 +32,7 @@ export default function Control() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [contracts, setContracts] = useState<Record<string, string>>({});
   const [digest, setDigest] = useState<string>("");
+  const [risks, setRisks] = useState<{ object_id: string; object: string; name: string; score: number; level: string; reasons: string[] }[]>([]);
   const { run, Alerts } = useAsync();
 
   const load = () => {
@@ -46,6 +47,7 @@ export default function Control() {
       setContracts(Object.fromEntries(rows.map((c) => [c.id, c.number]))));
     api<Job[]>("/jobs").then(setJobs).catch(() => setJobs([]));
     api<{ text: string }>("/control/digest").then((d) => setDigest(d.text)).catch(() => setDigest(""));
+    api<typeof risks>("/control/risks").then(setRisks).catch(() => setRisks([]));
   };
   useEffect(load, []);
 
@@ -60,6 +62,18 @@ export default function Control() {
       <PageHead title="Контроль исполнения" hint={<>Сводка дня приходит руководителям в Telegram вечером (BIS_DIGEST_HOUR,
         по умолчанию 18:00); прорабам, которые ничего не прислали, днём приходит напоминание (BIS_REMIND_HOUR, 16:00).</>} />
       <Alerts />
+      {risks.some((r) => r.level !== "low") && (
+        <div className="panel">
+          <h2>Риски по объектам <Hint>Балл — сумма фактов: просрочки, замечания и простои за неделю, скрытые работы без АОСР,
+            неподтверждённые объёмы, поставки без документов о качестве. Пересчитывается при каждом открытии.</Hint></h2>
+          {risks.filter((r) => r.level !== "low").map((r) => (
+            <div key={r.object_id} className={`risk risk-${r.level}`}>
+              <b title={r.name}>{r.object}</b> <span className="badge">{r.score}</span>
+              <div className="small muted">{r.reasons.join(" · ")}</div>
+            </div>
+          ))}
+        </div>
+      )}
       {digest && <pre className="panel digest">{digest}</pre>}
       {summary && (
         <div className="stats">
