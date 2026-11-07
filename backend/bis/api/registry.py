@@ -110,6 +110,10 @@ def crud_router(prefix: str, model: Any, schema: type[BaseModel], search: tuple[
         db.flush()
         audit(db, user.organization_id, actor_type="user", actor=str(user.id), action=f"{entity}.create",
               entity_type=entity, entity_id=row.id)
+        if entity == "object":  # первый объект: загруженный раньше архив относится к нему
+            from bis.services.archive import assign_single_object
+
+            assign_single_object(db, user.organization_id)
         db.commit()
         return row
 

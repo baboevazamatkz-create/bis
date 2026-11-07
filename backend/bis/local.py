@@ -120,7 +120,23 @@ def prepare(workdir: Path) -> Path:
     from bis.cli import _alembic_upgrade
 
     _alembic_upgrade()
+    _repair()
     return data
+
+
+def _repair() -> None:
+    """Поправить загруженный раньше архив (объект, даты) — быстро и один раз для каждого документа."""
+    try:
+        from bis.db import SessionLocal
+        from bis.services.archive import repair_archive
+
+        with SessionLocal() as db:
+            fixed = repair_archive(db)
+            db.commit()
+        if any(fixed.values()):
+            print(f"  Архив: привязано к объекту {fixed['objects']}, даты уточнены у {fixed['dates']}", flush=True)
+    except Exception as e:  # noqa: BLE001 — запуску это не мешает
+        print(f"  Архив: не удалось поправить ({e})", flush=True)
 
 
 def run(workdir: Path, host: str, port: int) -> None:

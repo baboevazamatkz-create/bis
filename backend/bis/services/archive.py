@@ -16,7 +16,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from bis.ai import understanding as und
@@ -106,10 +106,12 @@ def detect_type(gateway, text: str, name: str) -> tuple[str, str]:
 
 
 def _object_for(db: Session, org_id: uuid.UUID, hint: str) -> uuid.UUID | None:
-    """Объект по названию папки или тексту: шифр или значимые слова названия."""
+    """Объект по названию папки или тексту: шифр или значимые слова названия; объект один — он."""
     from bis.services import works as wsvc
 
     objs = db.scalars(select(ConstructionObject).where(ConstructionObject.organization_id == org_id)).all()
+    if len(objs) == 1:
+        return objs[0].id
     low = hint.lower()
     by_code = [o for o in objs if o.code and o.code.lower() in low]
     if len(by_code) == 1:
@@ -118,6 +120,70 @@ def _object_for(db: Session, org_id: uuid.UUID, hint: str) -> uuid.UUID | None:
     named = [o for o in objs if (own := wsvc._stems(o.name) - wsvc._stems("жилой дом корпус объект комплекс здание"))
              and len(own & stems) / len(own) >= 0.6]
     return named[0].id if len(named) == 1 else None
+
+
+def assign_single_object(db: Session, org_id: uuid.UUID) -> int:
+    """У организации один объект — документы и договоры без объекта относятся к нему (архив загрузили раньше объекта)."""
+    objs = db.scalars(select(ConstructionObject.id).where(ConstructionObject.organization_id == org_id).limit(2)).all()
+    if len(objs) != 1:
+        return 0
+    n = db.execute(update(Document).where(Document.organization_id == org_id, Document.object_id.is_(None),
+                                          Document.kind.notin_(["order"])).values(object_id=objs[0])).rowcount
+    n += db.execute(update(Contract).where(Contract.organization_id == org_id, Contract.object_id.is_(None))
+                    .values(object_id=objs[0])).rowcount
+    return n
+
+
+def repair_archive(db: Session) -> dict[str, int]:
+    """Поправить загруженное раньше: объект (если он один) и дату документа из текста вместо даты загрузки."""
+    from sqlalchemy import cast
+    from sqlalchemy.types import Date
+
+    from bis.models import KnowledgeChunk, KnowledgeSource, Organization
+
+    fixed = {"objects": 0, "dates": 0}
+    for org_id in db.scalars(select(Organization.id)).all():
+        fixed["objects"] += assign_single_object(db, org_id)
+    docs = db.scalars(select(Document).where(Document.source == "archive", Document.date == cast(Document.created_at, Date),
+                                             Document.data["date_checked"].astext.is_(None)).limit(5000)).all()
+    for doc in docs:
+        text = db.scalar(select(KnowledgeChunk.content).join(KnowledgeSource, KnowledgeSource.id == KnowledgeChunk.source_id)
+                         .where(KnowledgeSource.document_id == doc.id).order_by(KnowledgeChunk.ord).limit(1)) or ""
+        doc.date = doc_date(text, (doc.data or {}).get("detected_type", ""))
+        doc.data = {**(doc.data or {}), "date_checked": True}
+        fixed["dates"] += 1
+    return fixed
+
+
+_MONTHS = {m: i for i, m in enumerate(["январ", "феврал", "март", "апрел", "ма", "июн", "июл", "август", "сентябр",
+                                        "октябр", "ноябр", "декабр"], 1)}
+_DMY = r"(\d{1,2})[./](\d{1,2})[./](\d{2,4})"
+_LONG = r"«?(\d{1,2})»?\s+(январ|феврал|март|апрел|ма|июн|июл|август|сентябр|октябр|ноябр|декабр)[а-я]*\s+(\d{4})"
+
+
+def _date(d: str, m: str, y: str) -> dt.date | None:
+    try:
+        year = int(y) + (2000 if len(y) == 2 else 0)
+        month = int(m) if m.isdigit() else _MONTHS[m]
+        out = dt.date(year, month, int(d))
+    except (ValueError, KeyError):
+        return None
+    return out if dt.date(1990, 1, 1) <= out <= dt.date.today() + dt.timedelta(days=366) else None
+
+
+def doc_date(text: str, dtype: str) -> dt.date | None:
+    """Дата документа из текста: для актов — окончание работ, для писем и договоров — «от …» в шапке."""
+    head = text[:1500]
+    patterns = []
+    if dtype in ("aosr", "aook"):
+        patterns.append(r"окончани\w*\s+работ\w*[^0-9]{0,30}" + _DMY)
+    patterns += [r"\bот\s+" + _DMY, r"\bот\s+" + _LONG, r"(?:дата|составлен\w*)[^0-9]{0,20}" + _DMY, _LONG, _DMY]
+    for pattern in patterns:
+        for m in re.finditer(pattern, head if pattern not in (_LONG, _DMY) else text[:600], re.IGNORECASE):
+            got = _date(*m.groups()[-3:])
+            if got:
+                return got
+    return None
 
 
 def import_file(db: Session, storage: Storage, gateway, embedder, org_id: uuid.UUID, *, data: bytes, name: str,
@@ -142,8 +208,10 @@ def import_file(db: Session, storage: Storage, gateway, embedder, org_id: uuid.U
                               "folder": folder[:300]},
                         file_bytes=data, file_name=Path(name).name, created_by=actor, object_id=object_id,
                         mime=mime or "application/octet-stream")
-    doc.status, doc.source, doc.date = "registered", "archive", doc.date or dt.date.today()
+    doc.status, doc.source = "registered", "archive"
+    doc.date = doc.date or doc_date(text, dtype)
     result: dict[str, Any] = {"file": name, "status": "ok", "type": dtype, "kind": kind, "document_id": str(doc.id),
+                              "date": doc.date.isoformat() if doc.date else None,
                               "object_id": str(object_id) if object_id else None, "text": how, "chars": len(text)}
     if text.strip():
         from bis.rag.ingest import ingest_text

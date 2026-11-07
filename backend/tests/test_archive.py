@@ -57,3 +57,33 @@ def test_archive_import_mixed_folder(client, auth, db):
     # архив доступен умному поиску
     res = client.get("/api/knowledge/search", headers=auth, params={"q": "армирование плиты Пм1 акт", "scope": "organization"}).json()
     assert any("АОСР" in h["title"] for h in res["results"])
+
+
+def test_archive_dates_and_single_object(client, db):
+    from conftest import login
+
+    from bis.demo import create_organization
+    from bis.models import Document
+    from bis.services.archive import repair_archive
+
+    create_organization(db, name="ООО Пилот", inn="1435000001", admin_email="pilot@p.ru", admin_password="12345678",
+                        admin_name="Админ")
+    db.commit()
+    auth = login(client, "pilot@p.ru", "12345678")
+    letter = "АО «Заказчик»\nИсх. № 112 от 28.04.2026\nО предоставлении ИД\nПросим предоставить.".encode()
+    r = _upload(client, auth, "Вх 112.txt", letter)
+    assert r["date"] == "2026-04-28" and r["object_id"] is None  # объекта ещё нет
+    aosr = "АКТ освидетельствования скрытых работ № 3\nДаты: начало работ 22.04.2026, окончание работ 25.04.2026".encode()
+    assert _upload(client, auth, "АОСР 3.txt", aosr)["date"] == "2026-04-25"
+
+    obj = client.post("/api/objects", headers=auth, json={"name": "Жилой дом по ул. Ленина, 10"}).json()
+    db.expire_all()
+    assert db.get(Document, r["document_id"]).object_id is not None  # архив отнесён к единственному объекту
+    later = _upload(client, auth, "Исх 45.txt", "ООО Пилот\nИсх. № 45 от 18.03.2026\nО поставке".encode())
+    assert later["object_id"] == obj["id"]
+
+    doc = db.get(Document, later["document_id"])  # загружено старой версией: дата = день загрузки
+    doc.date, doc.data = doc.created_at.date(), {k: v for k, v in doc.data.items() if k != "date_checked"}
+    db.commit()
+    assert repair_archive(db)["dates"] >= 1
+    assert db.get(Document, later["document_id"]).date.isoformat() == "2026-03-18"
