@@ -55,6 +55,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--then", nargs=argparse.REMAINDER, default=[], help="Команда bis после подготовки (seed-demo, create-org …)")
     sub.add_parser("cad-mcp", help="MCP-сервер для AutoCAD/nanoCAD (ИИ рисует в чертеже)")
     sub.add_parser("cad-check", help="Диагностика подключения к AutoCAD/nanoCAD")
+    p = sub.add_parser("import-archive", help="Загрузить архив организации из папки (документы, договоры, письма, схемы)")
+    p.add_argument("folder", type=Path)
+    p.add_argument("--org-inn", help="ИНН организации (по умолчанию — первая)")
+    p.add_argument("--object", help="Шифр объекта для всех файлов (иначе — по папке и тексту)")
+    p.add_argument("--no-contracts", action="store_true", help="Не разбирать договоры на обязательства")
     sub.add_parser("reindex", help="Пересчитать смысловые векторы базы знаний (после смены модели эмбеддингов)")
     sub.add_parser("llm-check", help="Проверить подключение моделей: ответ, JSON, время")
     sub.add_parser("telegram-poll", help="Telegram-бот в режиме опроса (без входящих соединений, закрытый контур)")
@@ -106,6 +111,44 @@ def main(argv: list[str] | None = None) -> int:
         from bis.cad.bridge import diagnose
 
         print(json.dumps(diagnose(), ensure_ascii=False, indent=2))
+        return 0
+    if args.cmd == "import-archive":
+        from collections import Counter
+
+        from sqlalchemy import select
+
+        from bis.db import SessionLocal
+        from bis.llm.gateway import get_gateway
+        from bis.models import ConstructionObject, Organization
+        from bis.rag.embeddings import get_embedder
+        from bis.services.archive import import_file
+        from bis.services.storage import get_storage
+
+        with SessionLocal() as db:
+            q = select(Organization)
+            org = db.scalar(q.where(Organization.inn == args.org_inn) if args.org_inn else q.order_by(Organization.created_at))
+            if org is None:
+                print("Организация не найдена", file=sys.stderr)
+                return 1
+            obj_id = None
+            if args.object:
+                obj = db.scalar(select(ConstructionObject).where(ConstructionObject.organization_id == org.id,
+                                                                 ConstructionObject.code == args.object))
+                obj_id = obj.id if obj else None
+            files = [f for f in sorted(args.folder.rglob("*")) if f.is_file()]
+            stats: Counter = Counter()
+            for i, f in enumerate(files, 1):
+                try:
+                    r = import_file(db, get_storage(), get_gateway(), get_embedder(), org.id, data=f.read_bytes(),
+                                    name=f.name, object_id=obj_id, folder=str(f.parent.relative_to(args.folder)),
+                                    analyze_contracts=not args.no_contracts)
+                    db.commit()
+                except Exception as e:  # noqa: BLE001
+                    db.rollback()
+                    r = {"status": "error", "error": str(e)[:200]}
+                stats[r.get("type") or r["status"]] += 1
+                print(f"[{i}/{len(files)}] {f.name}: {r.get('type', r['status'])}" + (f" — {r['error']}" if r.get("error") else ""))
+            print("Итого:", ", ".join(f"{k}: {v}" for k, v in stats.most_common()))
         return 0
     if args.cmd == "reindex":
         from sqlalchemy import select

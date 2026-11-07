@@ -1,0 +1,178 @@
+"""Загрузка архива организации: папки с исполнительной документацией, договорами, письмами, проектом.
+
+Каждый файл: текст (PDF, DOCX, XLSX, EML, TXT; сканы — OCR; DXF — надписи чертежа) → тип документа (правила,
+при сомнении — модель) → реестр документов объекта → база знаний (умный поиск, образцы для ИИ-специалистов).
+Договоры разбираются на обязательства; письма регистрируются без поручений (это история, а не новые входящие).
+Повторная загрузка того же файла пропускается (по содержимому).
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+import hashlib
+import mimetypes
+import re
+import uuid
+from pathlib import Path
+from typing import Any
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from bis.ai import understanding as und
+from bis.models import ConstructionObject, Contract, Document
+from bis.rag.parsers import UnsupportedFormat, parse_file
+from bis.services.documents import save_document
+from bis.services.storage import Storage
+
+# Документы, которых нет среди входящих с площадки, но много в архиве
+ARCHIVE_RULES: list[tuple[str, str]] = [
+    ("aosr", r"акт\w*\s+освидетельствовани\w+\s+скрыт|\bаоср\b"),
+    ("aook", r"освидетельствовани\w+\s+ответственн\w+\s+конструкц|\bаоок\b"),
+    ("scheme", r"исполнительн\w+\s+(?:геодезическ\w+\s+)?схем|\bигс\b|исп\.?\s*схем"),
+    ("ks2", r"\bкс-?2\b|акт\w*\s+о\s+при[её]мке\s+выполненных\s+работ"),
+    ("ks3", r"\bкс-?3\b|справк\w+\s+о\s+стоимости\s+выполненных"),
+    ("order", r"^\s*приказ\b|\bприказ\s*№"),
+    ("work_journal", r"общ\w+\s+журнал\s+работ|журнал\s+(?:бетонных|сварочных|выполнения)\s+работ"),
+]
+KIND = {"aosr": "aosr", "aook": "aook", "scheme": "scheme", "ks2": "ks2", "ks3": "ks3", "order": "order",
+        "work_journal": "work_journal", "contract": "contract", "letter": "incoming_letter", "project_doc": "project_doc",
+        "upd": "supply_doc", "certificate": "certificate", "test_protocol": "test_protocol", "survey": "survey",
+        "site_photo": "photo", "foreman_report": "other", "unknown": "other"}
+KNOWLEDGE = {"contract": "contract", "letter": "letter", "project_doc": "project_doc"}
+TITLES = {"aosr": "АОСР", "aook": "АООК", "scheme": "Исполнительная схема", "ks2": "КС-2", "ks3": "КС-3", "order": "Приказ",
+          "work_journal": "Журнал работ"}
+SKIP = re.compile(r"(^~\$|^\.|thumbs\.db$|desktop\.ini$)", re.IGNORECASE)
+
+
+def _text(data: bytes, name: str, mime: str | None) -> tuple[str, str]:
+    """(текст, как получен): parsed | ocr | dxf | none."""
+    ext = Path(name).suffix.lower()
+    if ext == ".dxf":
+        try:
+            import io
+
+            import ezdxf
+
+            doc = ezdxf.read(io.StringIO(data.decode("cp1251", errors="ignore") if b"\r\n" in data[:200] else
+                                         data.decode("utf-8", errors="ignore")))
+            texts = [e.dxf.text for e in doc.modelspace().query("TEXT")] + \
+                    [e.plain_text() for e in doc.modelspace().query("MTEXT")]
+            return "\n".join(t for t in texts if t), "dxf"
+        except Exception:  # noqa: BLE001 — чертёж без читаемых надписей
+            return "", "none"
+    if ext in (".dwg",):
+        return "", "none"
+    if (mime or "").startswith("image/") or ext in (".jpg", ".jpeg", ".png", ".tif", ".tiff"):
+        return _ocr(data, mime or mimetypes.guess_type(name)[0]), "ocr"
+    try:
+        parsed = parse_file(data, name, mime)
+    except UnsupportedFormat:
+        return "", "none"
+    text = parsed.text
+    if parsed.meta.get("needs_ocr") or not text.strip():
+        scanned = _ocr(data, mime or "application/pdf")
+        if scanned:
+            return scanned, "ocr"
+    return text, "parsed"
+
+
+def _ocr(data: bytes, mime: str | None) -> str:
+    from bis import ocr
+
+    if not ocr.available():
+        return ""
+    try:
+        return ocr.recognize(data, mime)
+    except ocr.OCRError:
+        return ""
+
+
+def detect_type(gateway, text: str, name: str) -> tuple[str, str]:
+    """(тип, кем определён)."""
+    # тип — по названию файла и заголовку документа (первые строки), а не по упоминаниям в тексте:
+    # в договоре встречаются «КС-2» и «АОСР», в письме — «исполнительная схема»
+    head = "\n".join(ln for ln in text.splitlines() if ln.strip())[:300]
+    probe = (Path(name).stem.replace("_", " ") + "\n" + head).lower()
+    if re.search(r"\bисх\.?\s*№|^\s*вх\.?\s*№", head, re.IGNORECASE | re.MULTILINE):
+        return "letter", "rules"
+    for t, pattern in ARCHIVE_RULES:
+        if re.search(pattern, probe, re.IGNORECASE | re.MULTILINE):
+            return t, "rules"
+    if Path(name).suffix.lower() in (".dwg", ".dxf"):
+        return "scheme", "rules"
+    t, _, by = und.classify(gateway, text, name, "document")
+    return t, by
+
+
+def _object_for(db: Session, org_id: uuid.UUID, hint: str) -> uuid.UUID | None:
+    """Объект по названию папки или тексту: шифр или значимые слова названия."""
+    from bis.services import works as wsvc
+
+    objs = db.scalars(select(ConstructionObject).where(ConstructionObject.organization_id == org_id)).all()
+    low = hint.lower()
+    by_code = [o for o in objs if o.code and o.code.lower() in low]
+    if len(by_code) == 1:
+        return by_code[0].id
+    stems = wsvc._stems(hint)
+    named = [o for o in objs if (own := wsvc._stems(o.name) - wsvc._stems("жилой дом корпус объект комплекс здание"))
+             and len(own & stems) / len(own) >= 0.6]
+    return named[0].id if len(named) == 1 else None
+
+
+def import_file(db: Session, storage: Storage, gateway, embedder, org_id: uuid.UUID, *, data: bytes, name: str,
+                mime: str | None = None, object_id: uuid.UUID | None = None, folder: str = "",
+                analyze_contracts: bool = True, actor: str = "system:archive") -> dict[str, Any]:
+    if SKIP.search(Path(name).name):
+        return {"file": name, "status": "skipped", "reason": "служебный файл"}
+    digest = hashlib.sha256(data).hexdigest()
+    dup = db.scalar(select(Document.id).where(Document.organization_id == org_id, Document.data["sha256"].astext == digest))
+    if dup:
+        return {"file": name, "status": "duplicate", "document_id": str(dup)}
+    mime = mime or mimetypes.guess_type(name)[0]
+    text, how = _text(data, name, mime)
+    dtype, by = detect_type(gateway, text, name)
+    object_id = object_id or _object_for(db, org_id, f"{folder} {name} {text[:1500]}")
+    kind = KIND.get(dtype, "other")
+    title = Path(name).stem
+    if dtype in TITLES and not title.lower().startswith(TITLES[dtype].lower()[:3]):
+        title = f"{TITLES[dtype]}: {title}"
+    doc = save_document(db, storage, org_id=org_id, kind=kind, title=title[:900],
+                        data={"sha256": digest, "archive": True, "detected_type": dtype, "detected_by": by, "text_from": how,
+                              "folder": folder[:300]},
+                        file_bytes=data, file_name=Path(name).name, created_by=actor, object_id=object_id,
+                        mime=mime or "application/octet-stream")
+    doc.status, doc.source, doc.date = "registered", "archive", doc.date or dt.date.today()
+    result: dict[str, Any] = {"file": name, "status": "ok", "type": dtype, "kind": kind, "document_id": str(doc.id),
+                              "object_id": str(object_id) if object_id else None, "text": how, "chars": len(text)}
+    if text.strip():
+        from bis.rag.ingest import ingest_text
+
+        try:
+            with db.begin_nested():
+                ingest_text(db, embedder, org_id=org_id, text=text, title=doc.title,
+                            kind=KNOWLEDGE.get(dtype, "org_document"), document_id=doc.id)
+            result["knowledge"] = True
+        except Exception as e:  # noqa: BLE001 — документ в реестре есть, поиск по нему — нет
+            result["knowledge_error"] = str(e)[:200]
+    if dtype == "contract" and analyze_contracts and text.strip():
+        from bis.ai.conveyor import contract_role
+        from bis.models import Organization
+        from bis.services.contracts import analyze_contract
+
+        head = text.lower()[:800]
+        ckind = "supply" if "поставк" in head else "subcontract" if "субподряд" in head else \
+            "design" if "проектн" in head or "проектир" in head else "general"
+        c = Contract(organization_id=org_id, kind=ckind, our_role=contract_role(text, db.get(Organization, org_id), ckind),
+                     number="б/н", object_id=object_id, document_id=doc.id)
+        db.add(c)
+        db.flush()
+        doc.contract_id = c.id
+        try:
+            with db.begin_nested():
+                extracted, _, added = analyze_contract(db, storage, gateway, c, actor="agent:lawyer", text=text)
+            c.number = (extracted.number or c.number)[:100]
+            result.update(contract_id=str(c.id), obligations=added)
+        except Exception as e:  # noqa: BLE001
+            result["contract_error"] = str(e)[:200]
+    return result

@@ -4,6 +4,7 @@ import { previewFor } from "./demo/mock";
 import Login from "./pages/Login";
 import Feed from "./pages/Feed";
 import Specialists from "./pages/Specialists";
+import ArchiveImport from "./pages/ArchiveImport";
 import Chat from "./pages/Chat";
 import Control from "./pages/Control";
 import Contracts from "./pages/Contracts";
@@ -86,6 +87,7 @@ export default function App() {
   switch (page) {
     case "feed": content = <Feed onPending={setPendingAI} />; break;
     case "specialists": content = <Specialists user={user} />; break;
+    case "archive": content = <ArchiveImport />; break;
     case "chat": content = <Chat />; break;
     case "control": content = <Control />; break;
     case "contracts": content = <Contracts />; break;
@@ -131,6 +133,7 @@ export default function App() {
           </>
         )}
         <div className="nav-group">Организация</div>
+        {nav("archive", "Загрузка архива")}
         {nav("settings", "Настройки")}
         <div className="sidebar-footer">
           {user.full_name}

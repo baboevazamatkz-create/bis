@@ -346,3 +346,28 @@ def export_journal(object_id: uuid.UUID, body: PeriodIn, db: Session = Depends(g
         raise HTTPException(400, str(e)) from e
     db.commit()
     return doc
+
+
+@router.post("/archive/import")
+async def archive_import(file: UploadFile = File(...), object_id: uuid.UUID | None = Form(None), folder: str = Form(""),
+                         analyze_contracts: bool = Form(True), db: Session = Depends(get_db),
+                         user: User = Depends(require("documents:write"))):
+    """Загрузка архива по одному файлу: тип определяет ИИ, документ — в реестр и базу знаний, договор — на контроль."""
+    from bis.llm.gateway import get_gateway
+    from bis.rag.embeddings import get_embedder
+    from bis.services.archive import import_file
+
+    if object_id:
+        _owned(db, user, ConstructionObject, object_id, "Объект")
+    data = await file.read()
+    if len(data) > 100 * 1024 * 1024:
+        raise HTTPException(413, "Файл больше 100 МБ")
+    try:
+        r = import_file(db, get_storage(), get_gateway(), get_embedder(), user.organization_id, data=data,
+                        name=file.filename or "file", mime=file.content_type, object_id=object_id, folder=folder,
+                        analyze_contracts=analyze_contracts, actor=f"user:{user.id}")
+    except Exception as e:  # noqa: BLE001 — один плохой файл не останавливает загрузку архива
+        db.rollback()
+        return {"file": file.filename, "status": "error", "error": str(e)[:300]}
+    db.commit()
+    return r
