@@ -245,5 +245,45 @@ def update_task(ctx: AgentContext, args: UpdateTaskArgs) -> dict:
     return _task_out(ctx, t)
 
 
-CONTROL_TOOLS = [find_persons, get_contract_details, analyze_contract, list_obligations, update_obligation,
+class DocumentArgs(BaseModel):
+    document_id: str
+
+
+def _owned_document(ctx: AgentContext, document_id: str):
+    from bis.models import Document
+
+    doc = ctx.db.get(Document, _uuid(document_id, "документа"))
+    if doc is None or doc.organization_id != ctx.org_id:
+        raise LookupError("Документ не найден")
+    return doc
+
+
+@tool("get_document", "Документ из реестра: реквизиты, результаты разбора и текст (для ответа на письмо, проверки).",
+      scopes=("documents:read",))
+def get_document(ctx: AgentContext, args: DocumentArgs) -> dict:
+    from bis.rag.parsers import UnsupportedFormat, parse_file
+
+    doc = _owned_document(ctx, args.document_id)
+    text = None
+    if doc.file_key:
+        try:
+            text = parse_file(ctx.storage.get(doc.file_key), doc.file_name or "file", doc.mime).text[:8000]
+        except UnsupportedFormat:
+            text = None
+    return {"id": str(doc.id), "kind": doc.kind, "title": doc.title, "number": doc.number, "date": doc.date,
+            "status": doc.status, "analysis": (doc.data or {}).get("analysis"), "text": text}
+
+
+@tool("process_incoming_letter", "Разобрать входящее письмо: зарегистрировать, определить суть и срок ответа, "
+      "создать поручения ответственным.", scopes=("documents:write",))
+def process_incoming_letter(ctx: AgentContext, args: DocumentArgs) -> dict:
+    from bis.services.correspondence import process_incoming
+
+    doc = _owned_document(ctx, args.document_id)
+    a = process_incoming(ctx.db, ctx.storage, ctx.gateway, doc, actor=f"agent:{ctx.agent_name}")
+    tasks = [_task_out(ctx, ctx.db.get(Task, _uuid(t, "поручения"))) for t in (doc.data or {}).get("tasks", [])]
+    return {"registered_as": doc.number, "analysis": a.model_dump(mode="json"), "tasks": tasks}
+
+
+CONTROL_TOOLS = [get_document, process_incoming_letter, find_persons, get_contract_details, analyze_contract, list_obligations, update_obligation,
                  calc_penalty_tool, list_tasks, create_task, update_task]

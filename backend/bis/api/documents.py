@@ -132,6 +132,7 @@ async def upload_document(
     number: str | None = Form(None),
     object_id: uuid.UUID | None = Form(None),
     index: bool = Form(True),
+    process: bool = Form(True),
     db: Session = Depends(get_db),
     user: User = Depends(require("documents:write")),
 ):
@@ -151,6 +152,14 @@ async def upload_document(
                          mime=mime)
         except UnsupportedFormat:
             doc.issues = [{"level": "warning", "field": "file", "message": "Формат не индексируется в базе знаний"}]
+    if kind == "incoming_letter" and process:
+        from bis.llm.gateway import get_gateway
+        from bis.services.correspondence import process_incoming
+
+        try:
+            process_incoming(db, get_storage(), get_gateway(), doc, actor="agent:secretary")
+        except UnsupportedFormat:
+            doc.issues = [*doc.issues, {"level": "warning", "field": "file", "message": "Текст письма не извлечён — разберите вручную"}]
     db.commit()
     return doc
 
