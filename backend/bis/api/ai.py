@@ -66,7 +66,7 @@ def _owned(db: Session, user: User, model, item_id: uuid.UUID, what: str):
 
 
 @router.post("/intake")
-async def intake(file: UploadFile | None = File(None), text: str | None = Form(None), object_id: uuid.UUID | None = Form(None),
+def intake(file: UploadFile | None = File(None), text: str | None = Form(None), object_id: uuid.UUID | None = Form(None),
                  db: Session = Depends(get_db), user: User = Depends(require("documents:write"))):
     """Принять сигнал с производства: фото, голосовое, документ или текст. ИИ разберёт и выполнит/предложит действия."""
     if file is None and not (text or "").strip():
@@ -74,7 +74,7 @@ async def intake(file: UploadFile | None = File(None), text: str | None = Form(N
     if object_id:
         _owned(db, user, ConstructionObject, object_id, "Объект")
     env = env_for(db, user)
-    data = await file.read() if file is not None else None
+    data = file.file.read() if file is not None else None
     if data is not None and len(data) > 50 * 1024 * 1024:
         raise HTTPException(413, "Файл больше 50 МБ")
     event = cv.ingest(env, source="upload", text=text, data=data, file_name=file.filename if file else None,

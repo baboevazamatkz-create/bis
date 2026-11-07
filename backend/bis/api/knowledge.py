@@ -64,7 +64,7 @@ def kinds():
 
 
 @router.post("/upload", response_model=SourceOut, status_code=201)
-async def upload(
+def upload(
     file: UploadFile = File(...),
     kind: str = Form("org_document"),
     title: str | None = Form(None),
@@ -76,7 +76,7 @@ async def upload(
 ):
     if scope == "global" and not user.is_platform_admin:
         raise HTTPException(403, "Загрузка в общую библиотеку доступна администратору платформы")
-    data = await file.read()
+    data = file.file.read()
     if len(data) > MAX_UPLOAD:
         raise HTTPException(413, "Файл больше 100 МБ")
     try:

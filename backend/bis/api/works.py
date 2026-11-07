@@ -31,12 +31,12 @@ def _owned(db: Session, user: User, model, item_id: uuid.UUID, what: str):
 
 
 @router.post("/contracts/{contract_id}/estimate/import")
-async def import_estimate(contract_id: uuid.UUID, file: UploadFile = File(...), replace: bool = Form(False),
+def import_estimate(contract_id: uuid.UUID, file: UploadFile = File(...), replace: bool = Form(False),
                           db: Session = Depends(get_db), user: User = Depends(require("registry:write"))):
     """Импорт сметы / ведомости объёмов из Excel: заголовки определяются автоматически."""
     c = _owned(db, user, Contract, contract_id, "Договор")
     try:
-        items = csvc.import_estimate(db, c, await file.read(), replace=replace)
+        items = csvc.import_estimate(db, c, file.file.read(), replace=replace)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
     audit(db, user.organization_id, actor_type="user", actor=str(user.id), action="estimate.import",
@@ -230,11 +230,11 @@ def open_in_cad(doc_id: uuid.UUID, db: Session = Depends(get_db), user: User = D
 
 
 @router.post("/schemes/survey")
-async def parse_survey(file: UploadFile = File(...), geodetic: bool = Form(False),
+def parse_survey(file: UploadFile = File(...), geodetic: bool = Form(False),
                        user: User = Depends(require("documents:read"))):
     """Разбор файла съёмки геодезиста (CSV/TXT/XLSX) в точки схемы."""
     try:
-        points = parse_survey_file(await file.read(), file.filename or "survey.csv", geodetic=geodetic)
+        points = parse_survey_file(file.file.read(), file.filename or "survey.csv", geodetic=geodetic)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
     return {"points": [p.model_dump() for p in points]}
@@ -349,7 +349,7 @@ def export_journal(object_id: uuid.UUID, body: PeriodIn, db: Session = Depends(g
 
 
 @router.post("/archive/import")
-async def archive_import(file: UploadFile = File(...), object_id: uuid.UUID | None = Form(None), folder: str = Form(""),
+def archive_import(file: UploadFile = File(...), object_id: uuid.UUID | None = Form(None), folder: str = Form(""),
                          analyze_contracts: bool = Form(True), db: Session = Depends(get_db),
                          user: User = Depends(require("documents:write"))):
     """Загрузка архива по одному файлу: тип определяет ИИ, документ — в реестр и базу знаний, договор — на контроль."""
@@ -359,7 +359,7 @@ async def archive_import(file: UploadFile = File(...), object_id: uuid.UUID | No
 
     if object_id:
         _owned(db, user, ConstructionObject, object_id, "Объект")
-    data = await file.read()
+    data = file.file.read()
     if len(data) > 100 * 1024 * 1024:
         raise HTTPException(413, "Файл больше 100 МБ")
     try:

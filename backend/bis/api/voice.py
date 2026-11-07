@@ -20,28 +20,28 @@ def status(user: User = Depends(require("knowledge:read"))):
     return voice.status()
 
 
-async def _read(file: UploadFile) -> bytes:
-    data = await file.read()
+def _read(file: UploadFile) -> bytes:
+    data = file.file.read()
     if len(data) > MAX_AUDIO:
         raise HTTPException(413, "Аудио больше 25 МБ")
     return data
 
 
 @router.post("/transcribe")
-async def transcribe(file: UploadFile = File(...), user: User = Depends(require("knowledge:read"))):
+def transcribe(file: UploadFile = File(...), user: User = Depends(require("knowledge:read"))):
     try:
-        text = voice.transcribe(await _read(file), file.filename or "audio.webm", file.content_type)
+        text = voice.transcribe(_read(file), file.filename or "audio.webm", file.content_type)
     except voice.VoiceError as e:
         raise HTTPException(503, str(e)) from e
     return {"text": text}
 
 
 @router.post("/command")
-async def command(file: UploadFile = File(...), session_id: str | None = Form(None), agent: str | None = Form(None),
+def command(file: UploadFile = File(...), session_id: str | None = Form(None), agent: str | None = Form(None),
                   db: Session = Depends(get_db), user: User = Depends(require("knowledge:read"))):
     """Голосовая команда: распознать и сразу передать агентам."""
     try:
-        text = voice.transcribe(await _read(file), file.filename or "audio.webm", file.content_type)
+        text = voice.transcribe(_read(file), file.filename or "audio.webm", file.content_type)
     except voice.VoiceError as e:
         raise HTTPException(503, str(e)) from e
     if not text.strip():

@@ -105,19 +105,54 @@ def _hit(chunk: KnowledgeChunk, src: KnowledgeSource) -> SearchHit:
     )
 
 
-def _semantic_in_memory(db: Session, qvec: list[float], flt: dict, pool: int) -> list[tuple[KnowledgeChunk, KnowledgeSource]]:
-    """Косинусная близость по всем фрагментам с векторами (тысячи фрагментов — доли секунды)."""
+_MATRIX_CACHE: dict[tuple, tuple[tuple, list, Any]] = {}
+_MATRIX_LIMIT = 8
+
+
+def invalidate_vectors() -> None:
+    """Сбросить кэш векторов (после загрузки, удаления или пересчёта векторов в этом процессе)."""
+    _MATRIX_CACHE.clear()
+
+
+def _vectors(db: Session, flt: dict, dim: int):
+    """Нормированная матрица векторов фрагментов для области поиска — из памяти, пока база не изменилась.
+
+    Выгрузка всех векторов из базы на каждый запрос занимала секунды на большом архиве; проверка «изменилось ли»
+    — один короткий запрос (число фрагментов и время последнего)."""
     import numpy as np
 
+    key = tuple((k, tuple(v) if isinstance(v, list) else v) for k, v in sorted(flt.items())) + (dim,)
+    base = _base_filter(select(func.count(KnowledgeChunk.id), func.max(KnowledgeSource.created_at)), **flt) \
+        .where(KnowledgeChunk.embedding.is_not(None))
+    version = tuple(db.execute(base).one())
+    cached = _MATRIX_CACHE.get(key)
+    if cached and cached[0] == version:
+        return cached[1], cached[2]
     rows = db.execute(_base_filter(select(KnowledgeChunk.id, KnowledgeChunk.embedding), **flt)
                       .where(KnowledgeChunk.embedding.is_not(None))).all()
+    rows = [r for r in rows if r[1] is not None and len(r[1]) == dim]
+    ids = [r[0] for r in rows]
+    m = np.asarray([r[1] for r in rows], dtype=np.float32).reshape(len(rows), dim)
+    if len(rows):
+        m /= np.linalg.norm(m, axis=1, keepdims=True) + 1e-9
+    if len(_MATRIX_CACHE) >= _MATRIX_LIMIT:
+        _MATRIX_CACHE.pop(next(iter(_MATRIX_CACHE)))
+    _MATRIX_CACHE[key] = (version, ids, m)
+    return ids, m
+
+
+def _semantic_in_memory(db: Session, qvec: list[float], flt: dict, pool: int) -> list[tuple[KnowledgeChunk, KnowledgeSource]]:
+    """Косинусная близость по всем фрагментам с векторами (матрица в памяти — миллисекунды на десятки тысяч)."""
+    import numpy as np
+
     q = np.asarray(qvec, dtype=np.float32)
-    rows = [r for r in rows if r[1] is not None and len(r[1]) == len(q)]
-    if not rows:
+    ids, m = _vectors(db, flt, len(q))
+    if not ids:
         return []
-    m = np.asarray([r[1] for r in rows], dtype=np.float32)
-    sims = (m @ q) / (np.linalg.norm(m, axis=1) * np.linalg.norm(q) + 1e-9)
-    top = [rows[i][0] for i in np.argsort(-sims)[:pool]]
+    sims = m @ (q / (np.linalg.norm(q) + 1e-9))
+    k = min(pool, len(ids))
+    best = np.argpartition(-sims, k - 1)[:k]
+    top = [ids[i] for i in best[np.argsort(-sims[best])]]
     found = {c.id: (c, s) for c, s in db.execute(select(KnowledgeChunk, KnowledgeSource).join(
         KnowledgeSource, KnowledgeSource.id == KnowledgeChunk.source_id).where(KnowledgeChunk.id.in_(top))).all()}
     return [found[i] for i in top if i in found]

@@ -45,8 +45,8 @@ def _analysis_out(c: Contract, data: csvc.ContractExtraction, result, added: int
             "used_fallback": result.used_fallback, "provider": result.provider, "errors": result.errors}
 
 
-async def _attach(db: Session, user: User, c: Contract, file: UploadFile) -> bytes:
-    data = await file.read()
+def _attach(db: Session, user: User, c: Contract, file: UploadFile) -> bytes:
+    data = file.file.read()
     name = file.filename or "contract"
     mime = file.content_type or mimetypes.guess_type(name)[0]
     doc = csvc.attach_contract_file(db, get_storage(), c, data, name, mime, actor=f"user:{user.id}")
@@ -59,10 +59,10 @@ async def _attach(db: Session, user: User, c: Contract, file: UploadFile) -> byt
 
 
 @router.post("/contracts/{contract_id}/file")
-async def upload_contract_file(contract_id: uuid.UUID, file: UploadFile = File(...), analyze: bool = Form(True),
+def upload_contract_file(contract_id: uuid.UUID, file: UploadFile = File(...), analyze: bool = Form(True),
                                db: Session = Depends(get_db), user: User = Depends(require("registry:write"))):
     c = _contract(db, user, contract_id)
-    await _attach(db, user, c, file)
+    _attach(db, user, c, file)
     out: dict = {"contract_id": c.id, "document_id": c.document_id}
     if analyze:
         data, result, added = csvc.analyze_contract(db, get_storage(), get_gateway(), c, actor=f"user:{user.id}")
@@ -83,11 +83,11 @@ def analyze(contract_id: uuid.UUID, db: Session = Depends(get_db), user: User = 
 
 
 @router.post("/contracts/import", status_code=201)
-async def import_contract(file: UploadFile = File(...), kind: str = Form("general"), our_role: str = Form("contractor"),
+def import_contract(file: UploadFile = File(...), kind: str = Form("general"), our_role: str = Form("contractor"),
                           object_id: uuid.UUID | None = Form(None), db: Session = Depends(get_db),
                           user: User = Depends(require("registry:write"))):
     """Новый договор из файла: реквизиты и обязательства извлекаются автоматически."""
-    data = await file.read()
+    data = file.file.read()
     try:
         text = parse_file(data, file.filename or "contract", file.content_type).text
     except UnsupportedFormat as e:
@@ -95,8 +95,8 @@ async def import_contract(file: UploadFile = File(...), kind: str = Form("genera
     c = Contract(organization_id=user.organization_id, kind=kind, our_role=our_role, number="б/н", object_id=object_id)
     db.add(c)
     db.flush()
-    await file.seek(0)
-    await _attach(db, user, c, file)
+    file.file.seek(0)
+    _attach(db, user, c, file)
     extracted, result, added = csvc.analyze_contract(db, get_storage(), get_gateway(), c, actor=f"user:{user.id}",
                                                      text=text)
     if extracted.number:

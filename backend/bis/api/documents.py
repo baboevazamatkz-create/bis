@@ -147,7 +147,7 @@ def create_letter(body: LetterArgs, db: Session = Depends(get_db), user: User = 
 
 
 @router.post("/upload", response_model=DocumentOut, status_code=201)
-async def upload_document(
+def upload_document(
     file: UploadFile = File(...),
     kind: str = Form("incoming_letter"),
     title: str | None = Form(None),
@@ -159,7 +159,7 @@ async def upload_document(
     user: User = Depends(require("documents:write")),
 ):
     """Регистрация входящего/внешнего документа и (по умолчанию) индексация в базе знаний организации."""
-    data = await file.read()
+    data = file.file.read()
     name = file.filename or "file"
     mime = file.content_type or mimetypes.guess_type(name)[0]
     doc = docsvc.save_document(db, get_storage(), org_id=user.organization_id, kind=kind, title=title or name,
@@ -228,12 +228,12 @@ def list_templates(db: Session = Depends(get_db), user: User = Depends(require("
 
 
 @templates_router.post("", status_code=201)
-async def upload_template(file: UploadFile = File(...), kind: str = Form(...), name: str = Form(...),
+def upload_template(file: UploadFile = File(...), kind: str = Form(...), name: str = Form(...),
                           is_default: bool = Form(True), db: Session = Depends(get_db),
                           user: User = Depends(require("settings:write"))):
     if not (file.filename or "").lower().endswith(".docx"):
         raise HTTPException(415, "Шаблон должен быть в формате DOCX")
-    data = await file.read()
+    data = file.file.read()
     if is_default:
         for t in db.scalars(select(DocumentTemplate).where(DocumentTemplate.organization_id == user.organization_id,
                                                            DocumentTemplate.kind == kind)):
