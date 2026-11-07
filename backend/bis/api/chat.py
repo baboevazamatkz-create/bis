@@ -40,6 +40,10 @@ def tools(user: User = Depends(require("knowledge:read"))):
 
 @router.post("/chat")
 def chat(body: ChatIn, db: Session = Depends(get_db), user: User = Depends(require("knowledge:read"))):
+    return _answer(db, user, body)
+
+
+def _answer(db: Session, user: User, body: ChatIn, progress=None, on_route=None) -> dict:
     reg = get_registry()
     if body.session_id:
         session = db.get(ChatSession, body.session_id)
@@ -58,7 +62,10 @@ def chat(body: ChatIn, db: Session = Depends(get_db), user: User = Depends(requi
     except LookupError as e:
         raise HTTPException(404, str(e)) from e
     agent = reg.agents[agent_name]
+    if on_route:
+        on_route(agent_name, agent.title)
     ctx = agent_context(db, user)
+    ctx.progress = progress
     result = agent.run(ctx, reg.tools, history, body.message)
 
     now = datetime.now(UTC)
@@ -82,6 +89,50 @@ def chat(body: ChatIn, db: Session = Depends(get_db), user: User = Depends(requi
         "provider": result.provider,
         "model": result.model,
     }
+
+
+@router.post("/chat/stream")
+def chat_stream(body: ChatIn, user: User = Depends(require("knowledge:read"))):
+    """Как /chat, но шаги работы ИИ приходят сразу (text/event-stream): маршрут, поиск, чтение документов, ответ."""
+    import json
+    import queue
+    import threading
+
+    from fastapi.responses import StreamingResponse
+
+    from bis.db import SessionLocal
+
+    events: queue.Queue = queue.Queue()
+    user_id = user.id
+
+    def work() -> None:
+        with SessionLocal() as db:
+            try:
+                me = db.get(User, user_id)
+                events.put({"type": "step", "label": "Разбираю вопрос"})
+                out = _answer(db, me, body, progress=lambda e: events.put({"type": "step", "label": e["label"]}),
+                              on_route=lambda name, title: events.put({"type": "route", "agent": name, "title": title}))
+                events.put({"type": "done", "reply": out})
+            except HTTPException as e:
+                events.put({"type": "error", "detail": e.detail})
+            except Exception as e:  # noqa: BLE001 — показать пользователю, а не оборвать поток
+                events.put({"type": "error", "detail": f"Не удалось ответить: {e}"})
+
+    threading.Thread(target=work, daemon=True, name="bis-chat").start()
+
+    def stream():
+        while True:
+            try:
+                e = events.get(timeout=15)
+            except queue.Empty:
+                yield ": ping\n\n"  # соединение живо, ИИ ещё работает
+                continue
+            yield "data: " + json.dumps(e, ensure_ascii=False, default=str) + "\n\n"
+            if e["type"] in ("done", "error"):
+                return
+
+    return StreamingResponse(stream(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Content-Encoding": "identity"})
 
 
 @router.get("/chat/sessions")

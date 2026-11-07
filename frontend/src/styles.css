@@ -311,3 +311,5 @@ code { background: var(--track); padding: 1px 6px; border-radius: 4px; font-size
 .id-act ul { margin: 6px 0 0; padding-left: 20px; }
 .id-act li { font-size: 13px; margin: 2px 0; }
 .text-warn { color: var(--warn); }
+.steps .step { font-size: 13px; color: var(--muted); line-height: 1.6; }
+.steps .step.now { color: var(--text); }

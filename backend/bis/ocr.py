@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import base64
 import io
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 
@@ -53,16 +55,40 @@ def recognize(data: bytes, mime: str | None, client: httpx.Client | None = None)
         items = [("PNG", data)]
     else:
         items = [("JPEG", data)]
-    http = client or httpx.Client(timeout=90)
-    texts = []
-    for kind, content in items:
-        try:
-            r = http.post(YANDEX_OCR, headers={"Authorization": f"Api-Key {key or 'proxy-injected'}", "x-folder-id": folder},
-                          json={"mimeType": kind, "languageCodes": ["ru", "en"], "model": "page",
-                                "content": base64.b64encode(content).decode()})
-        except httpx.HTTPError as e:
-            raise OCRError(f"Vision OCR недоступен: {e}") from e
-        if r.status_code >= 400:
-            raise OCRError(f"Vision OCR: HTTP {r.status_code}: {r.text[:200]}")
-        texts.append(((r.json().get("result") or {}).get("textAnnotation") or {}).get("fullText", ""))
+    http = client or _client()
+
+    def page(item: tuple[str, bytes]) -> str:
+        kind, content = item
+        for attempt in range(4):
+            try:
+                r = http.post(YANDEX_OCR, headers={"Authorization": f"Api-Key {key or 'proxy-injected'}", "x-folder-id": folder},
+                              json={"mimeType": kind, "languageCodes": ["ru", "en"], "model": "page",
+                                    "content": base64.b64encode(content).decode()})
+            except httpx.HTTPError as e:
+                raise OCRError(f"Vision OCR недоступен: {e}") from e
+            if r.status_code == 429 or r.status_code >= 500:  # лимит запросов — подождать и повторить
+                time.sleep(1 + attempt * 2)
+                continue
+            if r.status_code >= 400:
+                raise OCRError(f"Vision OCR: HTTP {r.status_code}: {r.text[:200]}")
+            return ((r.json().get("result") or {}).get("textAnnotation") or {}).get("fullText", "")
+        raise OCRError("Vision OCR: превышен лимит запросов, повторите позже")
+
+    # страницы — параллельно (по 4): скан на 20 страниц распознаётся в разы быстрее, порядок страниц сохраняется
+    if len(items) == 1:
+        texts = [page(items[0])]
+    else:
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            texts = list(pool.map(page, items))
     return "\n\n".join(t.strip() for t in texts if t.strip())
+
+
+_HTTP: httpx.Client | None = None
+
+
+def _client() -> httpx.Client:
+    """Одно соединение на процесс (без нового TLS-рукопожатия на каждую страницу)."""
+    global _HTTP
+    if _HTTP is None:
+        _HTTP = httpx.Client(timeout=90, limits=httpx.Limits(max_connections=8))
+    return _HTTP

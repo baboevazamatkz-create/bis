@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { api, download, fetchBlob, openFile, type ChatReply, type Citation, type DocRef } from "../api";
+import { api, download, fetchBlob, openFile, streamChat, type ChatReply, type Citation, type DocRef } from "../api";
 
 interface Msg {
   role: "user" | "assistant";
@@ -90,6 +90,7 @@ export default function Chat() {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
+  const [steps, setSteps] = useState<string[]>([]);
   const [error, setError] = useState("");
   const bottom = useRef<HTMLDivElement>(null);
   const [voice, setVoice] = useState({ stt: false, tts: false });
@@ -164,10 +165,11 @@ export default function Chat() {
     setText("");
     setMessages((m) => [...m, { role: "user", content: message }]);
     setBusy(true);
+    setSteps([]);
     try {
-      const r = await api<ChatReply>("/chat", {
-        method: "POST",
-        json: { message, session_id: sessionId, agent: agent || null },
+      const r = await streamChat<ChatReply>({ message, session_id: sessionId, agent: agent || null }, (e) => {
+        if (e.type === "route" && e.title) setSteps((s) => [...s, `Отвечает: ${e.title}`]);
+        if (e.type === "step" && e.label) setSteps((s) => [...s, e.label!]);
       });
       setSessionId(r.session_id);
       setMessages((m) => [...m, { role: "assistant", content: r.text, agent: r.agent, meta: r }]);
@@ -177,6 +179,7 @@ export default function Chat() {
       setError((e as Error).message);
     } finally {
       setBusy(false);
+      setSteps([]);
     }
   }
 
@@ -256,7 +259,15 @@ export default function Chat() {
               )}
             </div>
           ))}
-          {busy && <div className="msg assistant muted">Агент работает…</div>}
+          {busy && (
+            <div className="msg assistant">
+              <div className="bubble steps">
+                {(steps.length ? steps : ["Разбираю вопрос"]).map((x, i, all) => (
+                  <div key={i} className={i === all.length - 1 ? "step now" : "step"}>{i === all.length - 1 ? "⏳" : "✓"} {x}</div>
+                ))}
+              </div>
+            </div>
+          )}
           <div ref={bottom} />
         </div>
         {error && <div className="alert error">{error}</div>}

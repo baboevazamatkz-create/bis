@@ -59,6 +59,38 @@ export async function api<T = unknown>(path: string, options: RequestInit & { js
   return data as T;
 }
 
+export interface StreamEvent { type: "step" | "route" | "done" | "error"; label?: string; title?: string; agent?: string; reply?: unknown; detail?: string }
+
+/** Ответ ассистента потоком: шаги работы приходят по мере выполнения, в конце — ответ целиком. */
+export async function streamChat<T>(body: unknown, onEvent: (e: StreamEvent) => void): Promise<T> {
+  if (DEMO) return api<T>("/chat", { method: "POST", json: body });
+  const headers = new Headers({ "Content-Type": "application/json", Accept: "text/event-stream" });
+  const token = getToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const res = await fetch("/api/chat/stream", { method: "POST", headers, body: JSON.stringify(body) });
+  if (!res.ok || !res.body) throw new ApiError(res.status, detail(await res.json().catch(() => ({}))));
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let cut: number;
+    while ((cut = buf.indexOf("\n\n")) >= 0) {
+      const chunk = buf.slice(0, cut);
+      buf = buf.slice(cut + 2);
+      const line = chunk.split("\n").find((l) => l.startsWith("data: "));
+      if (!line) continue;
+      const e = JSON.parse(line.slice(6)) as StreamEvent;
+      onEvent(e);
+      if (e.type === "done") return e.reply as T;
+      if (e.type === "error") throw new ApiError(400, String(e.detail ?? "Ошибка"));
+    }
+  }
+  throw new ApiError(500, "Ответ прервался — повторите вопрос");
+}
+
 export async function upload<T = unknown>(path: string, form: FormData): Promise<T> {
   return api<T>(path, { method: "POST", body: form });
 }
