@@ -54,6 +54,38 @@ def parse_json(text: str) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
+_RU_DATE = re.compile(r"^(\d{1,2})\.(\d{1,2})\.(\d{4})$")
+
+
+def normalize_answer(data: Any, schema: type[BaseModel]) -> Any:
+    """Терпимость к особенностям моделей: обёртка {"properties": {...}} вместо данных, даты «ДД.ММ.ГГГГ»."""
+    if isinstance(data, dict) and set(data) == {"properties"} and isinstance(data["properties"], dict) \
+            and "properties" not in schema.model_fields:
+        data = data["properties"]
+
+    def fix(v: Any) -> Any:
+        if isinstance(v, dict):
+            return {k: fix(x) for k, x in v.items()}
+        if isinstance(v, list):
+            return [fix(x) for x in v]
+        if isinstance(v, str) and (m := _RU_DATE.match(v.strip())):
+            return f"{m.group(3)}-{int(m.group(2)):02d}-{int(m.group(1)):02d}"
+        return v
+
+    data = fix(data)
+    if isinstance(data, dict):  # одиночный объект или строка там, где по схеме список
+        for name, field in schema.model_fields.items():
+            if getattr(field.annotation, "__origin__", None) is list and name in data and not isinstance(data[name], list) \
+                    and data[name] is not None:
+                data[name] = [data[name]]
+    return data
+
+
+def is_empty(model: BaseModel) -> bool:
+    """Модель ответила «ничего не нашла»: все поля по умолчанию."""
+    return model.model_dump() == type(model).model_construct().model_dump() if model is not None else True
+
+
 def merge_models(schema: type[T], parts: list[T]) -> T:
     """Объединение результатов по окнам: списки склеиваются без дублей, скаляры — первое непустое."""
     merged: dict[str, Any] = {}
@@ -115,6 +147,13 @@ def extract(
                 parts.append(part)
         if parts:
             result.data = parts[0] if len(parts) == 1 else merge_models(schema, parts)
+            if not (fallback is not None and is_empty(result.data)):
+                return result
+            # модель ничего не нашла — проверяем правилами: если они что-то видят, берём их результат
+            fb = fallback(text)
+            if not is_empty(fb):
+                result.data, result.used_fallback = fb, True
+                result.errors.append("Модель вернула пустой результат — использованы правила")
             return result
     if fallback is not None:
         result.data = fallback(text)
@@ -147,7 +186,7 @@ def _extract_window(gateway: LLMGateway, schema: type[T], text: str, instruction
             messages += [resp.message, Message(role="user", content="Ответ должен быть только JSON по схеме.")]
             continue
         try:
-            return schema.model_validate(data)
+            return schema.model_validate(normalize_answer(data, schema))
         except ValidationError as e:
             err = "; ".join(f"{'.'.join(map(str, x['loc']))}: {x['msg']}" for x in e.errors()[:10])
             result.errors.append(err)

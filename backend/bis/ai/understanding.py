@@ -39,7 +39,7 @@ _RULES: list[tuple[str, str, float]] = [
 ]
 _WORK_VERBS = r"залил|вязал|связал|забетонир|уложил|смонтир|выполнил|выполнен|сделал|армиров|засыпал|установил|выкопал|разработал|" \
               r"заармир|смонтирова|провели|закончил|начал"
-_PROBLEM = r"не привез|не завез|простой|простаива|сломал|поломк|не хватает|нехватк|задерж|авари|травм|проблем|нет (?:бетон|арматур|материал|людей|техник)"
+_PROBLEM = r"не привез|не завез|простой|простаива|стоял[аи]? (?:\w+ )?(?:час|смен|день|полдня)|сломал|поломк|не хватает|нехватк|задерж|авари|травм|проблем|нет (?:бетон|арматур|материал|людей|техник)"
 
 
 def classify(gateway: LLMGateway | None, text: str, filename: str | None, kind: str) -> tuple[str, float, str]:
@@ -270,10 +270,20 @@ _LOC = re.compile(r"(в\s+ос(?:ях|и)\s+[\wА-Яа-я\-/,.]+(?:\s*/\s*[\wА-
 _QTY = re.compile(rf"({_NUM})\s*({UNIT_RE})\b\.?", re.IGNORECASE)
 
 
+_SPOKEN_UNITS = [(r"\bкуб(?:ов|а|ы|ик\w*)?\b|\bкубометр\w*", "м3"), (r"\bквадрат(?:ов|а|ы)?\b", "м2"),
+                 (r"\bтонн?\w*", "т"), (r"\bштук\w*", "шт")]
+
+
 def heuristic_report(text: str) -> FieldReport:
     text = normalize_dictation(text)
+    for pattern, unit in _SPOKEN_UNITS:
+        text = re.sub(pattern, unit, text, flags=re.IGNORECASE)
     report = FieldReport()
-    for sent in re.split(r"(?<=[.!?;\n])\s+|\n", text):
+    sentences = re.split(r"(?<=[.!?;\n])\s+|\n", text)
+    # «залили 290 м3, бетона ушло 296 м3» — расход отдельной частью
+    clauses = [c for s_ in sentences for c in re.split(r",\s*(?=[^,]*(?:израсход|ушл[оаи]\b|расход|использова|потрати))",
+                                                       s_, flags=re.IGNORECASE)]
+    for sent in clauses:
         sent = sent.strip()
         if not sent:
             continue
@@ -298,12 +308,44 @@ def heuristic_report(text: str) -> FieldReport:
     return report
 
 
+def _clean_report(r: FieldReport | None) -> FieldReport | None:
+    """Проверка ответа модели: только настоящие единицы измерения; расход материала — не работа."""
+    if r is None:
+        return r
+    unit_ok = lambda u: bool(u) and re.fullmatch(rf"(?:{UNIT_RE})\.?", norm_unit(u)) is not None  # noqa: E731
+    mats = {(m.quantity, norm_unit(m.unit)) for m in r.materials}
+    works = []
+    for w in r.works:
+        if w.unit and not unit_ok(w.unit):
+            continue  # «по накладным», «машин» — не объём работы
+        if re.search(r"расход|ушло|израсход", w.description.lower()) or (w.quantity, norm_unit(w.unit or "")) in mats \
+                and not re.search(_WORK_VERBS, w.description.lower()):
+            continue
+        works.append(w.model_copy(update={"unit": norm_unit(w.unit) if w.unit else None}))
+    materials = []
+    for m in r.materials:
+        unit = norm_unit(m.unit) if unit_ok(m.unit) else None
+        if unit is None:  # единицу берём у работы, к которой относится материал (бетон → м3)
+            unit = next((w.unit for w in works if w.unit and m.name[:4].lower() in w.description.lower()), None)
+        if unit:
+            materials.append(m.model_copy(update={"unit": unit}))
+    return r.model_copy(update={"works": works, "materials": materials})
+
+
 def read_report(gateway: LLMGateway | None, text: str, hints: str = ""):
-    return extract(gateway, FieldReport, normalize_dictation(text), task="extract",
-                   instructions=("Ты разбираешь сообщение прораба с площадки. works — выполненные работы с объёмом, единицей "
-                                "и местом (оси, захватка, этаж); materials — израсходованные материалы; problems — "
-                                "проблемы (простой, нет материала, поломка, нарушения).") + hints,
-                   fallback=heuristic_report)
+    res = extract(gateway, FieldReport, normalize_dictation(text), task="extract",
+                  instructions=("Ты разбираешь сообщение прораба с площадки (часто разговорное). "
+                                "works — только выполненные сегодня работы: описание, объём, единица (м3, м2, т, шт, п.м), "
+                                "место (оси, захватка, этаж). Планы на завтра — не работы. "
+                                "materials — израсходованные материалы с количеством и единицей (м3, т, м2, шт); "
+                                "расход материала НЕ дублируй в works. problems — простои, нехватка, поломки, нарушения.\n"
+                                "Пример: «залили 290 кубов на захватке 4, бетона ушло 296» → works: [{description: "
+                                "\"Бетонирование, захватка 4\", quantity: 290, unit: \"м3\", location: \"захватка 4\"}], "
+                                "materials: [{name: \"бетон\", quantity: 296, unit: \"м3\"}].") + hints,
+                  fallback=heuristic_report)
+    if not res.used_fallback:
+        res.data = _clean_report(res.data)
+    return res
 
 
 # --- фото площадки (только модель зрения) -------------------------------------------------------
