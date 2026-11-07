@@ -1,0 +1,41 @@
+{
+  "providers": [
+    {
+      "name": "yandexgpt-lite",
+      "kind": "openai_compat",
+      "base_url": "https://llm.api.cloud.yandex.net/v1",
+      "model": "gpt://${YANDEX_FOLDER_ID}/yandexgpt-lite/latest",
+      "api_key_env": "YANDEX_API_KEY",
+      "auth_scheme": "Api-Key",
+      "max_sensitivity": "internal",
+      "mask_pii": true,
+      "temperature": 0.1,
+      "timeout": 60
+    },
+    {
+      "name": "yandexgpt",
+      "kind": "openai_compat",
+      "base_url": "https://llm.api.cloud.yandex.net/v1",
+      "model": "gpt://${YANDEX_FOLDER_ID}/yandexgpt/latest",
+      "api_key_env": "YANDEX_API_KEY",
+      "auth_scheme": "Api-Key",
+      "max_sensitivity": "internal",
+      "mask_pii": true,
+      "temperature": 0.2,
+      "timeout": 120
+    },
+    {
+      "name": "offline",
+      "kind": "offline",
+      "max_sensitivity": "confidential"
+    }
+  ],
+  "routes": {
+    "route": ["yandexgpt-lite", "offline"],
+    "extract": ["yandexgpt-lite", "yandexgpt", "offline"],
+    "chat": ["yandexgpt", "yandexgpt-lite", "offline"],
+    "analysis": ["yandexgpt", "yandexgpt-lite", "offline"],
+    "verify": ["yandexgpt-lite", "offline"],
+    "default": ["yandexgpt", "yandexgpt-lite", "offline"]
+  }
+}

@@ -47,6 +47,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--k", type=int, default=5)
     p.add_argument("--answers", action="store_true", help="Проверять ответы агентов (нужна модель)")
 
+    sub.add_parser("llm-check", help="Проверить подключение моделей: ответ, JSON, время")
     sub.add_parser("telegram-poll", help="Telegram-бот в режиме опроса (без входящих соединений, закрытый контур)")
 
     p = sub.add_parser("serve", help="Запустить API")
@@ -77,6 +78,20 @@ def main(argv: list[str] | None = None) -> int:
             r = run_job(SessionLocal, name)
             print(f"{name}: {r.status}")
         return 0
+    if args.cmd == "llm-check":
+        from bis.llm.check import check_providers
+        from bis.llm.gateway import get_gateway
+
+        results = check_providers(get_gateway())
+        if not results:
+            print("Модели не настроены: работает офлайн-режим (правила). См. BIS_LLM_CONFIG_FILE.")
+        for r in results:
+            if r["ok"]:
+                print(f"✓ {r['provider']} ({r['model']}): «{r['reply']}», {r['seconds']} с, JSON: "
+                      f"{'да' if r['json'] else 'нет'}; задачи: {', '.join(r['routes']) or '—'}")
+            else:
+                print(f"✗ {r['provider']} ({r['model']}): {r['error']}" + (f"\n  → {r['hint']}" if r.get("hint") else ""))
+        return 0 if results and all(r["ok"] for r in results) else 1
     if args.cmd == "telegram-poll":
         import logging
 

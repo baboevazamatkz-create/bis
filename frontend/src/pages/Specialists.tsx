@@ -9,13 +9,31 @@ interface Specialist {
 interface Autonomy { kind: string; title: string; mode: "auto" | "propose"; default: string }
 interface Suggestion { kind: string; title: string; suggest: "auto" | "propose"; decisions: number; reason: string }
 interface Data { specialists: Specialist[]; autonomy: Autonomy[]; min_confidence: number; suggestions: Suggestion[] }
+interface ModelCheck {
+  provider: string; model: string; ok: boolean; reply?: string; json?: boolean | null; seconds?: number; routes: string[];
+  error?: string; hint?: string | null;
+}
 
 const CAPABILITY: Record<string, string> = { text: "языковая модель", vision: "модель зрения", speech: "распознавание речи", rules: "алгоритмы" };
 
 export default function Specialists({ user }: { user: User }) {
   const [data, setData] = useState<Data | null>(null);
   const [error, setError] = useState("");
+  const [checks, setChecks] = useState<ModelCheck[] | null>(null);
+  const [checking, setChecking] = useState(false);
   const isAdmin = user.role === "admin";
+
+  async function checkModels() {
+    setChecking(true);
+    setError("");
+    try {
+      setChecks((await api<{ providers: ModelCheck[] }>("/ai/models/check", { method: "POST" })).providers);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setChecking(false);
+    }
+  }
   const load = () => api<Data>("/ai/specialists").then(setData).catch((e) => setError(e.message));
   useEffect(() => { void load(); }, []);
 
@@ -40,6 +58,27 @@ export default function Specialists({ user }: { user: User }) {
         подключите модели (локальные или облачные российские) — точность и охват вырастут. Подключено: {connected} из {data.specialists.length}.
       </p>
       {error && <div className="alert error">{error}</div>}
+      {isAdmin && (
+        <div className="panel">
+          <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+            <h2 style={{ margin: 0 }}>Подключение моделей</h2>
+            <button className="btn small" disabled={checking} onClick={() => void checkModels()}>
+              {checking ? "Проверяю…" : "Проверить модели"}
+            </button>
+          </div>
+          {checks && checks.length === 0 && <p className="small muted">Модели не настроены — работают правила (офлайн-режим).</p>}
+          {checks?.map((c) => (
+            <div key={c.provider} className={`note ${c.ok ? "" : "critical"}`} style={{ marginTop: 8 }}>
+              <b>{c.ok ? "✓" : "✗"} {c.provider}</b> <span className="small muted">{c.model}</span>
+              {c.ok ? (
+                <div className="small">Ответ: «{c.reply}» за {c.seconds} с · JSON: {c.json ? "да" : "нет"} · задачи: {c.routes.join(", ") || "—"}</div>
+              ) : (
+                <div className="small">{c.hint ?? c.error}</div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
 
       {data.suggestions.length > 0 && (
         <div className="panel suggestions-panel">

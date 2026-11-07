@@ -7,7 +7,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Sensitivity = Literal["public", "internal", "confidential"]
@@ -42,6 +42,14 @@ class ProviderConfig(BaseModel):
     effort: str | None = None
     verify_ssl: bool | str = True
     extra: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("model", "base_url", mode="before")
+    @classmethod
+    def _expand_env(cls, v: Any) -> Any:
+        """${YANDEX_FOLDER_ID} и подобные — из переменных окружения сервера (идентификаторы, не секреты)."""
+        import os
+
+        return os.path.expandvars(v) if isinstance(v, str) else v
 
     def resolved_api_key(self) -> str | None:
         import os

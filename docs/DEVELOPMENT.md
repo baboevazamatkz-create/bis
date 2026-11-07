@@ -35,8 +35,10 @@ docker compose -f deploy/docker-compose.yml exec api bis seed-demo
 - `routes` задаёт порядок провайдеров для каждой задачи; следующие в списке используются как резерв.
 - GigaChat: ключ авторизации берётся из переменной `GIGACHAT_AUTH_KEY`. Для TLS укажите в `verify_ssl`
   путь к сертификату НУЦ Минцифры.
-- YandexGPT: OpenAI-совместимый API AI Studio. В `model` укажите `gpt://<folder_id>/yandexgpt/latest`,
-  ключ берётся из `YANDEX_API_KEY`. Если ключ не принимается со схемой `Bearer`, задайте `"auth_scheme": "Api-Key"`.
+- YandexGPT (Yandex AI Studio): готовая конфигурация `deploy/config/llm.yandex.json` — YandexGPT Lite для диспетчера
+  и чтения документов, YandexGPT Pro для ассистента и юриста. Переменные: `BIS_LLM_CONFIG_FILE=deploy/config/llm.yandex.json`,
+  `YANDEX_API_KEY` (секретный ключ AI Studio, `AQVN…`), `YANDEX_FOLDER_ID` (каталог, `b1g…`). Сервисному аккаунту ключа
+  нужна роль `ai.languageModels.user` в каталоге. Проверка: `bis llm-check` или «ИИ-специалисты» → «Проверить модели».
 - Claude (`"kind": "anthropic"`, модель `claude-opus-5-5`) подключается там, где сервис доступен легально.
   Серверный fallback при отказе модели включён.
 

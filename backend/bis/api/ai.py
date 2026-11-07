@@ -238,3 +238,11 @@ def assemble(body: AssembleIn, db: Session = Depends(get_db), user: User = Depen
     event.result = {**event.result, "reply": cv.reply_text(event, env.created)}
     db.commit()
     return event_out(db, event)
+
+
+@router.post("/ai/models/check")
+def models_check(user: User = Depends(require("settings:write"))):
+    """Проверить подключение моделей (администратор): отвечает ли каждый провайдер, умеет ли JSON."""
+    from bis.llm.check import check_providers
+
+    return {"providers": check_providers(get_gateway())}

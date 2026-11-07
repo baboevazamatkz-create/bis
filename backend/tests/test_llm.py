@@ -147,3 +147,31 @@ def test_anthropic_message_conversion_groups_tool_results():
 def test_scripted_returns_response_objects():
     resp = LLMResponse(Message("assistant", "x"), "end", "p", "m")
     assert ScriptedProvider([resp]).complete([]) is resp
+
+
+def test_provider_config_expands_env_and_check_reports_hints(monkeypatch):
+    from bis.config import ProviderConfig
+    from bis.llm.check import check_providers
+    from bis.llm.gateway import LLMGateway, ProviderEntry
+    from bis.llm.providers.offline import ScriptedProvider
+    from bis.llm.types import LLMError
+
+    monkeypatch.setenv("YANDEX_FOLDER_ID", "b1gtest")
+    cfg = ProviderConfig(name="y", kind="openai_compat", base_url="https://llm.api.cloud.yandex.net/v1",
+                         model="gpt://${YANDEX_FOLDER_ID}/yandexgpt-lite/latest")
+    assert cfg.model == "gpt://b1gtest/yandexgpt-lite/latest"
+
+    class Denied:
+        model = "gpt://b1gtest/yandexgpt/latest"
+
+        def complete(self, *a, **kw):
+            raise LLMError('y: HTTP 403: {"error":{"message":"rpc error: code = PermissionDenied desc = ..."}}')
+
+    gw = LLMGateway(entries={"ok": ProviderEntry(ScriptedProvider(["Москва", '{"ok": true}'], name="ok")),
+                             "denied": ProviderEntry(Denied()), "offline": ProviderEntry(ScriptedProvider(name="offline"))},
+                    routes={"chat": ["ok", "denied"]})
+    gw.entries["offline"].provider.model = "offline"
+    res = {r["provider"]: r for r in check_providers(gw)}
+    assert res["ok"]["ok"] and res["ok"]["reply"] == "Москва" and res["ok"]["json"] is True and res["ok"]["routes"] == ["chat"]
+    assert not res["denied"]["ok"] and "ai.languageModels.user" in res["denied"]["hint"]
+    assert "offline" not in res
