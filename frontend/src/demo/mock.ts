@@ -485,6 +485,12 @@ function applyDemo(ev: Any, a: Any): void {
       source_type: "agent", created_by: `agent:${a.specialist}`, created_at: now() };
     s.lists.tasks.unshift(t);
     a.result = { ...a.result, task_id: t.id };
+  } else if (a.kind === "link_certificate") {
+    for (const id of p.receipt_ids ?? []) {
+      const r = s.lists["material-receipts"].find((x) => x.id === id);
+      if (r && !r.quality_doc) r.quality_doc = p.text;
+    }
+    a.result = { receipt_ids: p.receipt_ids };
   } else if (a.kind === "import_contract") {
     throw new DemoError(400, "В демо-версии договор не импортируется: на сервере юрист извлечёт сроки, суммы и неустойки и поставит обязательства на контроль.");
   }
@@ -588,18 +594,25 @@ const PROBLEM = /не привез|не завез|простой|простаи
 const USAGE = /израсходова\S*|ушл[оаи]|расход\S*|использова\S*|потрати\S*/i;
 const COMPLETE = /закончил|заверш|готов\S* к (?:при[её]мк|освидетельств)|предъяв/i;
 
-function understand(text: string, objectId: string | null, user: Any): Any {
+function newEvent(text: string | null, objectId: string | null, user: Any, extra: Any = {}): Any {
   const s = snap();
   const objects = s.lists.objects.filter((o) => o.status === "active");
   const obj = objects.find((o) => o.id === objectId) ?? (objects.length === 1 ? objects[0] : null);
-  const ev: Any = {
+  return {
     id: uid(), created_at: now(), source: "upload", kind: "text", text, file_name: null, mime: null, file_url: null,
     object_id: obj?.id ?? null, object_name: obj?.name ?? null, sender: user?.full_name ?? null, status: "done",
     detected_type: "foreman_report", dispatcher: { type: "foreman_report", title: "Отчёт с площадки о выполненных работах, расходе, проблемах", confidence: 0.8, by: "rules" },
-    transcript: null, excerpt: text.slice(0, 600), reply: null, needs_ocr: false, vision: null, error: null, document_id: null, actions: [],
+    transcript: null, excerpt: (text ?? "").slice(0, 600), reply: null, needs_ocr: false, vision: null, error: null, document_id: null, actions: [],
+    ...extra,
   };
+}
+
+/** Правила (без ИИ): упрощённый разбор сообщения прораба. */
+function understandRules(text: string, objectId: string | null, user: Any): Any {
+  const s = snap();
+  const ev = newEvent(text, objectId, user);
   const today = new Date().toISOString().slice(0, 10);
-  const items = s.lists["estimate-items"].filter((i) => !obj || i.object_id === obj.id);
+  const items = s.lists["estimate-items"].filter((i) => !ev.object_id || i.object_id === ev.object_id);
   for (const sent of text.split(/(?<=[.!?;])\s+|\n/).map((x) => x.trim()).filter(Boolean)) {
     const q = QTY.exec(sent);
     if (PROBLEM.test(sent)) {
@@ -644,6 +657,11 @@ function understand(text: string, objectId: string | null, user: Any): Any {
       }
     }
   }
+  return finalize(ev, "Понял: отчёт с площадки.");
+}
+
+function finalize(ev: Any, replyHead: string): Any {
+  const s = snap();
   if (!ev.actions.length) act(ev, "dispatcher", "info", "Сообщение сохранено", "Работ, расхода или проблем не найдено.");
   // контроль списания: расход против нормы на сообщённый объём
   for (const u of ev.actions.filter((a: Any) => a.kind === "record_usage")) {
@@ -673,7 +691,7 @@ function understand(text: string, objectId: string | null, user: Any): Any {
     else { a.status = "proposed"; a.auto = false; continue; }
     a.status = "applied";
   }
-  ev.reply = ["Понял: отчёт с площадки.", ...ev.actions.map((a: Any) => `${a.status === "applied" ? "✓" : "?"} ${a.title}`)].join("\n");
+  ev.reply = [replyHead, ...ev.actions.map((a: Any) => `${a.status === "applied" ? "✓" : "?"} ${a.title}`)].join("\n");
   ai().events.unshift(ev);
   return ev;
 }
@@ -750,11 +768,224 @@ function aiRoute(p: string, q: URLSearchParams, method: string, body: Any): Any 
     if (file) {
       const match = ai().samples.find((x) => x.event.file_name === file.name);
       if (match) return replaySample(match.id);
-      throw new DemoError(400, "В демо-версии ИИ разбирает примеры (кнопки ниже) и текстовые сообщения о работах. На сервере — любой файл: фото, голосовое, PDF, DOCX, XLSX, CSV.");
+      return analyzeFile(file, String(body.get("text") ?? "").trim(), (body.get("object_id") as string) || null, user);
     }
     const text = String(body.get("text") ?? "").trim();
     if (!text) throw new DemoError(400, "Пришлите файл, фото, голосовое или текст");
-    return understand(text, (body.get("object_id") as string) || null, user);
+    return understandLive(text, (body.get("object_id") as string) || null, user);
   }
   throw new DemoError(404, "Этот раздел недоступен в демо-версии");
+}
+
+// --- живой ИИ на странице (возможность sample: Claude вместо YandexGPT, который работает на сервере) ----
+
+let samplePromise: Promise<Any> | null = null;
+function getSample(): Promise<Any> {
+  if (!samplePromise) {
+    const c = (window as Any).claude;
+    samplePromise = c?.use ? c.use("sample").catch(() => null) : Promise.resolve(null);
+  }
+  return samplePromise as Promise<Any>;
+}
+export async function liveAI(): Promise<boolean> {
+  return !!(await getSample());
+}
+
+const LIVE_BY = "ИИ (в демо — Claude; на сервере — YandexGPT)";
+const SAMPLE_OFF = new Set(["not_granted", "sampling_disabled", "not_declared", "capability_disabled", "capability_removed"]);
+
+function catalog(objectId: string | null): { items: Any[]; text: string } {
+  const s = snap();
+  const items = s.lists["estimate-items"].filter((i) => !objectId || i.object_id === objectId);
+  const text = "Позиции сметы (id | шифр | работа | ед.):\n" + items.map((i) => `${i.id} | ${i.code ?? ""} | ${i.name} | ${i.unit}`).join("\n")
+    + "\n\nМатериалы справочника (id | наименование | ед.):\n" + s.lists.materials.map((m) => `${m.id} | ${m.name} | ${m.unit}`).join("\n");
+  return { items, text };
+}
+
+async function understandLive(text: string, objectId: string | null, user: Any): Promise<Any> {
+  const sample = await getSample();
+  if (!sample) return understandRules(text, objectId, user);
+  const ev = newEvent(text, objectId, user);
+  const { items, text: cat } = catalog(ev.object_id);
+  const prompt = `Ты — ИИ-диспетчер строительной компании. Разбери сообщение с объекта (часто разговорное, с ошибками распознавания речи).
+${cat}
+
+Ответь только JSON:
+{"type": "foreman_report" | "question" | "other",
+ "works": [{"item_id": "<id из списка позиций или null>", "description": "...", "quantity": number, "unit": "м3|м2|т|шт|п.м", "location": "захватка/оси/этаж или null"}],
+ "materials": [{"material_id": "<id из справочника или null>", "name": "...", "quantity": number, "unit": "..."}],
+ "problems": ["простои, нехватка, поломки, нарушения — каждое отдельной строкой"],
+ "summary": "одна фраза: что понял"}
+Правила: works — только выполненное (планы на завтра — не работы); израсходованный материал не дублируй в works;
+item_id и material_id бери из списков, только если подходят по смыслу и единице; «кубов» = м3, «квадратов» = м2.
+
+Сообщение: """${text.slice(0, 4000)}"""`;
+  let r: Any;
+  try {
+    r = await sample.json(prompt, { modelTier: "quick" });
+  } catch (e) {
+    const code = (e as Any)?.code;
+    const fallback = understandRules(text, objectId, user);
+    fallback.dispatcher.by = SAMPLE_OFF.has(code) ? "правила (ИИ на странице не разрешён)" : "правила (ИИ не ответил)";
+    return fallback;
+  }
+  ev.dispatcher = { type: r?.type === "foreman_report" ? "foreman_report" : "unknown",
+    title: r?.type === "foreman_report" ? "Отчёт с площадки о выполненных работах, расходе, проблемах" : "Сообщение", confidence: 0.9, by: LIVE_BY };
+  const s = snap();
+  const today = new Date().toISOString().slice(0, 10);
+  for (const w of Array.isArray(r?.works) ? r.works : []) {
+    const item = items.find((i) => i.id === w.item_id);
+    const qty = Number(w.quantity);
+    if (!item || !qty) {
+      act(ev, "dispatcher", "flag_issue", `Не сопоставлено со сметой: ${String(w.description ?? "").slice(0, 120)}`,
+        "Нет подходящей позиции сметы — исправьте позицию в ленте, ИИ запомнит.", { severity: "warning" });
+      continue;
+    }
+    act(ev, "dispatcher", "report_volume", `${item.name}: ${qty} ${item.unit}${w.location ? `, ${w.location}` : ""}`,
+      `Из сообщения: «${String(w.description ?? "").slice(0, 200)}». Позиция сметы ${item.code ?? ""}.`
+        + (item.requires_aosr ? " Скрытая работа — после завершения инженер ПТО соберёт АОСР." : ""),
+      { payload: { object_id: ev.object_id ?? item.object_id, estimate_item_id: item.id, quantity: qty, location: w.location ?? null, date: today, note: w.description, source_text: w.description },
+        status: "new", confidence: 0.9, evidence: [{ type: "estimate_item", id: item.id, label: `${item.code ?? ""} ${item.name}`.trim() }] });
+  }
+  for (const m of Array.isArray(r?.materials) ? r.materials : []) {
+    const mat = s.lists.materials.find((x) => x.id === m.material_id);
+    const qty = Number(m.quantity);
+    if (!mat || !qty) {
+      act(ev, "dispatcher", "flag_issue", `Материал не найден в справочнике: ${m.name ?? ""}`,
+        `Расход ${qty || ""} ${m.unit ?? ""} не учтён — выберите материал, ИИ запомнит название.`, { severity: "warning" });
+      continue;
+    }
+    act(ev, "dispatcher", "record_usage", `Расход: ${mat.name} — ${qty} ${mat.unit}`, "Из сообщения прораба.",
+      { payload: { object_id: ev.object_id, material_id: mat.id, quantity: qty, date: today, note: "из отчёта с площадки", source_name: m.name }, status: "new", confidence: 0.88 });
+  }
+  for (const pr of Array.isArray(r?.problems) ? r.problems : []) {
+    act(ev, "dispatcher", "create_task", `Проблема на объекте: ${String(pr).slice(0, 150)}`, "Поручение руководителю участка.",
+      { payload: { title: String(pr), role: "manager", due_days: 1, priority: "high", object_id: ev.object_id }, status: "new", confidence: 0.85 });
+  }
+  if (!ev.actions.length) act(ev, "dispatcher", "info", r?.summary ? String(r.summary).slice(0, 200) : "Сообщение сохранено", "Работ, расхода или проблем не найдено.");
+  return finalize(ev, `Понял: ${r?.summary ?? "сообщение с объекта"}`);
+}
+
+function blobToBase64(b: Blob): Promise<string> {
+  return new Promise((res, rej) => {
+    const fr = new FileReader();
+    fr.onload = () => res(String(fr.result).split(",")[1] ?? "");
+    fr.onerror = () => rej(fr.error);
+    fr.readAsDataURL(b);
+  });
+}
+
+async function analyzeFile(file: File, caption: string, objectId: string | null, user: Any): Promise<Any> {
+  const isImage = /^image\/(jpeg|png|webp|gif)$/i.test(file.type) || /\.(jpe?g|png|webp|gif)$/i.test(file.name);
+  const isText = /\.(txt|csv|eml)$/i.test(file.name) || file.type.startsWith("text/");
+  if (!isImage && !isText) {
+    throw new DemoError(400, "В демо-версии ИИ читает фото (JPG, PNG) и текстовые файлы (TXT, CSV). PDF, DOCX и XLSX разбирает сервер.");
+  }
+  const sample = await getSample();
+  if (!sample) throw new DemoError(400, "ИИ на этой странице недоступен — откройте её в Claude (на claude.ai). Пока можно попробовать примеры ниже.");
+  const s = snap();
+  const ev = newEvent(caption || null, objectId, user, {
+    kind: isImage ? "photo" : "document", file_name: file.name, mime: file.type || null,
+  });
+  if (isImage) {
+    s.ai!.files[ev.id] = { mime: file.type || "image/jpeg", data: await blobToBase64(file) };
+    ev.file_url = `/api/intake/${ev.id}/file`;
+  }
+  const docText = isText ? (await file.text()).slice(0, 20000) : "";
+  const prompt = `Ты — команда ИИ-специалистов строительной компании (диспетчер, чтец документов, зрение, контролёр).
+${isImage ? "На изображении — фото с объекта или фото/скан документа." : "Ниже текст документа."}${caption ? ` Подпись отправителя: «${caption}».` : ""}
+Определи тип и извлеки данные. Материалы справочника (id | наименование | ед.):
+${s.lists.materials.map((m) => `${m.id} | ${m.name} | ${m.unit}`).join("\n")}
+
+Ответь только JSON:
+{"type": "upd" | "certificate" | "test_protocol" | "site_photo" | "letter" | "other",
+ "title": "короткое название документа или что на фото",
+ "supply": {"number": "...", "date": "ДД.ММ.ГГГГ", "supplier": "...", "items": [{"name": "...", "unit": "...", "quantity": number, "price": number|null, "material_id": "<id или null>"}], "certificates": ["упомянутые документы о качестве"]} | null,
+ "quality": {"number": "...", "material": "...", "material_id": "<id или null>", "batch": "...", "valid_until": "ДД.ММ.ГГГГ|null"} | null,
+ "protocol": {"number": "...", "structure": "...", "test": "...", "required": "...", "actual": "...", "compliant": true|false} | null,
+ "photo": {"work_type": "...", "description": "что видно", "completion_percent": number|null, "defects": [{"description": "...", "severity": "low|medium|high"}], "safety_violations": ["люди без касок, нет ограждений…"]} | null,
+ "letter": {"sender": "...", "subject": "...", "summary": "...", "requests": ["что просят сделать"], "due": "ДД.ММ.ГГГГ|null"} | null}
+Не придумывай: чего не видно или нет в тексте — null или пустой список.${docText ? `\n\nТекст документа:\n"""${docText}"""` : ""}`;
+  let r: Any;
+  try {
+    r = await sample.json(prompt, isImage ? { images: [file] } : {});
+  } catch (e) {
+    const code = (e as Any)?.code;
+    throw new DemoError(400, SAMPLE_OFF.has(code) || code === "images_unavailable" ? "ИИ на этой странице не разрешён — разрешите его в окне Claude и попробуйте снова."
+      : code === "image_rejected" ? "Это изображение не подходит — попробуйте другое фото (JPG/PNG до 20 МБ)." : "ИИ не ответил — попробуйте ещё раз.");
+  }
+  const TYPE_TITLES: Record<string, string> = { upd: "Накладная на поставку материалов (УПД, ТОРГ-12, ТТН)", certificate: "Документ о качестве (сертификат, паспорт, декларация)",
+    test_protocol: "Протокол лабораторных испытаний", site_photo: "Фото с площадки", letter: "Письмо", other: "Документ" };
+  const type = TYPE_TITLES[r?.type] ? r.type : "other";
+  ev.detected_type = type;
+  ev.dispatcher = { type, title: TYPE_TITLES[type], confidence: 0.9, by: LIVE_BY };
+  ev.excerpt = docText.slice(0, 600) || null;
+  const DOC_KINDS: Record<string, string> = { upd: "supply_doc", certificate: "certificate", test_protocol: "test_protocol", site_photo: "photo", letter: "incoming_letter", other: "other" };
+  const doc = { id: uid(), kind: DOC_KINDS[type],
+    title: String(r?.title ?? file.name).slice(0, 200), number: null, date: new Date().toISOString().slice(0, 10), status: "registered", source: "uploaded",
+    file_name: file.name, issues: [], created_by: "agent:reader", created_at: now(), object_id: ev.object_id };
+  s.documents.unshift(doc);
+  act(ev, type === "site_photo" ? "vision" : "reader", "register_document", `Документ: ${doc.title}`, "Сохранён в реестре объекта.", { result: { document_id: doc.id } });
+
+  if (type === "upd" && r.supply) {
+    const sp = r.supply;
+    const ref = `УПД № ${sp.number ?? "б/н"}${sp.date ? ` от ${sp.date}` : ""}`;
+    for (const it of Array.isArray(sp.items) ? sp.items : []) {
+      const mat = s.lists.materials.find((m) => m.id === it.material_id);
+      act(ev, "reader", "create_receipt", `Приход: ${it.name} — ${it.quantity} ${it.unit}`,
+        `${ref}${sp.supplier ? `, ${sp.supplier}` : ""}. ` + (mat ? `Материал в справочнике: «${mat.name}».` : "Такого материала нет в справочнике — будет добавлен.")
+          + (it.price ? ` Цена ${Number(it.price).toLocaleString("ru-RU")} руб./${it.unit}.` : ""),
+        { status: "proposed", auto: false, confidence: 0.88, payload: { object_id: ev.object_id, material_id: mat?.id ?? null,
+          new_material: mat ? null : { name: it.name, unit: it.unit }, source_name: it.name, quantity: Number(it.quantity), price: it.price ? Number(it.price) : null,
+          date: new Date().toISOString().slice(0, 10), document_ref: ref, quality_doc: (sp.certificates ?? []).join("; ") || null } });
+    }
+    if (!(sp.certificates ?? []).length) {
+      act(ev, "reader", "create_task", `Запросить документы о качестве по ${ref}`, "В накладной нет ссылок на сертификаты/паспорта — без них материалы не войдут в АОСР.",
+        { status: "new", payload: { title: `Запросить у поставщика документы о качестве по ${ref}`, role: "supply", due_days: 2, object_id: ev.object_id } });
+    }
+  } else if (type === "certificate" && r.quality) {
+    const q = r.quality;
+    const recs = s.lists["material-receipts"].filter((x) => !x.quality_doc && (q.material_id ? x.material_id === q.material_id : false));
+    const label = `Документ о качестве № ${q.number ?? "б/н"}${q.batch ? `, партия ${q.batch}` : ""}`;
+    if (recs.length) {
+      act(ev, "reader", "link_certificate", `${label} привязан к поступлениям: ${q.material ?? ""}`, `${recs.length} поступл. без документа о качестве.`,
+        { status: "new", confidence: 0.85, payload: { receipt_ids: recs.map((x) => x.id), text: label } });
+    } else {
+      act(ev, "reader", "info", `${label} сохранён: ${q.material ?? ""}`, "Поступлений этого материала без документа о качестве нет — привяжется, когда придёт накладная.");
+    }
+  } else if (type === "test_protocol" && r.protocol) {
+    const pr = r.protocol;
+    if (pr.compliant === false) {
+      act(ev, "verifier", "flag_issue", `Несоответствие по протоколу: ${pr.structure ?? ""}`,
+        `${pr.test ?? "Испытание"}: требуется ${pr.required ?? "—"}, фактически ${pr.actual ?? "—"}. Конструкцию нельзя предъявлять к приёмке до решения проектировщика.`,
+        { severity: "critical", specialist_title: "Контролёр" });
+      act(ev, "verifier", "create_task", `Решение по несоответствию: ${pr.structure ?? ""}`, "Согласовать с проектировщиком дополнительные испытания или усиление.",
+        { status: "new", specialist_title: "Контролёр", payload: { title: `Несоответствие по протоколу № ${pr.number ?? "б/н"} — согласовать решение`, role: "pto", due_days: 3, priority: "high", object_id: ev.object_id } });
+    } else {
+      act(ev, "reader", "info", `Испытания подтверждают соответствие: ${pr.structure ?? ""}`, `${pr.test ?? ""}: ${pr.actual ?? ""} при требовании ${pr.required ?? "—"}.`);
+    }
+  } else if (type === "site_photo" && r.photo) {
+    const ph = r.photo;
+    ev.vision = ph;
+    act(ev, "vision", "info", `На фото: ${ph.work_type ?? "площадка"}${ph.completion_percent != null ? `, готовность ~${ph.completion_percent}%` : ""}`, ph.description ?? "", { specialist_title: "Зрение" });
+    for (const d of Array.isArray(ph.defects) ? ph.defects : []) {
+      act(ev, "vision", "flag_issue", `Дефект: ${String(d.description).slice(0, 150)}`, "Обнаружено на фото — проверьте на месте.",
+        { severity: d.severity === "high" ? "critical" : d.severity === "medium" ? "warning" : "info", specialist_title: "Зрение" });
+    }
+    for (const v of Array.isArray(ph.safety_violations) ? ph.safety_violations : []) {
+      act(ev, "vision", "flag_issue", `Нарушение охраны труда: ${String(v).slice(0, 150)}`, "Обнаружено на фото с площадки.", { severity: "critical", specialist_title: "Зрение" });
+      act(ev, "vision", "create_task", `Устранить нарушение ОТ: ${String(v).slice(0, 150)}`, "",
+        { status: "new", specialist_title: "Зрение", payload: { title: `Устранить нарушение охраны труда: ${v}`, role: "foreman", due_days: 0, priority: "high", object_id: ev.object_id } });
+    }
+  } else if (type === "letter" && r.letter) {
+    const l = r.letter;
+    act(ev, "secretary", "process_letter", `Письмо: ${l.subject ?? doc.title}`, `${l.summary ?? ""}${l.due ? ` Ответ до ${l.due}.` : ""}`, { specialist_title: "Секретарь" });
+    for (const q of Array.isArray(l.requests) ? l.requests : []) {
+      act(ev, "secretary", "create_task", `Поручение по письму: ${String(q).slice(0, 150)}`, "",
+        { status: "new", specialist_title: "Секретарь", payload: { title: String(q), role: "pto", due_days: 5, object_id: ev.object_id } });
+    }
+  } else {
+    act(ev, "dispatcher", "info", `Сохранено: ${doc.title}`, "Тип не определён — уточните, что это, если нужна обработка.");
+  }
+  return finalize(ev, `Понял: ${TYPE_TITLES[type].toLowerCase()}.`);
 }

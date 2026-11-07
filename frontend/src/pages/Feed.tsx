@@ -98,8 +98,11 @@ function Composer({ objects, onSent }: { objects: { id: string; label: string }[
   const recorder = useRef<MediaRecorder | null>(null);
   const input = useRef<HTMLInputElement>(null);
 
+  const [live, setLive] = useState<boolean | null>(null);
   useEffect(() => {
-    if (DEMO) api<Sample[]>("/ai/samples").then(setSamples).catch(() => setSamples([]));
+    if (!DEMO) return;
+    api<Sample[]>("/ai/samples").then(setSamples).catch(() => setSamples([]));
+    import("../demo/mock").then((m) => m.liveAI()).then(setLive).catch(() => setLive(false));
   }, []);
 
   async function send(extra?: { sample?: string; voice?: Blob }) {
@@ -129,11 +132,43 @@ function Composer({ objects, onSent }: { objects: { id: string; label: string }[
     }
   }
 
+  const dictation = useRef<{ stop: () => void } | null>(null);
+
+  /** Демо: распознавание речи средствами браузера (на сервере — Yandex SpeechKit). */
+  function browserDictation(): boolean {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const w = window as any;
+    const SR = w.SpeechRecognition || w.webkitSpeechRecognition;
+    if (!SR) return false;
+    const rec = new SR();
+    rec.lang = "ru-RU";
+    rec.continuous = true;
+    rec.interimResults = true;
+    const base = text ? text.trim() + " " : "";
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    rec.onresult = (e: any) => {
+      let said = "";
+      for (let i = 0; i < e.results.length; i++) said += e.results[i][0].transcript;
+      setText(base + said);
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    rec.onerror = (e: any) => {
+      setError(e.error === "not-allowed" ? "Нет доступа к микрофону — разрешите его в браузере" : "Распознавание речи прервалось");
+    };
+    rec.onend = () => { setRecording(false); dictation.current = null; };
+    rec.start();
+    dictation.current = rec;
+    setRecording(true);
+    return true;
+  }
+
   async function toggleVoice() {
     if (recording) {
-      recorder.current?.stop();
+      if (dictation.current) dictation.current.stop();
+      else recorder.current?.stop();
       return;
     }
+    if (DEMO && browserDictation()) return;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const rec = new MediaRecorder(stream);
@@ -166,10 +201,11 @@ function Composer({ objects, onSent }: { objects: { id: string; label: string }[
         onKeyDown={(e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) void send(); }}
       />
       <div className="composer-bar">
-        <input ref={input} type="file" hidden accept="image/*,audio/*,.pdf,.docx,.xlsx,.txt,.csv,.eml"
+        <input ref={input} type="file" hidden accept={DEMO ? "image/jpeg,image/png,image/webp,.txt,.csv" : "image/*,audio/*,.pdf,.docx,.xlsx,.txt,.csv,.eml"}
                onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
         <button className="btn" onClick={() => input.current?.click()} title="Фото, документ, съёмка">📎 Файл</button>
-        <button className={`btn ${recording ? "recording" : ""}`} onClick={toggleVoice} title="Голосовое сообщение">
+        <button className={`btn ${recording ? "recording" : ""}`} onClick={toggleVoice}
+                title={DEMO ? "Диктовка в поле сообщения (в демо — распознавание браузера)" : "Голосовое сообщение"}>
           {recording ? "■ Остановить" : "🎙 Голос"}
         </button>
         {file && <span className="file-chip">{file.name} <button className="link" onClick={() => setFile(null)}>×</button></span>}
@@ -177,8 +213,14 @@ function Composer({ objects, onSent }: { objects: { id: string; label: string }[
           <option value="">Объект определит ИИ</option>
           {objects.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
         </select>
-        <button className="btn primary" disabled={busy} onClick={() => void send()}>{busy ? "ИИ разбирает…" : "Отправить ИИ"}</button>
+        <button className="btn primary" disabled={busy} onClick={() => void send()}>{busy ? "ИИ разбирает… (до минуты)" : "Отправить ИИ"}</button>
       </div>
+      {DEMO && live !== null && (
+        <div className="small muted" style={{ marginTop: 8 }}>
+          {live ? "ИИ подключён: ваш текст, фото документов и площадки, текстовые файлы разбираются вживую (в демо — Claude; на сервере — YandexGPT, SpeechKit и Vision OCR)."
+            : "ИИ на странице недоступен — работают правила и записанные примеры. Откройте страницу в Claude, чтобы ИИ разбирал ваши сообщения и фото."}
+        </div>
+      )}
       {samples.length > 0 && (
         <div className="samples">
           <span className="muted small">Примеры с площадки:</span>
