@@ -132,3 +132,35 @@ def test_search_survives_embedding_outage(db, demo):
 
     hits = hybrid_search(db, Down(), "армирование фундаментной плиты", org_id=demo.id, k=5)
     assert hits  # нашлось по словам
+
+
+def test_id_check_finds_missing_certificates_and_protocols(client, db):
+    from conftest import login
+
+    from bis.demo import create_organization
+
+    create_organization(db, name="ООО «Пилот-3»", inn="1435000003", admin_email="p3@p.ru", admin_password="12345678",
+                        admin_name="Админ")
+    db.commit()
+    auth = login(client, "p3@p.ru", "12345678")
+    _upload(client, auth, "АОСР 1 армирование.txt", (
+        "АКТ освидетельствования скрытых работ № 1\nРаботы: армирование фундаментной плиты Фм1\n"
+        "Проектная документация: шифр 17-2026-КЖ0, листы 3-7\n"
+        "Материалы: арматура А500С (документ о качестве № 4512 от 02.04.2026)\n"
+        "Исполнительная схема № ИС-1\nначало 05.04.2026, окончание работ 12.04.2026").encode())
+    _upload(client, auth, "АОСР 2 бетонирование.txt", (
+        "АКТ освидетельствования скрытых работ № 2\nРаботы: бетонирование фундаментной плиты Фм1\n"
+        "шифр 17-2026-КЖ0\nМатериалы: бетонная смесь B25 (паспорта качества № 118-131), протокол испытаний № 56\n"
+        "окончание 14.04.2026").encode())
+    _upload(client, auth, "Сертификат 4512 арматура.txt", "Документ о качестве № 4512 от 02.04.2026. Арматура А500С".encode())
+    _upload(client, auth, "ИС-1 армирование плиты.txt", "Исполнительная схема армирования плиты Фм1".encode())
+
+    res = client.get("/api/archive/id-check", headers=auth).json()
+    assert res["acts"] == 2 and res["complete"] == 1
+    by = {a["title"]: a for a in res["items"]}
+    act2 = next(a for t, a in by.items() if "2" in t)
+    missing = {(r["kind"], r["number"]) for r in act2["refs"] if not r["found"]}
+    assert missing == {("quality", "118-131"), ("protocol", "56")}
+    assert "Нет ссылки на исполнительную схему" in act2["issues"]
+    act1 = next(a for t, a in by.items() if "1" in t)
+    assert act1["complete"] and all(r["found"] for r in act1["refs"])

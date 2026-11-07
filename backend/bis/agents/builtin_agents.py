@@ -51,7 +51,7 @@ PTO = Agent(
     description="Исполнительная документация: АОСР, АООК, реестры ИД, участники и представители объекта.",
     keywords=r"аоср|аоок|освидетельствовани|скрыт[а-я]* работ|ответственн[а-я]* конструкц|исполнительн[а-я]* документ|"
              r"\bид\b|реестр[а-я]* ид|журнал[а-я]* (?:работ|выполнени)",
-    tools=["find_objects", "get_object_participants", "search_knowledge", "list_documents", "create_aosr_draft",
+    tools=["find_objects", "get_object_participants", "search_knowledge", "list_documents", "check_id_archive", "create_aosr_draft",
            "create_aook_draft", "id_registry", "work_journal", "list_volumes", "confirm_volumes", "find_documents", "get_document"],
     priority=2,
     instructions="""Готовишь исполнительную документацию по составу и порядку ведения ИД (Приказ Минстроя России № 344/пр).
@@ -66,7 +66,9 @@ PTO = Agent(
 3. Создай черновик create_aosr_draft и перечисли замечания проверки (issues) — ошибки и предупреждения.
 АООК (ответственные конструкции: фундаменты, перекрытия, колонны) — create_aook_draft: укажи АОСР на входящие скрытые
 работы и испытания (протоколы прочности бетона). Комплектность ИД — id_registry: какие скрытые работы не закрыты АОСР.
-Журнал выполнения работ за период — work_journal.""",
+Журнал выполнения работ за период — work_journal.
+Проверка загруженной ИД («всё ли есть по актам», «чего не хватает», «проверь ИД») — check_id_archive: назови акты и
+недостающие сертификаты, протоколы, схемы; что найдено — не перечисляй.""",
 )
 
 ASSISTANT = Agent(

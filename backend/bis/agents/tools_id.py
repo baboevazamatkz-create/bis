@@ -89,4 +89,22 @@ def work_journal_tool(ctx: AgentContext, args: JournalArgs) -> dict:
     return {"entries": idsvc.work_journal(ctx.db, ctx.org_id, obj.id, args.period_start, args.period_end)[:200]}
 
 
-ID_TOOLS = [create_aook_draft, id_registry_tool, work_journal_tool]
+class ArchiveCheckArgs(BaseModel):
+    object_id: str | None = None
+
+
+@tool("check_id_archive", "Проверка ИД по загруженному архиву: для каждого АОСР/АООК — есть ли в архиве документы о "
+      "качестве, протоколы и схемы, на которые он ссылается; не указаны ли схема, шифр РД, даты.",
+      scopes=("documents:read",))
+def check_id_archive_tool(ctx: AgentContext, args: ArchiveCheckArgs) -> dict:
+    from bis.services.id_check import check_archive, summary_text
+
+    res = check_archive(ctx.db, ctx.org_id, _object(ctx, args.object_id).id if args.object_id else None)
+    worst = [a for a in res["items"] if not a["complete"]][:20]
+    return {k: res[k] for k in ("acts", "complete", "missing_refs", "with_issues")} | {
+        "summary": summary_text(res),
+        "problems": [{"act": a["title"], "missing": [f"{r['title']} № {r['number']}" for r in a["refs"] if not r["found"]],
+                      "issues": a["issues"]} for a in worst]}
+
+
+ID_TOOLS = [create_aook_draft, id_registry_tool, work_journal_tool, check_id_archive_tool]

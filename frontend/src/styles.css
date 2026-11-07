@@ -307,3 +307,7 @@ code { background: var(--track); padding: 1px 6px; border-radius: 4px; font-size
 .doc-chip-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 360px; }
 .bubble .link { padding: 0; font: inherit; }
 .digest { white-space: pre-wrap; font: inherit; line-height: 1.55; margin-top: 0; }
+.id-act { border-top: 1px solid var(--border); padding: 10px 0 2px; }
+.id-act ul { margin: 6px 0 0; padding-left: 20px; }
+.id-act li { font-size: 13px; margin: 2px 0; }
+.text-warn { color: var(--warn); }

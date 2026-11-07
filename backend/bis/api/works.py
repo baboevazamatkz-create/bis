@@ -356,6 +356,15 @@ def export_journal(object_id: uuid.UUID, body: PeriodIn, db: Session = Depends(g
     return doc
 
 
+@router.get("/archive/id-check")
+def archive_id_check(object_id: uuid.UUID | None = None, db: Session = Depends(get_db),
+                     user: User = Depends(require("documents:read"))):
+    """Проверка ИД по архиву: для каждого АОСР — найдены ли документы о качестве, протоколы, схемы, на которые он ссылается."""
+    from bis.services.id_check import check_archive
+
+    return check_archive(db, user.organization_id, object_id)
+
+
 @router.post("/archive/import")
 def archive_import(file: UploadFile = File(...), object_id: uuid.UUID | None = Form(None), folder: str = Form(""),
                          analyze_contracts: bool = Form(True), db: Session = Depends(get_db),

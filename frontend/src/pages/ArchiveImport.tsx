@@ -1,7 +1,11 @@
 // Загрузка архива организации: папки с ИД, договорами, письмами, проектом. Тип документа определяет ИИ.
 import { useRef, useState } from "react";
 import { api } from "../api";
-import { PageHead, useObjects } from "../components";
+import { Hint, PageHead, useObjects } from "../components";
+
+interface IdRef { kind: string; title: string; number: string; found: boolean; document_title: string | null }
+interface IdAct { document_id: string; title: string; date: string | null; works: string; refs: IdRef[]; issues: string[]; complete: boolean }
+interface IdCheck { acts: number; complete: number; missing_refs: number; with_issues: number; items: IdAct[] }
 
 interface Result {
   file: string; status: string; type?: string; kind?: string; document_id?: string; object_id?: string | null;
@@ -33,9 +37,9 @@ export default function ArchiveImport() {
     stop.current = false;
     setResults([]);
     setProgress({ done: 0, total: items.length });
-    for (let i = 0; i < items.length; i++) {
-      if (stop.current) break;
-      const f = items[i];
+    let next = 0;
+    let done = 0;
+    const one = async (f: File) => {
       const rel = (f as File & { webkitRelativePath?: string }).webkitRelativePath || "";
       const form = new FormData();
       form.append("file", f, f.name);
@@ -49,7 +53,25 @@ export default function ArchiveImport() {
         r = { file: f.name, status: "error", error: (e as Error).message };
       }
       setResults((x) => [r, ...x]);
-      setProgress({ done: i + 1, total: items.length });
+      done += 1;
+      setProgress({ done, total: items.length });
+    };
+    // по 3 файла одновременно: распознавание, модели и векторы — сетевые запросы, ждать их по очереди незачем
+    const lane = async () => {
+      while (!stop.current && next < items.length) await one(items[next++]);
+    };
+    await Promise.all([lane(), lane(), lane()]);
+    setCheck(null);
+  }
+
+  const [check, setCheck] = useState<IdCheck | null>(null);
+  const [checking, setChecking] = useState(false);
+  async function runCheck() {
+    setChecking(true);
+    try {
+      setCheck(await api<IdCheck>(`/archive/id-check${objectId ? `?object_id=${objectId}` : ""}`));
+    } finally {
+      setChecking(false);
     }
   }
 
@@ -99,6 +121,34 @@ export default function ArchiveImport() {
               {progress.done} из {progress.total}{progress.done === progress.total ? " — готово" : " — ИИ разбирает…"}
             </div>
           </div>
+        )}
+      </div>
+      <div className="panel">
+        <div className="row" style={{ alignItems: "center", justifyContent: "space-between" }}>
+          <h2 style={{ margin: 0 }}>Проверка ИД по архиву <Hint>Для каждого АОСР и АООК: есть ли в архиве документы о качестве, протоколы
+            испытаний и исполнительные схемы, на которые он ссылается по номеру; указаны ли схема, шифр РД и даты.</Hint></h2>
+          <button className="btn" disabled={checking || !!running} onClick={() => void runCheck()}>{checking ? "Проверяю…" : "Проверить"}</button>
+        </div>
+        {check && (
+          <>
+            <div className="stats" style={{ marginTop: 12 }}>
+              <div className="stat"><div className="stat-value">{check.acts}</div><div className="stat-label">актов</div></div>
+              <div className="stat ok"><div className="stat-value">{check.complete}</div><div className="stat-label">полных</div></div>
+              <div className={`stat ${check.missing_refs ? "bad" : ""}`}><div className="stat-value">{check.missing_refs}</div><div className="stat-label">нет в архиве</div></div>
+              <div className={`stat ${check.with_issues ? "warn" : ""}`}><div className="stat-value">{check.with_issues}</div><div className="stat-label">с замечаниями</div></div>
+            </div>
+            {check.items.filter((a) => !a.complete).map((a) => (
+              <div key={a.document_id} className="id-act">
+                <b>{a.title}</b>{a.date && <span className="muted small"> · {new Date(a.date).toLocaleDateString("ru-RU")}</span>}
+                <ul>
+                  {a.refs.filter((r) => !r.found).map((r) => <li key={r.kind + r.number} className="text-bad">нет в архиве: {r.title} № {r.number}</li>)}
+                  {a.issues.map((x) => <li key={x} className="text-warn">{x}</li>)}
+                </ul>
+              </div>
+            ))}
+            {check.acts > 0 && check.complete === check.acts && <p className="muted">Все акты полные: ссылки найдены в архиве.</p>}
+            {check.acts === 0 && <p className="muted">АОСР и АООК в архиве нет.</p>}
+          </>
         )}
       </div>
       {results.length > 0 && (
