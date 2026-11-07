@@ -161,7 +161,10 @@ def _process(env: Env, event: IntakeEvent) -> None:
     data = env.storage.get(event.file_key) if event.file_key else None
 
     # 1. восприятие
-    if event.kind == "voice":
+    if event.kind == "voice" and (event.result or {}).get("transcript"):  # уже распознано (Telegram: вопрос или отчёт)
+        transcript = event.result["transcript"]
+        text = (transcript + (f"\n{event.text}" if event.text else "")).strip()
+    elif event.kind == "voice":
         if not voice.status()["stt"]:
             _act(env, event, "hearing", "flag_issue", "Голосовое сохранено, но не распознано",
                  "Распознавание речи не подключено (сервер STT). Подключите — и голосовые прорабов станут объёмами, "

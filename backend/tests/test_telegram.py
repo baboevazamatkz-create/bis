@@ -187,3 +187,30 @@ def test_question_is_answered_with_documents(db, demo, monkeypatch):
     tg.handle_update(db, bot.api, msg(21, text="/вопрос пришли АОСР на армирование"))
     assert seen["question"] == "пришли АОСР на армирование"
     assert tg.handle_update(db, bot.api, msg(22, text="Залили бетон плиты Пм1 — 300 м3")).startswith("event:")
+
+
+def test_voice_question_and_voice_report(db, demo, monkeypatch):
+    """Голосом спросили — ответ (как Procore AI Go); голосом отчитались — в разбор, без повторного распознавания."""
+    from bis import voice
+    from bis.agents.base import AgentResult
+    from bis.plugins.sdk import get_registry
+
+    bot = FakeBot(files={"v1": b"OggS1", "v2": b"OggS2"})
+    link(db, bot)
+    said = {"OggS1": "сколько бетона ушло на плиту пм1", "OggS2": "залили бетон плиты пм1 захватка 3 310 кубов"}
+    calls = []
+
+    def transcribe(data, name, mime):
+        calls.append(data)
+        return said[data.decode()]
+
+    monkeypatch.setattr(voice, "status", lambda: {"stt": True, "tts": False})
+    monkeypatch.setattr(voice, "transcribe", transcribe)
+    monkeypatch.setattr(type(next(iter(get_registry().agents.values()))), "run",
+                        lambda self, ctx, reg, history, text: AgentResult(text=f"Ответ: {text}", agent=self.name))
+    r = tg.handle_update(db, bot.api, msg(30, voice={"file_id": "v1", "file_size": 5, "mime_type": "audio/ogg"}))
+    assert r.startswith("answer:") and bot.last.startswith("🎙 «сколько бетона ушло на плиту пм1»")
+    r = tg.handle_update(db, bot.api, msg(31, voice={"file_id": "v2", "file_size": 5, "mime_type": "audio/ogg"}))
+    assert r.startswith("event:")
+    ev = db.scalar(select(IntakeEvent).where(IntakeEvent.source == "telegram", IntakeEvent.kind == "voice"))
+    assert ev.result["transcript"] == said["OggS2"] and len(calls) == 2  # отчёт распознан один раз

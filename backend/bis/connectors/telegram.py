@@ -244,6 +244,7 @@ def handle_update(db: Session, api: TelegramAPI, update: dict[str, Any], *, env_
             IntakeEvent.source == "telegram", IntakeEvent.result["telegram"]["update_id"].astext == str(update_id))):
         return "duplicate"
     data = file_name = mime = None
+    transcript = None
     if info:
         file_id, file_name, mime, size = info
         if size > MAX_FILE:
@@ -251,13 +252,19 @@ def handle_update(db: Session, api: TelegramAPI, update: dict[str, Any], *, env_
                      reply_to=mid)
             return "too_big"
         data = api.download(file_id)
+        if (msg.get("voice") or (mime or "").startswith("audio/")) and not text:
+            # голосовое: сначала распознаём — вопрос голосом («сколько бетона ушло на плиту?») получает ответ
+            transcript = _transcribe(data, file_name, mime)
+            if transcript and QUESTION.search(transcript):
+                return answer_question(db, api, user, chat_id, mid, transcript, heard=True)
     elif not text:
         return "empty"
 
     env = (env_factory or _default_env)(db, user)
     event = cv.ingest(env, source="telegram", text=text or None, data=data, file_name=file_name, mime=mime,
                       object_id=_chat_object(org, chat_id), sender=user.full_name)
-    event.result = {"telegram": {"chat_id": chat_id, "message_id": mid, "update_id": update_id}}
+    event.result = {"telegram": {"chat_id": chat_id, "message_id": mid, "update_id": update_id},
+                    **({"transcript": transcript} if transcript else {})}
     actions = cv.process(env, event)
     db.commit()
     reply = (event.result or {}).get("reply") or "Принято."
@@ -274,7 +281,20 @@ def handle_update(db: Session, api: TelegramAPI, update: dict[str, Any], *, env_
 _LINK = re.compile(r"\[([^\]]+)\]\([^)\s]+\)")
 
 
-def answer_question(db: Session, api: TelegramAPI, user: User, chat_id: str, mid: int | None, question: str) -> str:
+def _transcribe(data: bytes, file_name: str | None, mime: str | None) -> str | None:
+    from bis import voice
+
+    if not voice.status()["stt"]:
+        return None
+    try:
+        return voice.transcribe(data, file_name or "voice.ogg", mime) or None
+    except Exception as e:  # noqa: BLE001 — не распознали здесь — конвейер попробует и сообщит
+        log.warning("Telegram: голосовое не распознано: %s", e)
+        return None
+
+
+def answer_question(db: Session, api: TelegramAPI, user: User, chat_id: str, mid: int | None, question: str,
+                    heard: bool = False) -> str:
     """Вопрос с объекта → ИИ-специалист ищет в документах и данных, отвечает со ссылками и присылает файлы."""
     from datetime import UTC, datetime, timedelta
 
@@ -310,7 +330,7 @@ def answer_question(db: Session, api: TelegramAPI, user: User, chat_id: str, mid
                        meta={"citations": result.citations, "documents": result.documents, "source": "telegram"}))
     db.commit()
 
-    text = _LINK.sub(r"\1", result.text).replace("**", "")
+    text = (f"🎙 «{question}»\n\n" if heard else "") + _LINK.sub(r"\1", result.text).replace("**", "")
     used = [c for c in result.citations if c.get("used")][:3]
     if used:
         text += "\n\nИсточники: " + "; ".join(c["citation"] for c in used)
