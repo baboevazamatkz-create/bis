@@ -9,7 +9,10 @@
 
 from __future__ import annotations
 
+import functools
 import tempfile
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -134,6 +137,54 @@ TOOLS = [
 ]
 
 
+# COM-объекты AutoCAD привязаны к потоку, в котором созданы: все вызовы — через один поток с CoInitialize.
+def _co_init() -> None:
+    try:
+        import pythoncom
+
+        pythoncom.CoInitialize()
+    except ImportError:
+        pass
+
+
+_COM = ThreadPoolExecutor(max_workers=1, thread_name_prefix="bis-com", initializer=_co_init)
+BUSY = {-2147418111, -2147417846}  # RPC_E_CALL_REJECTED, RPC_E_SERVERCALL_RETRYLATER — AutoCAD занят
+LOST = {-2147417848, -2147023174, -2147417842, -2147221008, -2147220995, -2147023170}  # связь потеряна
+
+
+def _hresult(e: Exception) -> int | None:
+    hr = getattr(e, "hresult", None)
+    if hr is None and e.args and isinstance(e.args[0], int):
+        hr = e.args[0]
+    return hr
+
+
+def guarded(fn):
+    """Инструмент: в потоке COM; «AutoCAD занят» — повтор, потеря связи — переподключение."""
+    @functools.wraps(fn)
+    def run(*args, **kwargs):
+        def call():
+            reconnects = 0
+            for _ in range(60):
+                try:
+                    return fn(*args, **kwargs)
+                except Exception as e:  # noqa: BLE001
+                    hr = _hresult(e)
+                    if hr in BUSY:
+                        time.sleep(0.25)
+                        continue
+                    if hr in LOST and reconnects < 2:
+                        reconnects += 1
+                        _state["cad"] = None
+                        continue
+                    if hr is not None:
+                        raise bridge.CadError(f"Ошибка CAD ({hr}): {e}. Закройте диалоговые окна в CAD и повторите.") from e
+                    raise
+            raise bridge.CadError("CAD занят (открыто диалоговое окно или идёт команда) — завершите её и повторите")
+        return _COM.submit(call).result()
+    return run
+
+
 def build_server():
     try:
         from mcp.server.mcpserver import MCPServer  # mcp 2.x
@@ -141,7 +192,7 @@ def build_server():
         from mcp.server.fastmcp import FastMCP as MCPServer  # mcp 1.x
     server = MCPServer("bis-cad", instructions=INSTRUCTIONS)
     for name, fn, desc in TOOLS:
-        server.tool(name=name, description=desc)(fn)
+        server.tool(name=name, description=desc)(guarded(fn))
     return server
 
 

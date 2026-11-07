@@ -141,12 +141,20 @@ class ComBackend:
         except ImportError:
             return tuple(float(v) for v in values)
 
+    def _active(self):
+        """Текущий чертёж: пользователь мог переключиться на другой — рисуем в активном."""
+        try:
+            self.doc = self.app.ActiveDocument
+        except Exception:  # noqa: BLE001 — все чертежи закрыты
+            self.doc = self.app.Documents.Add()
+        return self.doc
+
     @property
     def ms(self):
-        return self.doc.ModelSpace
+        return self._active().ModelSpace
 
     def layer(self, name, color=7):
-        lay = self.doc.Layers.Add(name)
+        lay = self._active().Layers.Add(name)
         lay.color = color
 
     def _on(self, ent, layer):

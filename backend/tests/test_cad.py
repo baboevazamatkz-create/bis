@@ -165,3 +165,25 @@ def test_cad_bridge_dxf_and_com(tmp_path):
     res = mcp_server.executive_scheme({"title": "т", "points": [{"name": "1", "design_x": 0, "design_y": 0, "fact_x": 0.01, "fact_y": 0}]})
     assert res["file"].endswith(".dxf") and res["opened_in"] == "dxf"
     assert len(mcp_server.TOOLS) == 11
+
+
+def test_mcp_tools_run_in_one_com_thread_with_retry():
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from bis.cad import mcp_server
+
+    seen = set()
+    calls = {"n": 0}
+
+    def tool():
+        seen.add(threading.current_thread().name)
+        calls["n"] += 1
+        if calls["n"] < 3:  # AutoCAD занят
+            raise RuntimeError(-2147418111, "Call was rejected by callee.", None, None)
+        return "ok"
+
+    g = mcp_server.guarded(tool)
+    with ThreadPoolExecutor(4) as pool:
+        assert list(pool.map(lambda _: g(), range(4))) == ["ok"] * 4
+    assert len(seen) == 1 and next(iter(seen)).startswith("bis-com")
