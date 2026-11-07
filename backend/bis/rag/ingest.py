@@ -82,7 +82,8 @@ def index_pages(db: Session, embedder: Embedder, source: KnowledgeSource, pages:
     from bis.models.knowledge import VECTOR
 
     # без pgvector векторы не нужны: поиск полнотекстовый и по номерам пунктов
-    vectors = embedder.embed_documents(texts) if texts and VECTOR else [None] * len(texts)
+    keep = VECTOR or getattr(embedder, "semantic", False)  # смысловые векторы храним и без pgvector
+    vectors = embedder.embed_documents(texts) if texts and keep else [None] * len(texts)
     for c, vec in zip(chunks, vectors, strict=True):
         db.add(
             KnowledgeChunk(

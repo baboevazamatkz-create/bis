@@ -105,6 +105,24 @@ def _hit(chunk: KnowledgeChunk, src: KnowledgeSource) -> SearchHit:
     )
 
 
+def _semantic_in_memory(db: Session, qvec: list[float], flt: dict, pool: int) -> list[tuple[KnowledgeChunk, KnowledgeSource]]:
+    """Косинусная близость по всем фрагментам с векторами (тысячи фрагментов — доли секунды)."""
+    import numpy as np
+
+    rows = db.execute(_base_filter(select(KnowledgeChunk.id, KnowledgeChunk.embedding), **flt)
+                      .where(KnowledgeChunk.embedding.is_not(None))).all()
+    q = np.asarray(qvec, dtype=np.float32)
+    rows = [r for r in rows if r[1] is not None and len(r[1]) == len(q)]
+    if not rows:
+        return []
+    m = np.asarray([r[1] for r in rows], dtype=np.float32)
+    sims = (m @ q) / (np.linalg.norm(m, axis=1) * np.linalg.norm(q) + 1e-9)
+    top = [rows[i][0] for i in np.argsort(-sims)[:pool]]
+    found = {c.id: (c, s) for c, s in db.execute(select(KnowledgeChunk, KnowledgeSource).join(
+        KnowledgeSource, KnowledgeSource.id == KnowledgeChunk.source_id).where(KnowledgeChunk.id.in_(top))).all()}
+    return [found[i] for i in top if i in found]
+
+
 def hybrid_search(
     db: Session,
     embedder: Embedder,
@@ -145,6 +163,9 @@ def hybrid_search(
         weights.append(3.0)
 
     # 2. Векторный поиск: исходный запрос и запрос, расширенный терминами тезауруса
+    if not VECTOR and getattr(embedder, "semantic", False):  # смысловой поиск без pgvector: сравнение в памяти
+        ranked.append(_semantic_in_memory(db, qvec, flt, pool))
+        weights.append(1.3)
     vectors = [(qvec, 1.0)] if VECTOR else []
     if expansions and VECTOR:
         vectors.append((embedder.embed_query(query + ". " + "; ".join(expansions)), 0.7))

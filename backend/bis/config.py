@@ -72,7 +72,7 @@ class Settings(BaseSettings):
     cors_origins: list[str] = ["http://localhost:5173", "http://localhost:8080"]
 
     # Эмбеддинги
-    embedding_provider: Literal["hash", "openai_compat"] = "hash"
+    embedding_provider: Literal["hash", "openai_compat", "yandex"] = "hash"  # yandex — смысловые эмбеддинги AI Studio
     embedding_url: str | None = None
     embedding_model: str = "BAAI/bge-m3"
     embedding_api_key: str | None = None

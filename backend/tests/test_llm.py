@@ -175,3 +175,24 @@ def test_provider_config_expands_env_and_check_reports_hints(monkeypatch):
     assert res["ok"]["ok"] and res["ok"]["reply"] == "Москва" and res["ok"]["json"] is True and res["ok"]["routes"] == ["chat"]
     assert not res["denied"]["ok"] and "ai.languageModels.user" in res["denied"]["hint"]
     assert "offline" not in res
+
+
+def test_yandex_embedder_and_semantic_search_without_pgvector(monkeypatch):
+    import httpx
+
+    from bis.config import Settings
+    from bis.rag.embeddings import YandexEmbedder
+
+    seen = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        import json
+
+        body = json.loads(req.content)
+        seen.append(body["modelUri"])
+        return httpx.Response(200, json={"embedding": [1.0] + [0.0] * 255, "modelVersion": "x"})
+
+    monkeypatch.setenv("YANDEX_FOLDER_ID", "b1gx")
+    emb = YandexEmbedder(Settings(), client=httpx.Client(transport=httpx.MockTransport(handler)))
+    assert len(emb.embed_documents(["a", "b"])) == 2 and len(emb.embed_query("q")) == 256
+    assert seen.count("emb://b1gx/text-search-doc/latest") == 2 and seen[-1] == "emb://b1gx/text-search-query/latest"

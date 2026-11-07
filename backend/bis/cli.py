@@ -53,6 +53,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--port", type=int, default=8080)
     p.add_argument("--setup", action="store_true", help="Только подготовить базу и выполнить команду --then")
     p.add_argument("--then", nargs=argparse.REMAINDER, default=[], help="Команда bis после подготовки (seed-demo, create-org …)")
+    sub.add_parser("reindex", help="Пересчитать смысловые векторы базы знаний (после смены модели эмбеддингов)")
     sub.add_parser("llm-check", help="Проверить подключение моделей: ответ, JSON, время")
     sub.add_parser("telegram-poll", help="Telegram-бот в режиме опроса (без входящих соединений, закрытый контур)")
 
@@ -91,6 +92,27 @@ def main(argv: list[str] | None = None) -> int:
             local.prepare(args.dir.resolve())
             return main(args.then) if args.then else 0
         local.run(args.dir.resolve(), args.host, args.port)
+        return 0
+    if args.cmd == "reindex":
+        from sqlalchemy import select
+
+        from bis.db import SessionLocal
+        from bis.models import KnowledgeChunk, KnowledgeSource
+        from bis.rag.embeddings import get_embedder
+        from bis.rag.ingest import embedding_text
+
+        emb = get_embedder()
+        with SessionLocal() as db:
+            rows = db.execute(select(KnowledgeChunk, KnowledgeSource).join(
+                KnowledgeSource, KnowledgeSource.id == KnowledgeChunk.source_id)).all()
+            for i in range(0, len(rows), 64):
+                part = rows[i:i + 64]
+                vecs = emb.embed_documents([embedding_text(s.designation or s.title, c.section_path, c.heading, c.content)
+                                            for c, s in part])
+                for (c, _), v in zip(part, vecs, strict=True):
+                    c.embedding = v
+                db.commit()
+                print(f"{min(i + 64, len(rows))}/{len(rows)}")
         return 0
     if args.cmd == "llm-check":
         from bis.llm.check import check_providers

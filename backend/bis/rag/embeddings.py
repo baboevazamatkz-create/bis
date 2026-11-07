@@ -2,6 +2,7 @@
 
 - HashingEmbedder — без зависимостей и сети (лексическое сходство); для разработки и тестов.
 - OpenAICompatEmbedder — сервер эмбеддингов (infinity, TEI, vLLM, Ollama) с bge-m3 и т.п.
+- YandexEmbedder — смысловые эмбеддинги Yandex AI Studio (text-search-doc / text-search-query, 256 чисел).
   Модель работает в закрытом контуре — документы организации не покидают периметр.
 """
 
@@ -96,6 +97,45 @@ class OpenAICompatEmbedder:
         return self._embed([self.query_prefix + text])[0]
 
 
+class YandexEmbedder:
+    """Смысловые эмбеддинги AI Studio: документы и запросы — разными моделями (асимметричный поиск)."""
+
+    URL = "https://llm.api.cloud.yandex.net/foundationModels/v1/textEmbedding"
+    dim = 256
+    semantic = True
+
+    def __init__(self, settings: Settings, client: httpx.Client | None = None, workers: int = 4):
+        folder, key = settings.yandex()
+        if not folder:
+            raise ValueError("Не задан каталог Yandex Cloud (BIS_YANDEX_FOLDER_ID / YANDEX_FOLDER_ID)")
+        self.doc_model = f"emb://{folder}/text-search-doc/latest"
+        self.query_model = f"emb://{folder}/text-search-query/latest"
+        self.workers = workers
+        self.client = client or httpx.Client(timeout=60, headers={"Authorization": f"Api-Key {key or 'proxy-injected'}"})
+
+    def _one(self, model: str, text: str) -> list[float]:
+        import time
+
+        for attempt in range(5):
+            r = self.client.post(self.URL, json={"modelUri": model, "text": text[:6000]})
+            if r.status_code == 429 or r.status_code >= 500:
+                time.sleep(1 + attempt * 2)
+                continue
+            r.raise_for_status()
+            return [float(x) for x in r.json()["embedding"]]
+        r.raise_for_status()
+        raise RuntimeError("Yandex Embeddings: превышено число попыток")
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(self.workers) as pool:
+            return list(pool.map(lambda t: self._one(self.doc_model, t), texts))
+
+    def embed_query(self, text: str) -> list[float]:
+        return self._one(self.query_model, text)
+
+
 _embedder: Embedder | None = None
 
 
@@ -103,7 +143,12 @@ def get_embedder() -> Embedder:
     global _embedder
     if _embedder is None:
         s = get_settings()
-        _embedder = OpenAICompatEmbedder(s) if s.embedding_provider == "openai_compat" else HashingEmbedder(s.embedding_dim)
+        if s.embedding_provider == "yandex":
+            _embedder = YandexEmbedder(s)
+        elif s.embedding_provider == "openai_compat":
+            _embedder = OpenAICompatEmbedder(s)
+        else:
+            _embedder = HashingEmbedder(s.embedding_dim)
     return _embedder
 
 

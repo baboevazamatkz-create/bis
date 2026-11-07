@@ -72,7 +72,7 @@ if (-not (Test-Path $EnvFile)) {
 BIS_ENV=prod
 BIS_SECRET_KEY=$(RandHex 32)
 BIS_PUBLIC_URL=http://localhost:8080
-BIS_EMBEDDING_PROVIDER=hash
+BIS_EMBEDDING_PROVIDER=yandex
 BIS_LLM_CONFIG_FILE=$App\deploy\config\llm.yandex.json
 BIS_WEB_DIR=$App\deploy\web
 YANDEX_API_KEY=$key
@@ -83,7 +83,14 @@ BIS_TELEGRAM_BOT_TOKEN=$tg
 BIS_TELEGRAM_BOT_USERNAME=$tgName
 "@
   [IO.File]::WriteAllText($EnvFile, $text, (New-Object Text.UTF8Encoding $false))
-} else { Say "4/6 Настройки уже есть ($EnvFile)" }
+} else {
+  Say "4/6 Настройки уже есть ($EnvFile)"
+  # смысловой поиск через Yandex Embeddings (для установок до этого обновления)
+  $cur = Get-Content $EnvFile -Raw
+  if ($cur -match "BIS_EMBEDDING_PROVIDER=hash") {
+    [IO.File]::WriteAllText($EnvFile, ($cur -replace "BIS_EMBEDDING_PROVIDER=hash", "BIS_EMBEDDING_PROVIDER=yandex"), (New-Object Text.UTF8Encoding $false))
+  }
+}
 
 Say "5/6 База данных"
 if ($first) {
@@ -97,7 +104,7 @@ if ($first) {
     & $Bis local --dir $Root --setup --then create-org --name $org --inn $inn --admin-email $email --admin-password $pass --admin-name $name
   }
 } else {
-  & $Bis local --dir $Root --setup
+  & $Bis local --dir $Root --setup --then reindex
 }
 if ($LASTEXITCODE -ne 0) { Write-Host "База данных не подготовилась — пришлите текст выше." -ForegroundColor Red; return }
 New-Item -ItemType File $Ready -Force | Out-Null

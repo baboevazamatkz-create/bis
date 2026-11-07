@@ -55,7 +55,8 @@ POSTGRES_PASSWORD=$(openssl rand -hex 16)
 BIS_HTTP_PORT=80
 BIS_CORS_ORIGINS=["http://$PUBLIC_IP"]
 BIS_PUBLIC_URL=http://$PUBLIC_IP
-BIS_EMBEDDING_PROVIDER=hash
+BIS_EMBEDDING_PROVIDER=yandex
+BIS_VECTOR_ENABLED=false
 
 # Yandex AI Studio: модели, голос, сканы
 BIS_LLM_CONFIG_FILE=/config/llm.yandex.json
