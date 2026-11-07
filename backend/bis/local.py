@@ -27,30 +27,70 @@ def load_env(path: Path) -> None:
         os.environ.setdefault(k.strip(), v.strip())
 
 
-def start_database(data_dir: Path) -> str:
+def _pg_bin(name: str) -> str:
     import pgserver
 
-    pg_dir = data_dir / "pg"
-    pg_dir.mkdir(parents=True, exist_ok=True)
-    import subprocess
-    import time
+    exe = name + (".exe" if os.name == "nt" else "")
+    return str(Path(pgserver.__file__).parent / "pginstall" / "bin" / exe)
 
-    # pgserver ждёт запуска базы 10 с; на Windows с антивирусом или после сбоя (восстановление) бывает дольше
-    server = None
-    for attempt in range(8):
-        try:
-            server = pgserver.get_server(str(pg_dir), cleanup_mode="stop")
-            break
-        except subprocess.TimeoutExpired:
-            print(f"  База данных запускается дольше обычного, жду… ({attempt + 1}/8)", flush=True)
-            time.sleep(15)
-    if server is None:
-        raise RuntimeError("База данных не запустилась за 2 минуты. Добавьте папку BIS в исключения антивируса "
-                           f"и повторите. Журнал базы: {pg_dir / 'log'}")
+
+def _free_port() -> int:
+    import socket
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _running_port(pg_dir: Path) -> int | None:
+    """Порт уже запущенной базы (postmaster.pid, 4-я строка), если процесс жив."""
+    import subprocess
+
+    pid_file = pg_dir / "postmaster.pid"
+    if not pid_file.exists():
+        return None
+    r = subprocess.run([_pg_bin("pg_ctl"), "-D", str(pg_dir), "status"], stdin=subprocess.DEVNULL,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if r.returncode != 0:
+        return None
+    lines = pid_file.read_text(errors="ignore").splitlines()
+    return int(lines[3]) if len(lines) > 3 and lines[3].strip().isdigit() else None
+
+
+def start_database(data_dir: Path) -> str:
+    """Встроенный PostgreSQL 16 (бинарники из пакета pgserver). Запуск без каналов вывода и с ожиданием до 3 минут:
+    на Windows антивирус и восстановление после сбоя замедляют старт."""
+    import atexit
+    import subprocess
+    import tempfile
+
+    pg_dir = data_dir / "pg"
+    log_file = data_dir / "postgres.log"  # вне папки данных: её файлы блокирует антивирус
+    data_dir.mkdir(parents=True, exist_ok=True)
+    quiet = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+    if not (pg_dir / "PG_VERSION").exists():
+        pg_dir.mkdir(parents=True, exist_ok=True)
+        print("  Создаю базу данных…", flush=True)
+        subprocess.run([_pg_bin("initdb"), "-D", str(pg_dir), "-U", "postgres", "--auth=trust", "--encoding=UTF8"],
+                       check=True, **quiet)
+    port = _running_port(pg_dir)
+    if port is None:
+        port = _free_port()
+        opts = f'-h 127.0.0.1 -p {port}' + ("" if os.name == "nt" else f" -k {tempfile.gettempdir()}")
+        print("  Запускаю базу данных (до 3 минут)…", flush=True)
+        r = subprocess.run([_pg_bin("pg_ctl"), "-D", str(pg_dir), "-w", "-t", "180", "-o", opts, "-l", str(log_file),
+                            "start"], timeout=200, **quiet)
+        if r.returncode != 0:
+            tail = log_file.read_text(errors="ignore")[-3000:] if log_file.exists() else ""
+            raise RuntimeError(f"База данных не запустилась. Журнал ({log_file}):\n{tail}")
+        atexit.register(lambda: subprocess.run([_pg_bin("pg_ctl"), "-D", str(pg_dir), "stop", "-m", "fast", "-w"], **quiet))
+    url = f"postgresql+psycopg://postgres@127.0.0.1:{port}/postgres"
     if os.environ.get("BIS_VECTOR_ENABLED", "false").lower() in ("1", "true", "yes"):
-        server.psql("CREATE EXTENSION IF NOT EXISTS vector;")
-    uri = server.get_uri()
-    return uri.replace("postgresql://", "postgresql+psycopg://", 1)
+        import psycopg
+
+        with psycopg.connect(url.replace("+psycopg", ""), autocommit=True) as c:
+            c.execute("CREATE EXTENSION IF NOT EXISTS vector")
+    return url
 
 
 def prepare(workdir: Path) -> Path:
