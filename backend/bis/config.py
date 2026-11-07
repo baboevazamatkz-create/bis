@@ -82,6 +82,9 @@ class Settings(BaseSettings):
     # Уведомления в Telegram (бот организации); chat_id задаётся у пользователя
     telegram_bot_token: str | None = None
 
+    # Конвертация DXF → DWG (путь к ODA File Converter, необязательно)
+    oda_converter: str | None = None
+
     # Плагины: None — все найденные
     enabled_plugins: list[str] | None = None
 

@@ -289,3 +289,63 @@ def create_ks2_ks3_tool(ctx: AgentContext, args: ClosingArgs) -> dict:
 WORKS_TOOLS = [find_estimate_items, report_volume, confirm_volumes, list_volumes, plan_fact_tool, material_balance_tool,
                find_materials, record_material_usage, record_material_receipt, m29_report, create_writeoff_act,
                closing_check_tool, create_ks2_ks3_tool]
+
+
+# --- исполнительные схемы -----------------------------------------------------------------------
+
+
+class SurveyDocArgs(BaseModel):
+    document_id: str = Field(description="Документ с файлом съёмки (CSV/XLSX) из реестра")
+    geodetic: bool = Field(False, description="Координаты геодезические (X — на север)")
+
+
+@tool("parse_survey_document", "Прочитать точки съёмки (проект/факт) из файла геодезиста в реестре.",
+      scopes=("documents:read",))
+def parse_survey_document(ctx: AgentContext, args: SurveyDocArgs) -> dict:
+    from bis.cad.scheme import parse_survey
+
+    doc = _owned(ctx, Document, args.document_id, "документ")
+    if not doc.file_key:
+        raise ValueError("У документа нет файла")
+    points = parse_survey(ctx.storage.get(doc.file_key), doc.file_name or "survey.csv", geodetic=args.geodetic)
+    return {"points": [p.model_dump() for p in points][:200], "count": len(points)}
+
+
+class SchemeArgs(BaseModel):
+    title: str
+    object_id: str | None = None
+    points: list[dict] = Field(description="Точки: name, design_x, design_y, fact_x, fact_y, design_z, fact_z (м)")
+    x_axes: list[dict] = Field(default_factory=list, description="Поперечные оси: name, coord (м)")
+    y_axes: list[dict] = Field(default_factory=list, description="Продольные оси: name, coord (м)")
+    contour: list[list[float]] = Field(default_factory=list, description="Проектный контур [[x, y], ...], м")
+    tolerance_plan_mm: float = 15
+    tolerance_height_mm: float = 10
+    code: str = ""
+    surveyor: str = ""
+    checker: str = ""
+    notes: list[str] = Field(default_factory=list)
+
+
+@tool("create_executive_scheme", "Построить исполнительную схему в DXF (AutoCAD/nanoCAD) по точкам съёмки: оси, "
+      "отклонения, отметки, проверка допусков, штамп.", scopes=("documents:write",))
+def create_executive_scheme(ctx: AgentContext, args: SchemeArgs) -> dict:
+    from bis.cad.scheme import SchemeData
+    from bis.models import Organization
+    from bis.services.schemes import create_scheme
+
+    obj = _owned(ctx, ConstructionObject, args.object_id, "объект") if args.object_id else None
+    org = ctx.db.get(Organization, ctx.org_id)
+    data = SchemeData(title=args.title, object_name=(obj.name if obj else ""), organization=org.name, code=args.code,
+                      surveyor=args.surveyor, checker=args.checker or ctx.user.full_name,
+                      date=dt.date.today().strftime("%d.%m.%Y"), x_axes=args.x_axes, y_axes=args.y_axes,
+                      contour=[tuple(c) for c in args.contour], points=args.points,
+                      tolerance_plan_mm=args.tolerance_plan_mm, tolerance_height_mm=args.tolerance_height_mm,
+                      notes=args.notes)
+    doc = create_scheme(ctx.db, ctx.storage, ctx.org_id, data, actor=f"agent:{ctx.agent_name}",
+                        object_id=obj.id if obj else None)
+    ref = _doc_ref(doc)
+    ctx.documents.append(ref)
+    return ref | {"summary": doc.data["summary"], "scale": f"1:{doc.data['scale']}"}
+
+
+WORKS_TOOLS += [parse_survey_document, create_executive_scheme]

@@ -97,6 +97,26 @@ def download(doc_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depe
     )
 
 
+@router.get("/{doc_id}/preview")
+def preview(doc_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(require("documents:read"))):
+    doc = _owned(db, user, doc_id)
+    key = (doc.data or {}).get("preview_key")
+    if not key:
+        raise HTTPException(404, "Нет предпросмотра")
+    return Response(content=get_storage().get(key), media_type="image/svg+xml")
+
+
+@router.get("/{doc_id}/dwg")
+def download_dwg(doc_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(require("documents:read"))):
+    doc = _owned(db, user, doc_id)
+    key = (doc.data or {}).get("dwg_key")
+    if not key:
+        raise HTTPException(404, "DWG не сформирован (нужен ODA File Converter на сервере)")
+    name = (doc.file_name or "scheme.dxf").rsplit(".", 1)[0] + ".dwg"
+    return Response(content=get_storage().get(key), media_type="image/vnd.dwg",
+                    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}"})
+
+
 @router.post("/aosr", response_model=DocumentOut, status_code=201)
 def create_aosr(body: AOSRArgs, db: Session = Depends(get_db), user: User = Depends(require("documents:write"))):
     """Формирование АОСР по структурированной форме (без языковой модели)."""

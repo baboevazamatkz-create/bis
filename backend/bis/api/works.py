@@ -9,9 +9,12 @@ from sqlalchemy.orm import Session
 
 from bis.api.deps import require
 from bis.api.schemas import DocumentOut
+from bis.cad.scheme import SchemeData
+from bis.cad.scheme import parse_survey as parse_survey_file
 from bis.db import get_db
 from bis.models import ConstructionObject, Contract, Document, User, WorkVolume
 from bis.services import closing as csvc
+from bis.services import schemes as ssvc
 from bis.services import works as wsvc
 from bis.services.audit import audit
 from bis.services.storage import get_storage
@@ -139,3 +142,34 @@ def create_ks2(contract_id: uuid.UUID, body: ClosingIn, db: Session = Depends(ge
     db.commit()
     return {"ks2": DocumentOut.model_validate(res["ks2"]), "ks3": DocumentOut.model_validate(res["ks3"]),
             "total": float(res["check"]["total"]), "vat": float(res["check"]["vat"]), "issues": res["check"]["issues"]}
+
+
+# --- исполнительные схемы -----------------------------------------------------------------------
+
+
+class SchemeIn(SchemeData):
+    object_id: uuid.UUID | None = None
+
+
+@router.post("/schemes", response_model=DocumentOut, status_code=201)
+def create_scheme(body: SchemeIn, db: Session = Depends(get_db), user: User = Depends(require("documents:write"))):
+    if body.object_id:
+        _owned(db, user, ConstructionObject, body.object_id, "Объект")
+    data = SchemeData.model_validate(body.model_dump(exclude={"object_id"}))
+    if not data.points:
+        raise HTTPException(400, "Нет точек съёмки")
+    doc = ssvc.create_scheme(db, get_storage(), user.organization_id, data, actor=f"user:{user.id}",
+                             object_id=body.object_id)
+    db.commit()
+    return doc
+
+
+@router.post("/schemes/survey")
+async def parse_survey(file: UploadFile = File(...), geodetic: bool = Form(False),
+                       user: User = Depends(require("documents:read"))):
+    """Разбор файла съёмки геодезиста (CSV/TXT/XLSX) в точки схемы."""
+    try:
+        points = parse_survey_file(await file.read(), file.filename or "survey.csv", geodetic=geodetic)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    return {"points": [p.model_dump() for p in points]}
