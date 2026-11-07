@@ -322,6 +322,29 @@ def _com_error(e: Exception) -> str:
 
 LAST_ERRORS: list[str] = []
 
+# COM-объекты AutoCAD/nanoCAD привязаны к потоку, где созданы, и требуют CoInitialize в этом потоке.
+# Все обращения к CAD (MCP-сервер, кнопка «Открыть в AutoCAD» в BIS) идут через один постоянный поток.
+_COM_EXEC = None
+
+
+def _co_init() -> None:
+    try:
+        import pythoncom
+
+        pythoncom.CoInitialize()
+    except ImportError:  # не Windows
+        pass
+
+
+def in_com_thread(fn, *args, **kwargs):
+    """Выполнить fn в потоке COM (создаётся один раз) и вернуть результат."""
+    global _COM_EXEC
+    if _COM_EXEC is None:
+        from concurrent.futures import ThreadPoolExecutor
+
+        _COM_EXEC = ThreadPoolExecutor(max_workers=1, thread_name_prefix="bis-com", initializer=_co_init)
+    return _COM_EXEC.submit(fn, *args, **kwargs).result()
+
 
 def connect(target: str = "auto", dxf_path: str | None = None) -> Backend:
     """auto: запущенный AutoCAD, затем nanoCAD, иначе DXF-файл. Причины отказа — в LAST_ERRORS."""

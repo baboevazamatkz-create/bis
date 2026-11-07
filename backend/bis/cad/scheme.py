@@ -272,7 +272,7 @@ def svg_preview(doc: ezdxf.document.Drawing) -> str:
     backend = svg.SVGBackend()
     Frontend(RenderContext(doc), backend, config=cfg).draw_layout(doc.modelspace())
     page = layout.Page(A3[0], A3[1], layout.Units.mm, margins=layout.Margins.all(0))
-    return backend.get_string(page, settings=layout.Settings(fit_page=True, output_coordinate_space=100000))
+    return backend.get_string(page, settings=layout.Settings(fit_page=True, output_coordinate_space=30000))
 
 
 # --- данные съёмки --------------------------------------------------------------------------------

@@ -254,3 +254,54 @@ def test_table_and_title_block_fit_text_without_overlaps():
     mcp_server.text("Должность поверх", 100, -400, 250)
     assert not mcp_server.check()["ok"]
     mcp_server._state.update(cad=None, dxf_forced=False)
+
+
+def test_open_in_cad_runs_in_com_thread(client, auth, db, demo, monkeypatch):
+    import threading
+
+    from bis.cad import bridge
+    from bis.services.documents import save_document
+    from bis.services.storage import get_storage
+
+    doc = save_document(db, get_storage(), org_id=demo.id, kind="scheme", title="Схема", data={}, file_bytes=b"0\nEOF\n",
+                        file_name="схема.dxf", created_by="test", mime="application/dxf")
+    db.commit()
+    seen = {}
+
+    class FakeCad:
+        name = "autocad"
+
+        def open_file(self, path):
+            seen["thread"] = threading.current_thread().name
+            seen["path"] = path
+
+        def zoom(self):
+            pass
+
+    monkeypatch.setattr(bridge, "connect", lambda target="auto": FakeCad())
+    r = client.post(f"/api/documents/{doc.id}/open-in-cad", headers=auth)
+    assert r.status_code == 200 and r.json()["opened_in"] == "autocad"
+    assert seen["thread"].startswith("bis-com") and seen["path"].endswith(".dxf")
+
+    monkeypatch.setattr(bridge, "connect", lambda target="auto": bridge.DxfBackend())
+    bridge.LAST_ERRORS[:] = ["autocad: не запущен"]
+    r = client.post(f"/api/documents/{doc.id}/open-in-cad", headers=auth)
+    assert r.status_code == 400 and "не запущен" in r.json()["detail"]
+
+
+def test_draft_scheme_merges_model_and_rules(db, demo, monkeypatch):
+    """Модель вернула только одну точку (и с латинской буквой) — остальные замеры берутся из правил, ничего не теряется."""
+    from types import SimpleNamespace
+
+    import bis.llm.extract as ex
+    from bis.services.schemes import Measurements, PointMeasure, draft_scheme
+    from bis.services.storage import get_storage
+
+    monkeypatch.setattr(ex, "extract", lambda *a, **k: SimpleNamespace(data=Measurements(points=[PointMeasure(name="B-3", dz_mm=-5)])))
+    doc = draft_scheme(db, get_storage(), None, None, demo.id, title="Схема", element="колонны",
+                       x_axes=[{"name": str(i + 1), "coord": i * 6} for i in range(3)],
+                       y_axes=[{"name": n, "coord": i * 6} for i, n in enumerate("АБВ")], design_z=3.3,
+                       measurements_text="колонна 1/А по иксу плюс 8, по игреку минус 3; 2/Б икс минус 12; 3/В высота минус 5",
+                       tolerance_plan_mm=15, tolerance_height_mm=10)
+    s = doc.data["summary"]
+    assert s["measured"] == 3 and s["max_plan_mm"] == 12 and s["max_height_mm"] == 5

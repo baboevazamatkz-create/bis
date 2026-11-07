@@ -215,18 +215,26 @@ def open_in_cad(doc_id: uuid.UUID, db: Session = Depends(get_db), user: User = D
     doc = _owned(db, user, Document, doc_id, "Документ")
     if not doc.file_key or not (doc.file_name or "").lower().endswith((".dxf", ".dwg")):
         raise HTTPException(400, "У документа нет чертежа DXF/DWG")
-    try:
-        cad = bridge.connect("auto")
-    except bridge.CadError as e:
-        raise HTTPException(400, str(e)) from e
-    if cad.name == "dxf":
-        raise HTTPException(400, "AutoCAD или nanoCAD не запущен на компьютере с BIS — откройте CAD и повторите, "
-                                 "или скачайте файл")
     path = Path(tempfile.gettempdir()) / f"bis-{doc.id}{Path(doc.file_name).suffix}"
     path.write_bytes(get_storage().get(doc.file_key))
-    cad.open_file(str(path))
-    cad.zoom()
-    return {"opened_in": cad.name, "file": str(path)}
+
+    def work() -> str:  # в потоке COM: из обычного потока сервера AutoCAD «не виден» (не вызван CoInitialize)
+        cad = bridge.connect("auto")
+        if cad.name == "dxf":
+            reasons = "; ".join(bridge.LAST_ERRORS)[:400]
+            raise bridge.CadError("AutoCAD или nanoCAD не найден на этом компьютере — откройте CAD (не от имени "
+                                  "администратора) и повторите, или скачайте файл" + (f". Причина: {reasons}" if reasons else ""))
+        cad.open_file(str(path))
+        cad.zoom()
+        return cad.name
+
+    try:
+        name = bridge.in_com_thread(work)
+    except bridge.CadError as e:
+        raise HTTPException(400, str(e)) from e
+    except Exception as e:  # noqa: BLE001 — ошибка COM: CAD занят диалогом и т.п.
+        raise HTTPException(400, f"CAD не открыл файл: {e}. Закройте диалоговые окна в CAD и повторите") from e
+    return {"opened_in": name, "file": str(path)}
 
 
 @router.post("/schemes/survey")

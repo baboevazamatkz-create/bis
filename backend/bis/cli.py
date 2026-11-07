@@ -55,6 +55,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--then", nargs=argparse.REMAINDER, default=[], help="Команда bis после подготовки (seed-demo, create-org …)")
     sub.add_parser("cad-mcp", help="MCP-сервер для AutoCAD/nanoCAD (ИИ рисует в чертеже)")
     sub.add_parser("cad-check", help="Диагностика подключения к AutoCAD/nanoCAD")
+    p = sub.add_parser("doctor", help="Диагностика BIS: база, данные, модели, поиск, голос, сканы, AutoCAD, журнал")
+    p.add_argument("--dir", type=Path, default=None, help="Папка локальной установки (C:\\BIS) — запустит встроенную базу")
     p = sub.add_parser("import-archive", help="Загрузить архив организации из папки (документы, договоры, письма, схемы)")
     p.add_argument("folder", type=Path)
     p.add_argument("--org-inn", help="ИНН организации (по умолчанию — первая)")
@@ -104,6 +106,20 @@ def main(argv: list[str] | None = None) -> int:
         from bis.cad.mcp_server import main as cad_main
 
         cad_main()
+        return 0
+    if args.cmd == "doctor":
+        from bis import doctor
+
+        workdir = None
+        if args.dir:
+            from bis import local
+
+            workdir = args.dir.resolve()
+            local.prepare(workdir)
+        report = doctor.run(workdir)
+        print(report)
+        if workdir:
+            print(f"\nОтчёт сохранён: {workdir / 'doctor.txt'}")
         return 0
     if args.cmd == "cad-check":
         import json

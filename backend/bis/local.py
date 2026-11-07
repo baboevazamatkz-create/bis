@@ -140,9 +140,27 @@ def _repair() -> None:
         print(f"  Архив: не удалось поправить ({e})", flush=True)
 
 
+def setup_log(workdir: Path) -> Path:
+    """Журнал предупреждений и ошибок: logs/bis.log (до 5 файлов по 2 МБ) — его читает `bis doctor`."""
+    from logging.handlers import RotatingFileHandler
+
+    path = workdir / "logs" / "bis.log"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handler = RotatingFileHandler(path, maxBytes=2_000_000, backupCount=5, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    handler.setLevel(logging.INFO)
+    root = logging.getLogger()
+    root.addHandler(handler)
+    root.setLevel(logging.INFO)
+    for noisy in ("httpx", "httpcore", "uvicorn.access", "multipart", "ezdxf", "fontTools"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+    return path
+
+
 def run(workdir: Path, host: str, port: int) -> None:
     import uvicorn
 
+    setup_log(workdir)
     prepare(workdir)
     from bis.config import get_settings
     from bis.db import SessionLocal

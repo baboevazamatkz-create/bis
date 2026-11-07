@@ -4,6 +4,8 @@
 > Docker и прав администратора: откройте PowerShell и выполните
 > `irm https://raw.githubusercontent.com/baboevazamatkz-create/bis/claude/construction-ai-automation-system-lya9lz/deploy/install-windows.ps1 | iex`
 > (ставит Python и BIS со встроенной базой, создаёт ярлык «BIS» на рабочем столе).
+> Проверить, что работает и что тормозит (база, модели, поиск, голос, сканы, AutoCAD, журнал ошибок):
+> `C:\BIS\venv\Scripts\bis.exe doctor --dir C:\BIS` — отчёт сохраняется в `C:\BIS\doctor.txt`.
 > Начать с чистой базы (удалить демо-данные и всё загруженное, ключи сохраняются):
 > `irm https://raw.githubusercontent.com/baboevazamatkz-create/bis/claude/construction-ai-automation-system-lya9lz/deploy/reset-windows.ps1 | iex`
 

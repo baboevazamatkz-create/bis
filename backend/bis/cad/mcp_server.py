@@ -12,7 +12,6 @@ from __future__ import annotations
 import functools
 import tempfile
 import time
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -222,17 +221,7 @@ TOOLS = [
 ]
 
 
-# COM-объекты AutoCAD привязаны к потоку, в котором созданы: все вызовы — через один поток с CoInitialize.
-def _co_init() -> None:
-    try:
-        import pythoncom
-
-        pythoncom.CoInitialize()
-    except ImportError:
-        pass
-
-
-_COM = ThreadPoolExecutor(max_workers=1, thread_name_prefix="bis-com", initializer=_co_init)
+# COM-объекты AutoCAD привязаны к потоку, в котором созданы: все вызовы — через общий поток COM (bridge.in_com_thread).
 BUSY = {-2147418111, -2147417846}  # RPC_E_CALL_REJECTED, RPC_E_SERVERCALL_RETRYLATER — AutoCAD занят
 LOST = {-2147417848, -2147023174, -2147417842, -2147221008, -2147220995, -2147023170}  # связь потеряна
 
@@ -273,7 +262,7 @@ def guarded(fn):
                         continue
                     raise _tool_error(f"{type(e).__name__}: {e}") from e
             raise _tool_error("CAD занят (открыто диалоговое окно или идёт команда) — завершите её и повторите")
-        return _COM.submit(call).result()
+        return bridge.in_com_thread(call)
     return run
 
 

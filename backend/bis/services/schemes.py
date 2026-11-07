@@ -75,8 +75,18 @@ class Tolerance(BaseModel):
     citation: str | None = None
 
 
-_AXIS_PT = re.compile(r"(?<![\w.,])(\d+|[А-ЯA-Z]\d?)\s*[/\-]\s*(\d+|[А-ЯA-Z]\d?)(?![\w.,])")
-_DEV = re.compile(r"(?<![\w])([xyzхуz]|высот\w*|отметк\w*)\s*[:=]?\s*(плюс|минус|[+\-−])?\s*(\d+(?:[.,]\d+)?)", re.IGNORECASE)
+# «2/Б», «2 / Б», «2-Б»; дефис — только слитно, иначе «Y -3» читалось бы как точка Y/3
+_AXIS_PT = re.compile(r"(?<![\w.,])(\d+|[А-ЯA-Z]\d?)(?:\s*/\s*|-)(\d+|[А-ЯA-Z]\d?)(?![\w.,])")
+_DEV = re.compile(r"(?<![\w])([xyzхуz]|икс\w*|игрек\w*|зет\w*|высот\w*|отметк\w*)\s*[:=]?\s*(плюс|минус|[+\-−])?\s*"
+                  r"(\d+(?:[.,]\d+)?)", re.IGNORECASE)
+_LATIN = str.maketrans("ABCEHKMOPTXY", "АВСЕНКМОРТХУ")
+
+
+def point_key(name: str) -> frozenset[str]:
+    """«1/А», «А-1», «колонна 1/A» (латинская A), «т1» → один ключ: порядок осей и написание не важны."""
+    s = re.sub(r"колонн\w*|ось|оси|точк\w*|пересечени\w*", " ", name.upper().translate(_LATIN), flags=re.IGNORECASE)
+    parts = [x for x in re.split(r"[\s/\\\-–—:,]+", s) if x]
+    return frozenset(parts)
 
 
 def heuristic_measurements(text: str) -> Measurements:
@@ -90,9 +100,9 @@ def heuristic_measurements(text: str) -> Measurements:
             axis = d.group(1).lower()
             sign = -1 if (d.group(2) or "").lower() in ("минус", "-", "−") else 1
             val = sign * float(d.group(3).replace(",", "."))
-            if axis in ("x", "х"):
+            if axis in ("x", "х") or axis.startswith("икс"):
                 pm.dx_mm = val
-            elif axis in ("y", "у"):
+            elif axis in ("y", "у") or axis.startswith("игрек"):
                 pm.dy_mm = val
             else:
                 pm.dz_mm = val
@@ -145,9 +155,15 @@ def draft_scheme(db: Session, storage: Storage, gateway, embedder, org_id: uuid.
                                    "(пересечение осей «2/Б» или «т1») верни отклонения факт−проект в мм со знаком: dx по X "
                                    "(цифровые оси), dy по Y (буквенные оси), dz по высоте. Только то, что сказано.",
                       fallback=heuristic_measurements)
-        by_name = {m.name.replace(" ", "").upper(): m for m in (res.data.points if res.data else [])}
+        # модель дополняет правила: явные «X +8» из правил надёжнее, модель понимает свободную речь
+        by_name: dict[frozenset, PointMeasure] = {}
+        for m in [*(res.data.points if res.data else []), *heuristic_measurements(measurements_text).points]:
+            cur = by_name.setdefault(point_key(m.name), PointMeasure(name=m.name))
+            for f in ("dx_mm", "dy_mm", "dz_mm"):
+                if getattr(m, f) is not None:
+                    setattr(cur, f, getattr(m, f))
         for p in pts:
-            m = by_name.get(p.name.replace(" ", "").upper())
+            m = by_name.get(point_key(p.name))
             if not m:
                 continue
             if m.dx_mm is not None or m.dy_mm is not None:
