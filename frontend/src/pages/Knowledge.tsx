@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, upload, STATUS_LABELS, type Citation, type Source, type User } from "../api";
-import { ConfirmButton } from "../components";
+import { ConfirmButton, VoiceButton } from "../components";
 
 export default function Knowledge({ user }: { user: User }) {
   const [kinds, setKinds] = useState<Record<string, string>>({});
@@ -47,9 +47,9 @@ export default function Knowledge({ user }: { user: User }) {
     }
   }
 
-  async function search() {
-    if (!query.trim()) return;
-    const r = await api<{ results: Citation[] }>(`/knowledge/search?q=${encodeURIComponent(query)}&scope=${searchScope}`);
+  async function search(q: string = query) {
+    if (!q.trim()) return;
+    const r = await api<{ results: Citation[] }>(`/knowledge/search?q=${encodeURIComponent(q)}&scope=${searchScope}`);
     setResults(r.results);
   }
 
@@ -80,9 +80,9 @@ export default function Knowledge({ user }: { user: User }) {
           <div className="field">
             <input
               value={query}
-              placeholder="Например: допуск защитного слоя бетона или «СП 70.13330.2012 п. 5.16»"
+              placeholder="Спросите своими словами: «через сколько снимать опалубку?» или «СП 70.13330.2012 п. 5.16»"
               onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && search()}
+              onKeyDown={(e) => e.key === "Enter" && void search()}
             />
           </div>
           <div className="field" style={{ flex: "0 0 180px" }}>
@@ -93,9 +93,12 @@ export default function Knowledge({ user }: { user: User }) {
             </select>
           </div>
           <div className="field" style={{ flex: "0 0 auto" }}>
-            <button className="btn primary" onClick={search}>
-              Найти
-            </button>
+            <div className="row" style={{ gap: 6, alignItems: "flex-start" }}>
+              <VoiceButton onText={(t) => { setQuery(t); void search(t); }} />
+              <button className="btn primary" onClick={() => void search()}>
+                Найти
+              </button>
+            </div>
           </div>
         </div>
         {results && results.length === 0 && <p className="muted">Ничего не найдено.</p>}

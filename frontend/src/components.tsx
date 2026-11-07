@@ -1,6 +1,6 @@
 // Общие компоненты и хуки интерфейса.
-import { useEffect, useState, type ReactNode } from "react";
-import { api, type Issue } from "./api";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { api, DEMO, type Issue } from "./api";
 
 export interface Option {
   id: string;
@@ -123,5 +123,67 @@ export function ConfirmButton({ label, confirmLabel, onConfirm, className = "btn
     <button className={`${className} danger`} onClick={() => { setArmed(false); onConfirm(); }}>{confirmLabel}</button>
   ) : (
     <button className={className} onClick={() => setArmed(true)}>{label}</button>
+  );
+}
+
+/** Кнопка голосового ввода: запись → распознавание на сервере (SpeechKit/Whisper); в демо — речь браузера. */
+export function VoiceButton({ onText, className = "btn" }: { onText: (text: string) => void; className?: string }) {
+  const [state, setState] = useState<"idle" | "rec" | "busy">("idle");
+  const [err, setErr] = useState("");
+  const stopRef = useRef<() => void>(() => {});
+
+  async function start() {
+    setErr("");
+    if (DEMO) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const w = window as any;
+      const SR = w.SpeechRecognition || w.webkitSpeechRecognition;
+      if (!SR) { setErr("Браузер не распознаёт речь — откройте в Chrome"); return; }
+      const rec = new SR();
+      rec.lang = "ru-RU";
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      rec.onresult = (e: any) => onText(Array.from(e.results).map((r: any) => r[0].transcript).join(" "));
+      rec.onerror = () => setErr("Нет доступа к микрофону");
+      rec.onend = () => setState("idle");
+      rec.start();
+      stopRef.current = () => rec.stop();
+      setState("rec");
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const rec = new MediaRecorder(stream);
+      const chunks: Blob[] = [];
+      rec.ondataavailable = (e) => chunks.push(e.data);
+      rec.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        setState("busy");
+        const form = new FormData();
+        form.append("file", new Blob(chunks, { type: rec.mimeType }), "voice.webm");
+        try {
+          const r = await api<{ text: string }>("/voice/transcribe", { method: "POST", body: form });
+          if (r.text.trim()) onText(r.text.trim());
+        } catch (e) {
+          setErr((e as Error).message);
+        } finally {
+          setState("idle");
+        }
+      };
+      rec.start();
+      stopRef.current = () => rec.stop();
+      setState("rec");
+    } catch {
+      setErr("Нет доступа к микрофону");
+    }
+  }
+
+  return (
+    <span style={{ display: "inline-flex", flexDirection: "column", gap: 2 }}>
+      <button type="button" className={`${className} ${state === "rec" ? "recording" : ""}`} disabled={state === "busy"}
+              title="Сказать голосом" onClick={() => (state === "rec" ? stopRef.current() : void start())}>
+        {state === "rec" ? "■ Стоп" : state === "busy" ? "Распознаю…" : "🎙"}
+      </button>
+      {err && <span className="small text-bad">{err}</span>}
+    </span>
   );
 }
