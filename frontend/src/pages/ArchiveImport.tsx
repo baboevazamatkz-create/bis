@@ -1,7 +1,7 @@
 // Загрузка архива организации: папки с ИД, договорами, письмами, проектом. Тип документа определяет ИИ.
 import { useRef, useState } from "react";
 import { api } from "../api";
-import { useObjects } from "../components";
+import { PageHead, useObjects } from "../components";
 
 interface Result {
   file: string; status: string; type?: string; kind?: string; document_id?: string; object_id?: string | null;
@@ -62,13 +62,10 @@ export default function ArchiveImport() {
 
   return (
     <>
-      <h1>Загрузка архива</h1>
-      <p className="muted feed-lead">
-        Исполнительная документация (АОСР, АООК, схемы), договоры, письма, приказы, проект, КС-2/КС-3, сертификаты — целыми
+      <PageHead title="Загрузка архива" hint={<>Исполнительная документация (АОСР, АООК, схемы), договоры, письма, приказы, проект, КС-2/КС-3, сертификаты — целыми
         папками. ИИ определит тип каждого файла, разложит в реестр объекта и добавит в базу знаний: по ним работает умный поиск,
         а ИИ-специалисты берут их как образцы. Договоры встанут на контроль; письма из архива регистрируются без поручений.
-        Повторно загруженные файлы пропускаются.
-      </p>
+        Повторно загруженные файлы пропускаются.</>} />
       <div className={`panel composer-panel ${drag ? "drag" : ""}`}
            onDragOver={(e) => { e.preventDefault(); setDrag(true); }} onDragLeave={() => setDrag(false)}
            onDrop={(e) => { e.preventDefault(); setDrag(false); void run(Array.from(e.dataTransfer.files)); }}>

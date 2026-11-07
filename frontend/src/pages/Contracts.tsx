@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, upload } from "../api";
-import { Badge, date, num, Picker, useAsync, useContracts, useObjects } from "../components";
+import { Badge, date, Hint, num, Picker, useAsync, useContracts, useObjects } from "../components";
 
 interface Analysis {
   risks?: string[]; penalties?: string[]; advance?: string | null; warranty?: string | null; used_fallback?: boolean;
@@ -162,8 +162,7 @@ export default function Contracts() {
       )}
 
       <div className="panel">
-        <h2>Новый договор из файла</h2>
-        <p className="muted small">Номер, сумма, сроки, контрагент и обязательства извлекаются автоматически.</p>
+        <h2>Новый договор из файла <Hint>Номер, сумма, сроки, контрагент и обязательства извлекаются автоматически.</Hint></h2>
         <div className="row">
           <div className="field"><input type="file" onChange={(e) => setNewFile(e.target.files?.[0] ?? null)} /></div>
           <div className="field">

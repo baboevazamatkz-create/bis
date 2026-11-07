@@ -4,6 +4,8 @@
 > Docker и прав администратора: откройте PowerShell и выполните
 > `irm https://raw.githubusercontent.com/baboevazamatkz-create/bis/claude/construction-ai-automation-system-lya9lz/deploy/install-windows.ps1 | iex`
 > (ставит Python и BIS со встроенной базой, создаёт ярлык «BIS» на рабочем столе).
+> Начать с чистой базы (удалить демо-данные и всё загруженное, ключи сохраняются):
+> `irm https://raw.githubusercontent.com/baboevazamatkz-create/bis/claude/construction-ai-automation-system-lya9lz/deploy/reset-windows.ps1 | iex`
 
 Около 15 минут. Понадобятся: доступ к консоли Yandex Cloud, секретный ключ AI Studio (`AQVN…`) и идентификатор
 каталога (`b1g…`). Сервисному аккаунту ключа нужны роли `ai.languageModels.user`, `ai.speechkit-stt.user`,

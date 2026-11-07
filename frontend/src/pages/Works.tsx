@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, download, upload, type DocumentRow, type Issue } from "../api";
-import { Badge, date, Issues, num, Picker, useAsync, useContracts, useObjects } from "../components";
+import { Badge, date, Hint, Issues, num, Picker, useAsync, useContracts, useObjects } from "../components";
 
 interface PFRow {
   task_id: string; name: string; unit: string | null; planned_start: string; planned_end: string; planned_quantity: string;
@@ -157,8 +157,7 @@ export default function Works() {
       </div>
 
       <div className="panel">
-        <h2>Импорт сметы / ведомости объёмов (Excel)</h2>
-        <p className="muted small">Заголовки (№, шифр, наименование, ед. изм., количество, цена) и разделы определяются автоматически; скрытые работы помечаются для контроля АОСР.</p>
+        <h2>Импорт сметы / ведомости объёмов (Excel) <Hint>Заголовки (№, шифр, наименование, ед. изм., количество, цена) и разделы определяются автоматически; скрытые работы помечаются для контроля АОСР.</Hint></h2>
         <div className="row">
           <div className="field"><input type="file" accept=".xlsx" onChange={(e) => setEstimateFile(e.target.files?.[0] ?? null)} /></div>
           <div className="field" style={{ flex: "0 0 auto" }}><button className="btn primary" disabled={!estimateFile || !contractId || busy} onClick={importEstimate}>Импортировать в договор</button></div>

@@ -1,5 +1,5 @@
 // Общие компоненты и хуки интерфейса.
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { api, DEMO, type Issue } from "./api";
 
 export interface Option {
@@ -126,11 +126,44 @@ export function ConfirmButton({ label, confirmLabel, onConfirm, className = "btn
   );
 }
 
-/** Кнопка голосового ввода: запись → распознавание на сервере (SpeechKit/Whisper); в демо — речь браузера. */
-export function VoiceButton({ onText, className = "btn" }: { onText: (text: string) => void; className?: string }) {
+/** Всплывающая подсказка: значок «?», текст — по наведению или нажатию. */
+export function Hint({ children, wide }: { children: ReactNode; wide?: boolean }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => { if (!ref.current?.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [open]);
+  return (
+    <span ref={ref} className={`hint ${open ? "open" : ""}`} onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}>
+      <button type="button" className="hint-icon" aria-label="Подсказка" onClick={() => setOpen((v) => !v)}>?</button>
+      {open && <span className={`hint-pop ${wide ? "wide" : ""}`} role="tooltip">{children}</span>}
+    </span>
+  );
+}
+
+/** Заголовок страницы: название, подсказка, действия справа. */
+export function PageHead({ title, hint, children }: { title: ReactNode; hint?: ReactNode; children?: ReactNode }) {
+  return (
+    <div className="page-head">
+      <h1>{title}{hint && <Hint wide>{hint}</Hint>}</h1>
+      {children && <div className="page-actions">{children}</div>}
+    </div>
+  );
+}
+
+/** Голосовой режим: включается нажатием, сам завершается после паузы в речи и отдаёт распознанный текст.
+ *  Запись → распознавание на сервере (SpeechKit/Whisper); в демо — речь браузера. */
+export function useVoice(onText: (text: string) => void, { pauseMs = 2200, idleMs = 8000 } = {}) {
   const [state, setState] = useState<"idle" | "rec" | "busy">("idle");
+  const [level, setLevel] = useState(0);
   const [err, setErr] = useState("");
   const stopRef = useRef<() => void>(() => {});
+  const cb = useRef(onText);
+  cb.current = onText;
+  useEffect(() => () => stopRef.current(), []);
 
   async function start() {
     setErr("");
@@ -141,49 +174,96 @@ export function VoiceButton({ onText, className = "btn" }: { onText: (text: stri
       if (!SR) { setErr("Браузер не распознаёт речь — откройте в Chrome"); return; }
       const rec = new SR();
       rec.lang = "ru-RU";
+      rec.continuous = true;
+      rec.interimResults = true;
+      let said = "";
+      let timer = setTimeout(() => rec.stop(), idleMs);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      rec.onresult = (e: any) => onText(Array.from(e.results).map((r: any) => r[0].transcript).join(" "));
-      rec.onerror = () => setErr("Нет доступа к микрофону");
-      rec.onend = () => setState("idle");
+      rec.onresult = (e: any) => {
+        said = Array.from(e.results).map((r: any) => r[0].transcript).join(" "); // eslint-disable-line @typescript-eslint/no-explicit-any
+        setLevel(1);
+        clearTimeout(timer);
+        timer = setTimeout(() => rec.stop(), pauseMs);
+      };
+      rec.onerror = (e: { error?: string }) => { if (e.error !== "no-speech") setErr("Нет доступа к микрофону"); };
+      rec.onend = () => { clearTimeout(timer); setState("idle"); setLevel(0); if (said.trim()) cb.current(said.trim()); };
       rec.start();
       stopRef.current = () => rec.stop();
       setState("rec");
       return;
     }
+    let stream: MediaStream;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const rec = new MediaRecorder(stream);
-      const chunks: Blob[] = [];
-      rec.ondataavailable = (e) => chunks.push(e.data);
-      rec.onstop = async () => {
-        stream.getTracks().forEach((t) => t.stop());
-        setState("busy");
-        const form = new FormData();
-        form.append("file", new Blob(chunks, { type: rec.mimeType }), "voice.webm");
-        try {
-          const r = await api<{ text: string }>("/voice/transcribe", { method: "POST", body: form });
-          if (r.text.trim()) onText(r.text.trim());
-        } catch (e) {
-          setErr((e as Error).message);
-        } finally {
-          setState("idle");
-        }
-      };
-      rec.start();
-      stopRef.current = () => rec.stop();
-      setState("rec");
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch {
-      setErr("Нет доступа к микрофону");
+      setErr("Нет доступа к микрофону — разрешите его в браузере");
+      return;
     }
+    const rec = new MediaRecorder(stream);
+    const chunks: Blob[] = [];
+    // тишина: громкость микрофона ниже порога
+    const ctx = new AudioContext();
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 1024;
+    ctx.createMediaStreamSource(stream).connect(analyser);
+    const buf = new Float32Array(analyser.fftSize);
+    const began = Date.now();
+    let heard = false;
+    let lastLoud = began;
+    const tick = setInterval(() => {
+      analyser.getFloatTimeDomainData(buf);
+      const rms = Math.sqrt(buf.reduce((s, v) => s + v * v, 0) / buf.length);
+      setLevel(Math.min(1, rms * 12));
+      const now = Date.now();
+      if (rms > 0.02) { heard = true; lastLoud = now; }
+      if ((heard && now - lastLoud > pauseMs) || (!heard && now - began > idleMs)) stop();
+    }, 100);
+    let stopped = false;
+    function stop() {
+      if (stopped) return;
+      stopped = true;
+      clearInterval(tick);
+      void ctx.close();
+      if (rec.state !== "inactive") rec.stop();
+    }
+    rec.ondataavailable = (e) => chunks.push(e.data);
+    rec.onstop = async () => {
+      stream.getTracks().forEach((t) => t.stop());
+      setLevel(0);
+      if (!heard) { setState("idle"); return; }
+      setState("busy");
+      const form = new FormData();
+      form.append("file", new Blob(chunks, { type: rec.mimeType }), "voice.webm");
+      try {
+        const r = await api<{ text: string }>("/voice/transcribe", { method: "POST", body: form });
+        if (r.text.trim()) cb.current(r.text.trim());
+        else setErr("Речь не распознана — повторите");
+      } catch (e) {
+        setErr((e as Error).message);
+      } finally {
+        setState("idle");
+      }
+    };
+    rec.start();
+    stopRef.current = stop;
+    setState("rec");
   }
 
+  const toggle = () => (state === "rec" ? stopRef.current() : state === "idle" ? void start() : undefined);
+  return { state, level, err, toggle };
+}
+
+/** Кнопка голосового ввода: нажали — говорите; после паузы сама останавливается и вставляет текст. */
+export function VoiceButton({ onText, className = "btn", label }: { onText: (text: string) => void; className?: string; label?: string }) {
+  const v = useVoice(onText);
   return (
-    <span style={{ display: "inline-flex", flexDirection: "column", gap: 2 }}>
-      <button type="button" className={`${className} ${state === "rec" ? "recording" : ""}`} disabled={state === "busy"}
-              title="Сказать голосом" onClick={() => (state === "rec" ? stopRef.current() : void start())}>
-        {state === "rec" ? "■ Стоп" : state === "busy" ? "Распознаю…" : "🎙"}
+    <span className="voice">
+      <button type="button" className={`${className} voice-btn ${v.state}`} disabled={v.state === "busy"}
+              title={v.state === "rec" ? "Слушаю — остановлюсь сам после паузы (или нажмите)" : "Сказать голосом"}
+              style={{ "--lvl": v.level } as CSSProperties} onClick={v.toggle}>
+        {v.state === "rec" ? <><span className="voice-dot" />Слушаю…</> : v.state === "busy" ? "Распознаю…" : <>🎙{label ? ` ${label}` : ""}</>}
       </button>
-      {err && <span className="small text-bad">{err}</span>}
+      {v.err && <span className="small text-bad">{v.err}</span>}
     </span>
   );
 }

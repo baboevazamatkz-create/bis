@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, download, upload, STATUS_LABELS, type DocumentRow } from "../api";
+import { Hint } from "../components";
 
 export default function Documents() {
   const [kinds, setKinds] = useState<Record<string, string>>({});
@@ -157,8 +158,7 @@ export default function Documents() {
         </table>
       </div>
       <div className="panel">
-        <h2>Регистрация входящего документа</h2>
-        <p className="muted small">Файл попадёт в реестр и в базу знаний организации — агенты смогут на него ссылаться.</p>
+        <h2>Регистрация входящего документа <Hint>Файл попадёт в реестр и в базу знаний организации — агенты смогут на него ссылаться.</Hint></h2>
         <div className="row">
           <div className="field">
             <input type="file" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />

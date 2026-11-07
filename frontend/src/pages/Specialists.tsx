@@ -1,6 +1,7 @@
 // «ИИ-специалисты»: кто в чём силён, на какой модели работает, насколько точен — и что ему разрешено делать самому.
 import { useEffect, useState } from "react";
 import { api, type User } from "../api";
+import { PageHead, Hint } from "../components";
 
 interface Stats { total?: number; auto?: number; approved?: number; corrected?: number; rejected?: number; pending?: number; failed?: number; accuracy?: number | null }
 interface Specialist {
@@ -52,11 +53,10 @@ export default function Specialists({ user }: { user: User }) {
 
   return (
     <>
-      <h1>ИИ-специалисты</h1>
-      <p className="muted feed-lead">
-        Каждый специалист силён в своём и работает на своей модели. Без моделей часть работы выполняют алгоритмы и правила;
-        подключите модели (локальные или облачные российские) — точность и охват вырастут. Подключено: {connected} из {data.specialists.length}.
-      </p>
+      <PageHead title="ИИ-специалисты" hint={<>Каждый специалист силён в своём и работает на своей модели. Без моделей часть работы выполняют алгоритмы и правила;
+        подключите модели (локальные или облачные российские) — точность и охват вырастут.</>}>
+        <span className="muted small">Подключено: {connected} из {data.specialists.length}</span>
+      </PageHead>
       {error && <div className="alert error">{error}</div>}
       {isAdmin && (
         <div className="panel">
@@ -124,12 +124,9 @@ export default function Specialists({ user }: { user: User }) {
       </div>
 
       <div className="panel">
-        <h2>Что ИИ делает сам</h2>
-        <p className="small muted">
-          «Сам» — действие выполняется сразу (при уверенности не ниже {Math.round(data.min_confidence * 100)}%) и видно в ленте,
+        <h2>Что ИИ делает сам <Hint>«Сам» — действие выполняется сразу (при уверенности не ниже {Math.round(data.min_confidence * 100)}%) и видно в ленте,
           его можно отменить. «Спрашивать» — ИИ готовит действие и ждёт решения человека.
-          {!isAdmin && " Менять может администратор."}
-        </p>
+          {!isAdmin && " Менять может администратор."}</Hint></h2>
         <table>
           <thead><tr><th>Действие</th><th>Режим</th><th className="muted">По умолчанию</th></tr></thead>
           <tbody>

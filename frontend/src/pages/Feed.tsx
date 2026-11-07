@@ -2,7 +2,7 @@
 // Человек не заполняет формы — он принимает решения: принять, исправить, отклонить.
 import { useEffect, useRef, useState } from "react";
 import { api, DEMO, download, fetchBlob, type AIAction, type IntakeEvent } from "../api";
-import { useObjects, useOptions } from "../components";
+import { Hint, PageHead, useObjects, useOptions, VoiceButton } from "../components";
 
 const SOURCE: Record<string, string> = { telegram: "Telegram", email: "почта", upload: "загрузка", user: "запрос", api: "API" };
 const KIND: Record<string, string> = { photo: "Фото", voice: "Голосовое", document: "Документ", text: "Сообщение" };
@@ -46,15 +46,8 @@ export default function Feed({ onPending }: { onPending?: (n: number) => void })
 
   return (
     <>
-      <div className="feed-head">
-        <div>
-          <h1>Лента ИИ</h1>
-          <p className="muted feed-lead">
-            Фото, голосовые, документы и сообщения с объектов. ИИ-специалисты разбирают их и делают работу сами —
-            вам остаются решения там, где нужен человек.
-          </p>
-        </div>
-      </div>
+      <PageHead title="Лента ИИ" hint={<>Фото, голосовые, документы и сообщения с объектов. ИИ-специалисты разбирают их и делают
+        работу сами — вам остаются решения: принять, исправить, отклонить.</>} />
 
       <Composer objects={objects} onSent={(ev) => { setEvents((list) => [ev, ...list]); void load(); }} />
 
@@ -93,9 +86,7 @@ function Composer({ objects, onSent }: { objects: { id: string; label: string }[
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [drag, setDrag] = useState(false);
-  const [recording, setRecording] = useState(false);
   const [samples, setSamples] = useState<Sample[]>([]);
-  const recorder = useRef<MediaRecorder | null>(null);
   const input = useRef<HTMLInputElement>(null);
 
   const [live, setLive] = useState<boolean | null>(null);
@@ -105,7 +96,7 @@ function Composer({ objects, onSent }: { objects: { id: string; label: string }[
     import("../demo/mock").then((m) => m.liveAI()).then(setLive).catch(() => setLive(false));
   }, []);
 
-  async function send(extra?: { sample?: string; voice?: Blob }) {
+  async function send(extra?: { sample?: string }) {
     if (busy) return;
     if (!extra && !file && !text.trim()) {
       setError("Напишите, что сделано, или приложите фото, голосовое, документ");
@@ -113,8 +104,7 @@ function Composer({ objects, onSent }: { objects: { id: string; label: string }[
     }
     const form = new FormData();
     if (extra?.sample) form.append("sample", extra.sample);
-    if (extra?.voice) form.append("file", extra.voice, "voice.webm");
-    else if (file && !extra?.sample) form.append("file", file);
+    if (file && !extra?.sample) form.append("file", file);
     if (text.trim() && !extra?.sample) form.append("text", text.trim());
     if (objectId) form.append("object_id", objectId);
     setBusy(true);
@@ -132,61 +122,6 @@ function Composer({ objects, onSent }: { objects: { id: string; label: string }[
     }
   }
 
-  const dictation = useRef<{ stop: () => void } | null>(null);
-
-  /** Демо: распознавание речи средствами браузера (на сервере — Yandex SpeechKit). */
-  function browserDictation(): boolean {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const w = window as any;
-    const SR = w.SpeechRecognition || w.webkitSpeechRecognition;
-    if (!SR) return false;
-    const rec = new SR();
-    rec.lang = "ru-RU";
-    rec.continuous = true;
-    rec.interimResults = true;
-    const base = text ? text.trim() + " " : "";
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    rec.onresult = (e: any) => {
-      let said = "";
-      for (let i = 0; i < e.results.length; i++) said += e.results[i][0].transcript;
-      setText(base + said);
-    };
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    rec.onerror = (e: any) => {
-      setError(e.error === "not-allowed" ? "Нет доступа к микрофону — разрешите его в браузере" : "Распознавание речи прервалось");
-    };
-    rec.onend = () => { setRecording(false); dictation.current = null; };
-    rec.start();
-    dictation.current = rec;
-    setRecording(true);
-    return true;
-  }
-
-  async function toggleVoice() {
-    if (recording) {
-      if (dictation.current) dictation.current.stop();
-      else recorder.current?.stop();
-      return;
-    }
-    if (DEMO && browserDictation()) return;
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const rec = new MediaRecorder(stream);
-      const chunks: Blob[] = [];
-      rec.ondataavailable = (e) => chunks.push(e.data);
-      rec.onstop = () => {
-        stream.getTracks().forEach((t) => t.stop());
-        setRecording(false);
-        void send({ voice: new Blob(chunks, { type: rec.mimeType }) });
-      };
-      rec.start();
-      recorder.current = rec;
-      setRecording(true);
-    } catch {
-      setError("Нет доступа к микрофону");
-    }
-  }
-
   return (
     <div
       className={`panel composer-panel ${drag ? "drag" : ""}`}
@@ -196,34 +131,29 @@ function Composer({ objects, onSent }: { objects: { id: string; label: string }[
     >
       <textarea
         value={text}
-        placeholder="Что произошло на объекте? Например: «Залили бетон плиты Пм1 захватка 4 — 290 м3, бетона ушло 296 м3. Не привезли мембрану». Или перетащите сюда фото, УПД, сертификат, протокол, съёмку."
+        placeholder="Что произошло на объекте? Напишите, скажите голосом или перетащите фото, УПД, сертификат…"
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) void send(); }}
       />
       <div className="composer-bar">
         <input ref={input} type="file" hidden accept={DEMO ? "image/jpeg,image/png,image/webp,.txt,.csv" : "image/*,audio/*,.pdf,.docx,.xlsx,.txt,.csv,.eml"}
                onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
-        <button className="btn" onClick={() => input.current?.click()} title="Фото, документ, съёмка">📎 Файл</button>
-        <button className={`btn ${recording ? "recording" : ""}`} onClick={toggleVoice}
-                title={DEMO ? "Диктовка в поле сообщения (в демо — распознавание браузера)" : "Голосовое сообщение"}>
-          {recording ? "■ Остановить" : "🎙 Голос"}
-        </button>
+        <button className="btn" onClick={() => input.current?.click()} title="Фото, документ, съёмка">📎</button>
+        <VoiceButton onText={(t) => setText((x) => (x.trim() ? x.trim() + " " : "") + t)} />
         {file && <span className="file-chip">{file.name} <button className="link" onClick={() => setFile(null)}>×</button></span>}
         <select value={objectId} onChange={(e) => setObjectId(e.target.value)} className="composer-object" aria-label="Объект">
           <option value="">Объект определит ИИ</option>
           {objects.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
         </select>
-        <button className="btn primary" disabled={busy} onClick={() => void send()}>{busy ? "ИИ разбирает… (до минуты)" : "Отправить ИИ"}</button>
+        <button className="btn primary" disabled={busy} onClick={() => void send()}>{busy ? "ИИ разбирает…" : "Отправить"}</button>
+        {DEMO && live !== null && (
+          <Hint>{live ? "ИИ подключён: текст, фото и файлы разбираются вживую (в демо — Claude; на сервере — YandexGPT, SpeechKit и Vision OCR)."
+            : "ИИ на странице недоступен — работают правила и записанные примеры."}</Hint>
+        )}
       </div>
-      {DEMO && live !== null && (
-        <div className="small muted" style={{ marginTop: 8 }}>
-          {live ? "ИИ подключён: ваш текст, фото документов и площадки, текстовые файлы разбираются вживую (в демо — Claude; на сервере — YandexGPT, SpeechKit и Vision OCR)."
-            : "ИИ на странице недоступен — работают правила и записанные примеры. Откройте страницу в Claude, чтобы ИИ разбирал ваши сообщения и фото."}
-        </div>
-      )}
       {samples.length > 0 && (
         <div className="samples">
-          <span className="muted small">Примеры с площадки:</span>
+          <span className="muted small">Примеры:</span>
           {samples.map((s) => (
             <button key={s.id} className="btn small" disabled={busy} title={s.hint} onClick={() => void send({ sample: s.id })}>{s.title}</button>
           ))}
@@ -496,10 +426,10 @@ function EditForm({ a, busy, onSubmit, onCancel }: {
   return (
     <div className="edit-form">
       <div className="edit-grid">{a.editable.map(field)}</div>
-      <p className="small muted">Исправление станет примером: в следующий раз ИИ сопоставит так же.</p>
       <div className="row">
         <button className="btn small primary" disabled={busy} onClick={submit}>Сохранить и принять</button>
         <button className="btn small" onClick={onCancel}>Отмена</button>
+        <Hint>Исправление станет примером: в следующий раз ИИ сопоставит так же.</Hint>
       </div>
     </div>
   );

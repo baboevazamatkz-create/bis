@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, upload, type User } from "../api";
+import { Hint } from "../components";
 
 interface Org {
   name: string;
@@ -102,9 +103,8 @@ export default function Settings() {
       <TelegramPanel />
 
       <div className="panel">
-        <h2>Входящая почта (IMAP)</h2>
-        <p className="muted small">Письма и вложения автоматически регистрируются, попадают в базу знаний и разбираются агентом
-          «Секретарь» (поручения, сроки ответа). Пароль хранится в переменной окружения сервера.</p>
+        <h2>Входящая почта (IMAP) <Hint>Письма и вложения автоматически регистрируются, попадают в базу знаний и разбираются агентом
+          «Секретарь» (поручения, сроки ответа). Пароль хранится в переменной окружения сервера.</Hint></h2>
         <div className="row">
           <div className="field" style={{ flex: "0 0 auto" }}>
             <label><input type="checkbox" style={{ width: "auto" }} checked={!!org.settings?.mailbox?.enabled}
@@ -136,11 +136,8 @@ export default function Settings() {
       </div>
 
       <div className="panel">
-        <h2>Правила и память организации</h2>
-        <p className="muted small">
-          Правила добавляются в инструкции агентов. Замечания при отклонении документов попадают сюда автоматически — так система
-          подстраивается под компанию. Термины компании для поиска: тип «term», формат «термин = синоним1; синоним2».
-        </p>
+        <h2>Правила и память организации <Hint>Правила добавляются в инструкции агентов. Замечания при отклонении документов попадают сюда автоматически — так система
+          подстраивается под компанию. Термины компании для поиска: тип «term», формат «термин = синоним1; синоним2».</Hint></h2>
         <div className="row">
           <div className="field">
             <input value={rule} placeholder="Например: в письмах заказчику всегда указывать номер договора" onChange={(e) => setRule(e.target.value)} />
@@ -197,11 +194,8 @@ export default function Settings() {
       </div>
 
       <div className="panel">
-        <h2>Шаблоны документов</h2>
-        <p className="muted small">
-          DOCX с полями в фигурных скобках, например {"{{ number }}"}, {"{{ date_text }}"}, {"{{ subject }}"}, {"{{ developer_text }}"}.
-          Шаблон по умолчанию заменяет встроенную форму.
-        </p>
+        <h2>Шаблоны документов <Hint>DOCX с полями в фигурных скобках, например {"{{ number }}"}, {"{{ date_text }}"}, {"{{ subject }}"}, {"{{ developer_text }}"}.
+          Шаблон по умолчанию заменяет встроенную форму.</Hint></h2>
         <div className="row">
           <div className="field">
             <input type="file" accept=".docx" onChange={(e) => setTplFile(e.target.files?.[0] ?? null)} />
@@ -294,11 +288,8 @@ function TelegramPanel() {
   }
   return (
     <div className="panel">
-      <h2>Telegram: сообщения с площадки</h2>
-      <p className="muted small">
-        Прорабы, мастера и снабженцы отправляют боту фото, голосовые, УПД, сертификаты и текст — ИИ разбирает, вносит данные
-        и отвечает, что сделал. Предложения ИИ можно принять кнопкой прямо в чате. Каждый подключает свой аккаунт.
-      </p>
+      <h2>Telegram: сообщения с площадки <Hint>Прорабы, мастера и снабженцы отправляют боту фото, голосовые, УПД, сертификаты и текст — ИИ разбирает, вносит данные
+        и отвечает, что сделал. Предложения ИИ можно принять кнопкой прямо в чате. Каждый подключает свой аккаунт.</Hint></h2>
       <button className="btn" onClick={() => void getLink()}>Подключить мой Telegram</button>
       {error && <div className="alert error" style={{ marginTop: 10 }}>{error}</div>}
       {link && (

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, type DocumentRow, type Issue } from "../api";
+import { PageHead } from "../components";
 
 const lines = (s: string) => s.split("\n").map((x) => x.trim()).filter(Boolean);
 
@@ -68,11 +69,8 @@ export default function AosrForm({ onCreated }: { onCreated: () => void }) {
 
   return (
     <>
-      <h1>Акт освидетельствования скрытых работ</h1>
-      <p className="muted">
-        Участники и представители подставляются из карточки объекта и приказов о назначении (раздел «Назначения»). Нумерация —
-        автоматическая по объекту. Тот же акт можно попросить у агента «ПТО» в чате.
-      </p>
+      <PageHead title="Акт освидетельствования скрытых работ" hint={<>Участники и представители подставляются из карточки объекта и приказов о назначении (раздел «Назначения»). Нумерация —
+        автоматическая по объекту. Тот же акт можно попросить у агента «ПТО» в чате.</>} />
       {error && <div className="alert error">{error}</div>}
       <div className="panel">
         <div className="row">

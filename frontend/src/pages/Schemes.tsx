@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { api, DEMO, download, fetchBlob, upload, type DocumentRow } from "../api";
 import { demoSurvey } from "../demo/mock";
-import { Picker, useAsync, useObjects, VoiceButton } from "../components";
+import { Hint, PageHead, Picker, useAsync, useObjects, VoiceButton } from "../components";
 
 interface Point {
   name: string; design_x: number; design_y: number; fact_x: number | null; fact_y: number | null;
@@ -82,9 +82,8 @@ export default function Schemes() {
 
   return (
     <>
-      <h1>Исполнительные схемы</h1>
-      <p className="muted">Схема в DXF для AutoCAD и nanoCAD: оси, контур, отклонения, отметки, проверка допусков, штамп.
-        Без геодезиста — по проекту, нормативу и замерам рулеткой или голосом; со съёмкой — по файлу геодезиста.</p>
+      <PageHead title="Исполнительные схемы" hint={<>Схема в DXF для AutoCAD и nanoCAD: оси, контур, отклонения, отметки, проверка допусков, штамп.
+        Без геодезиста — по проекту, нормативу и замерам рулеткой или голосом; со съёмкой — по файлу геодезиста.</>} />
       <div className="tabs" style={{ marginBottom: 12, display: "inline-flex" }}>
         <button className={`tab ${mode === "draft" ? "active" : ""}`} onClick={() => setMode("draft")}>По проекту и замерам</button>
         <button className={`tab ${mode === "survey" ? "active" : ""}`} onClick={() => setMode("survey")}>По съёмке геодезиста</button>
@@ -124,10 +123,10 @@ export default function Schemes() {
             </>}
             <div className="field" style={{ flex: "0 0 auto" }}>
               <button className="btn primary" disabled={busy} onClick={buildDraft}>Построить схему</button>
+              {" "}<Hint>Отклонения в миллиметрах берутся только из замеров — по фото их не измерить; фото и видео
+                попадают в примечание как визуальный контроль.</Hint>
             </div>
           </div>
-          <p className="small muted">Отклонения в миллиметрах берутся только из замеров — по фото их не измерить; фото и видео
-            попадают в примечание как визуальный контроль.</p>
         </div>
       )}
       {mode === "survey" && <div className="panel">

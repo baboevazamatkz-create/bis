@@ -16,6 +16,7 @@ import Documents from "./pages/Documents";
 import AosrForm from "./pages/AosrForm";
 import Registry, { REGISTRIES } from "./pages/Registry";
 import Settings from "./pages/Settings";
+import { Hint } from "./components";
 
 const ROLE_TITLES: Record<string, string> = {
   admin: "Администратор", manager: "Руководитель", pto: "ПТО", foreman: "Прораб", supply: "Снабжение",
@@ -107,48 +108,52 @@ export default function App() {
         <div className="brand">
           BIS<small>строительная ИИ-платформа</small>
         </div>
-        {nav("feed", "Лента ИИ", pendingAI)}
-        {nav("chat", "Ассистент")}
-        {nav("specialists", "ИИ-специалисты")}
-        {nav("control", "Контроль", unread)}
-        <div className="nav-group">Что сделал ИИ</div>
-        {nav("documents", "Документы")}
-        {nav("works", "Работы и закрытие")}
-        {nav("schemes", "Исполнительные схемы")}
-        {nav("contracts", "Договоры")}
-        {nav("project", "Проектная документация")}
-        <button className="nav-group nav-toggle" onClick={toggleData} aria-expanded={dataOpen}>
-          {dataOpen ? "▾" : "▸"} Данные и ручной ввод
-        </button>
-        {dataOpen && (
-          <>
-            {nav("knowledge", "База знаний")}
-            {nav("aosr", "АОСР вручную")}
-            {REGISTRY_GROUPS.map(([group, keys]) => (
-              <div key={group} className="nav-section">
-                <div className="nav-group sub">{group}</div>
-                {keys.map((k) => nav(`registry:${k}`, REGISTRIES[k].title))}
-              </div>
-            ))}
-          </>
-        )}
-        <div className="nav-group">Организация</div>
-        {nav("archive", "Загрузка архива")}
-        {nav("settings", "Настройки")}
+        <div className="nav-block">
+          {nav("feed", "Лента ИИ", pendingAI)}
+          {nav("chat", "Ассистент")}
+          {nav("control", "Контроль", unread)}
+        </div>
+        <div className="nav-block">
+          <div className="nav-group">Документы</div>
+          {nav("documents", "Документы")}
+          {nav("schemes", "Исполнительные схемы")}
+          {nav("contracts", "Договоры")}
+          {nav("project", "Проект")}
+          {nav("works", "Работы и закрытие")}
+        </div>
+        <div className="nav-block">
+          <button className="nav-group nav-toggle" onClick={toggleData} aria-expanded={dataOpen}>
+            {dataOpen ? "▾" : "▸"} Данные
+          </button>
+          {dataOpen && (
+            <>
+              {nav("knowledge", "База знаний")}
+              {nav("aosr", "АОСР вручную")}
+              {REGISTRY_GROUPS.map(([group, keys]) => (
+                <div key={group} className="nav-section">
+                  <div className="nav-group sub">{group}</div>
+                  {keys.map((k) => nav(`registry:${k}`, REGISTRIES[k].title))}
+                </div>
+              ))}
+            </>
+          )}
+        </div>
+        <div className="nav-block nav-bottom">
+          {nav("specialists", "ИИ-специалисты")}
+          {nav("archive", "Загрузка архива")}
+          {nav("settings", "Настройки")}
+        </div>
         <div className="sidebar-footer">
-          {user.full_name}
-          <br />
-          <span className="muted">{ROLE_TITLES[user.role] ?? user.role}</span>
-          <br />
+          <span className="user-name" title={ROLE_TITLES[user.role] ?? user.role}>{user.full_name}</span>
           <a href="#" onClick={(e) => { e.preventDefault(); setToken(null); setUser(null); }}>Выйти</a>
         </div>
       </nav>
       <main className="main">
         {DEMO && (
           <div className="demo-banner">
-            Демо-версия BIS: данные вымышленные, изменения живут до перезагрузки страницы. Ваши сообщения, фото и текстовые файлы
-            в «Ленте ИИ» разбирает ИИ вживую (в демо — Claude, на сервере — YandexGPT); голос — распознавание браузера. Лента, примеры
-            и ответы ассистента записаны с настоящего сервера на YandexGPT.
+            Демо-версия: данные вымышленные
+            <Hint wide>Изменения живут до перезагрузки страницы. Сообщения, фото и текстовые файлы в «Ленте ИИ» разбирает ИИ вживую
+              (в демо — Claude, на сервере — YandexGPT); голос — распознавание браузера.</Hint>
           </div>
         )}
         {content}
