@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import mimetypes
 import uuid
 from urllib.parse import quote
@@ -28,7 +29,8 @@ from bis.services.storage import get_storage
 router = APIRouter(prefix="/documents", tags=["documents"])
 templates_router = APIRouter(prefix="/templates", tags=["templates"])
 
-KNOWLEDGE_KIND_FOR = {"incoming_letter": "letter", "letter": "letter", "contract": "contract", "order": "org_document"}
+KNOWLEDGE_KIND_FOR = {"incoming_letter": "letter", "letter": "letter", "contract": "contract", "order": "org_document",
+                      "project_doc": "project_doc"}
 
 
 def _owned(db: Session, user: User, doc_id: uuid.UUID) -> Document:
@@ -165,6 +167,14 @@ async def upload_document(
                                number=number, object_id=object_id, mime=mime or "application/octet-stream")
     doc.source = "uploaded"
     doc.status = "registered"
+    if kind == "project_doc":
+        from bis.rag.parsers import parse_file
+        from bis.services.project_docs import detect_section
+
+        head = ""
+        with contextlib.suppress(UnsupportedFormat, ValueError):
+            head = parse_file(data, name, mime).text[:3000]
+        doc.data = {**(doc.data or {}), "pd_section": detect_section(f"{doc.title} {name}", head)}
     if index:
         try:
             ingest_bytes(db, get_storage(), get_embedder(), org_id=user.organization_id, data=data, filename=name,

@@ -169,4 +169,23 @@ CAD = Agent(
 - После построения сообщи масштаб, максимальные отклонения и точки с превышением допусков.""",
 )
 
-BUILTIN_AGENTS = [NORMS, SECRETARY, PTO, CONTRACTS, CONTROL, WORKS, MATERIALS, CLOSING, CAD, ASSISTANT]
+PROJECT = Agent(
+    name="project",
+    title="Анализ проектной документации",
+    description="Комплектность ПД/РД, спецификации и ведомости объёмов, сверка со сметой, нормоконтроль, замечания.",
+    keywords=r"проектн[а-я]* документац|\bпд\b|\bрд\b|рабоч[а-я]* документац|комплектност|спецификаци|"
+             r"ведомост[а-я]* (?:замечани|объ[её]м)|нормоконтрол|экспертиз",
+    priority=2,
+    tools=["find_objects", "list_documents", "get_document", "pd_completeness", "extract_specification",
+           "compare_spec_with_estimate", "find_contracts", "search_knowledge", "create_remarks_sheet"],
+    instructions="""Анализируешь проектную и рабочую документацию объекта.
+- Комплектность — pd_completeness: каких обязательных разделов нет, какие документы не распознаны.
+- Спецификации — extract_specification; сверка со сметой договора — compare_spec_with_estimate: расхождения
+  объёмов сверх допуска и позиции, которых нет в смете (риск неоплачиваемых работ — предложи допсоглашение).
+- Нормоконтроль: читай текст раздела (get_document), по каждому сомнительному решению найди требование
+  (search_knowledge, scope=norms) и формулируй замечание со ссылкой на документ и пункт. Не выдумывай нормы:
+  нет подтверждения в базе — помечай как «требует проверки».
+- Замечания оформляй ведомостью create_remarks_sheet.""",
+)
+
+BUILTIN_AGENTS = [NORMS, SECRETARY, PTO, CONTRACTS, CONTROL, WORKS, MATERIALS, CLOSING, CAD, PROJECT, ASSISTANT]

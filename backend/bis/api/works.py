@@ -173,3 +173,44 @@ async def parse_survey(file: UploadFile = File(...), geodetic: bool = Form(False
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
     return {"points": [p.model_dump() for p in points]}
+
+
+# --- проектная документация ----------------------------------------------------------------------
+
+
+@router.get("/objects/{object_id}/pd-completeness")
+def pd_completeness(object_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(require("documents:read"))):
+    from bis.services.project_docs import completeness
+
+    obj = _owned(db, user, ConstructionObject, object_id, "Объект")
+    return completeness(db, user.organization_id, obj.id)
+
+
+class CompareIn(BaseModel):
+    contract_id: uuid.UUID
+    tolerance_pct: float = 5.0
+
+
+@router.post("/documents/{doc_id}/specification")
+def specification(doc_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(require("documents:read"))):
+    from bis.agents.tools_pd import spec_for_document
+    from bis.api.deps import agent_context
+
+    doc = _owned(db, user, Document, doc_id, "Документ")
+    spec, fallback = spec_for_document(agent_context(db, user), doc)
+    db.commit()
+    return {"items": [i.model_dump() for i in spec.items], "method": "rules" if fallback else "model"}
+
+
+@router.post("/documents/{doc_id}/compare-estimate")
+def compare_estimate(doc_id: uuid.UUID, body: CompareIn, db: Session = Depends(get_db),
+                     user: User = Depends(require("documents:read"))):
+    from bis.agents.tools_pd import spec_for_document
+    from bis.api.deps import agent_context
+    from bis.services.project_docs import compare_with_estimate
+
+    doc = _owned(db, user, Document, doc_id, "Документ")
+    contract = _owned(db, user, Contract, body.contract_id, "Договор")
+    spec, _ = spec_for_document(agent_context(db, user), doc)
+    db.commit()
+    return compare_with_estimate(db, user.organization_id, contract.id, spec, body.tolerance_pct)
