@@ -32,7 +32,21 @@ def start_database(data_dir: Path) -> str:
 
     pg_dir = data_dir / "pg"
     pg_dir.mkdir(parents=True, exist_ok=True)
-    server = pgserver.get_server(str(pg_dir), cleanup_mode="stop")
+    import subprocess
+    import time
+
+    # pgserver ждёт запуска базы 10 с; на Windows с антивирусом или после сбоя (восстановление) бывает дольше
+    server = None
+    for attempt in range(8):
+        try:
+            server = pgserver.get_server(str(pg_dir), cleanup_mode="stop")
+            break
+        except subprocess.TimeoutExpired:
+            print(f"  База данных запускается дольше обычного, жду… ({attempt + 1}/8)", flush=True)
+            time.sleep(15)
+    if server is None:
+        raise RuntimeError("База данных не запустилась за 2 минуты. Добавьте папку BIS в исключения антивируса "
+                           f"и повторите. Журнал базы: {pg_dir / 'log'}")
     if os.environ.get("BIS_VECTOR_ENABLED", "false").lower() in ("1", "true", "yes"):
         server.psql("CREATE EXTENSION IF NOT EXISTS vector;")
     uri = server.get_uri()
