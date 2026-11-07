@@ -1,3 +1,4 @@
+from bis.models.control import JobRun, Notification, Task
 from bis.models.core import (
     Appointment,
     AuditLog,
@@ -29,6 +30,9 @@ __all__ = [
     "Counterparty",
     "Document",
     "DocumentTemplate",
+    "JobRun",
+    "Notification",
+    "Task",
     "KnowledgeChunk",
     "KnowledgeSource",
     "OrgMemory",

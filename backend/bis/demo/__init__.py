@@ -86,23 +86,37 @@ def seed_demo(db: Session, storage: Storage, embedder: Embedder) -> Organization
         ("Волков Сергей Николаевич", "Главный инженер проекта", None, "С-77-000002", "builder_control", "22-к"),
         ("Белова Мария Олеговна", "Главный инженер проекта", designer.id, None, "designer", "7-АН"),
     ]
+    responsible_id = None
     for full_name, position, cp_id, nrs, role, order in people:
         person = Person(organization_id=org.id, full_name=full_name, position=position, counterparty_id=cp_id,
                         nrs_id=nrs)
         db.add(person)
         db.flush()
+        if role == "builder_control":
+            responsible_id = person.id
         db.add(Appointment(organization_id=org.id, person_id=person.id, object_id=obj.id, role=role,
                            order_number=order, order_date=date(2026, 2, 20), valid_from=date(2026, 3, 1)))
 
-    db.add(Contract(organization_id=org.id, kind="general", number="ГП-01/2026", date=date(2026, 2, 15),
-                    subject="Строительство жилого дома, корпус 1", object_id=obj.id, counterparty_id=developer.id,
-                    amount=850_000_000, vat_rate=20, start_date=date(2026, 3, 1), end_date=date(2027, 12, 31)))
+    general = Contract(organization_id=org.id, kind="general", number="ГП-01/2026", date=date(2026, 2, 15),
+                       subject="Строительство жилого дома, корпус 1", object_id=obj.id, counterparty_id=developer.id,
+                       amount=850_000_000, vat_rate=20, start_date=date(2026, 3, 1), end_date=date(2027, 12, 31),
+                       responsible_id=responsible_id)
+    db.add(general)
     db.add(Contract(organization_id=org.id, kind="subcontract", number="СП-07/2026", date=date(2026, 3, 10),
                     subject="Монолитные работы, корпус 1", object_id=obj.id, counterparty_id=sub.id,
                     amount=120_000_000, vat_rate=20, start_date=date(2026, 3, 15), end_date=date(2026, 12, 31)))
     db.add(OrgMemory(organization_id=org.id, kind="style", scope="secretary",
                      content="В письмах заказчику указывать номер договора генподряда ГП-01/2026, если письмо по корпусу 1.",
                      source="demo"))
+
+    db.flush()
+    from bis.services.contracts import analyze_contract, attach_contract_file
+
+    contract_text = (Path(__file__).parent / "demo_contract.txt").read_bytes()
+    doc = attach_contract_file(db, storage, general, contract_text, "Договор_ГП-01-2026.txt", "text/plain", "system:demo")
+    ingest_bytes(db, storage, embedder, org_id=org.id, data=contract_text, filename="Договор_ГП-01-2026.txt",
+                 kind="contract", title="Договор генподряда № ГП-01/2026", document_id=doc.id)
+    analyze_contract(db, storage, None, general, actor="system:demo")
 
     has_demo_norm = db.scalar(select(KnowledgeSource).where(KnowledgeSource.designation == "ДЕМО-СП 999.13330.2026"))
     if not has_demo_norm:

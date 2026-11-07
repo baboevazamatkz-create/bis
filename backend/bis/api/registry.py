@@ -17,6 +17,7 @@ from bis.api.schemas import (
     ObjectIn,
     ObligationIn,
     PersonIn,
+    TaskIn,
     partial,
     read_model,
 )
@@ -28,6 +29,7 @@ from bis.models import (
     ContractObligation,
     Counterparty,
     Person,
+    Task,
     User,
 )
 from bis.services.audit import audit
@@ -40,6 +42,8 @@ FK_MODELS: dict[str, Any] = {
     "person_id": Person,
     "contract_id": Contract,
     "responsible_id": Person,
+    "assignee_person_id": Person,
+    "assignee_user_id": User,
 }
 
 
@@ -126,5 +130,7 @@ routers = [
     crud_router("/appointments", Appointment, AppointmentIn, ("role", "order_number"), "appointment",
                 filters=("object_id", "person_id")),
     crud_router("/obligations", ContractObligation, ObligationIn, ("description",), "obligation",
-                filters=("contract_id", "status")),
+                filters=("contract_id", "status", "party")),
+    crud_router("/tasks", Task, TaskIn, ("title", "description"), "task",
+                filters=("status", "assignee_person_id", "assignee_user_id", "object_id")),
 ]

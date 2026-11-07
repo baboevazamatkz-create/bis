@@ -18,8 +18,9 @@ class CorePlugin(Plugin):
 
     def tools(self) -> list[Tool]:
         from bis.agents.builtin_tools import BUILTIN_TOOLS
+        from bis.agents.tools_control import CONTROL_TOOLS
 
-        return list(BUILTIN_TOOLS)
+        return [*BUILTIN_TOOLS, *CONTROL_TOOLS]
 
     def agents(self) -> list[Agent]:
         from bis.agents.builtin_agents import BUILTIN_AGENTS

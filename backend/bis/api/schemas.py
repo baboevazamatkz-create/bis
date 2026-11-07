@@ -69,6 +69,7 @@ class ContractIn(BaseModel):
     start_date: dt.date | None = None
     end_date: dt.date | None = None
     status: str = "active"
+    responsible_id: uuid.UUID | None = None
     extra: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -95,11 +96,28 @@ class ObligationIn(BaseModel):
     contract_id: uuid.UUID
     description: str
     party: str = "we"
+    kind: str = "other"
     due_date: dt.date | None = None
+    due_text: str | None = None
+    amount: Decimal | None = None
     responsible_id: uuid.UUID | None = None
     status: str = "open"
     penalty: str | None = None
     source_clause: str | None = None
+    notify_days_before: int = 3
+
+
+class TaskIn(BaseModel):
+    title: str
+    description: str | None = None
+    assignee_person_id: uuid.UUID | None = None
+    assignee_user_id: uuid.UUID | None = None
+    due_date: dt.date | None = None
+    status: str = "open"
+    priority: str = "normal"
+    object_id: uuid.UUID | None = None
+    contract_id: uuid.UUID | None = None
+    result: str | None = None
 
 
 class DocumentOut(ORM):

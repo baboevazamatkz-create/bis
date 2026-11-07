@@ -52,6 +52,7 @@ class User(IdMixin, TimestampMixin, TenantMixin, Base):
     role: Mapped[str] = mapped_column(String(50), default="viewer")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_platform_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+    telegram_chat_id: Mapped[str | None] = mapped_column(String(50))
 
 
 class Counterparty(IdMixin, TimestampMixin, TenantMixin, Base):
@@ -116,6 +117,9 @@ class Contract(IdMixin, TimestampMixin, TenantMixin, Base):
     document_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("documents.id", ondelete="SET NULL")
     )
+    responsible_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("persons.id", ondelete="SET NULL")
+    )  # ответственный за исполнение договора
     extra: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
 
 
@@ -175,8 +179,14 @@ class ContractObligation(IdMixin, TimestampMixin, TenantMixin, Base):
         UUID(as_uuid=True), ForeignKey("persons.id", ondelete="SET NULL")
     )
     status: Mapped[str] = mapped_column(String(30), default="open")  # open | done | overdue | cancelled
+    kind: Mapped[str] = mapped_column(String(30), default="other")  # works | payment | documents | warranty | insurance | other
+    due_text: Mapped[str | None] = mapped_column(Text)  # срок словами: «в течение 10 рабочих дней после подписания КС-2»
+    amount: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
     penalty: Mapped[str | None] = mapped_column(Text)
     source_clause: Mapped[str | None] = mapped_column(String(100))
+    source_text: Mapped[str | None] = mapped_column(Text)
+    notify_days_before: Mapped[int] = mapped_column(Integer, default=3)
+    extracted_by: Mapped[str | None] = mapped_column(String(100))  # пользователь или агент/модель
 
 
 class Document(IdMixin, TimestampMixin, TenantMixin, Base):

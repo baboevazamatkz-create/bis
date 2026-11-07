@@ -36,6 +36,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--org-inn", help="ИНН организации; без него — в общую нормативную библиотеку")
     p.add_argument("--status", default="active")
 
+    p = sub.add_parser("worker", help="Фоновые задачи: контроль сроков, почта, план-факт")
+    p.add_argument("--poll", type=int, default=60)
+    p = sub.add_parser("run-jobs", help="Однократно выполнить фоновые задачи (для cron)")
+    p.add_argument("names", nargs="*")
+
     p = sub.add_parser("serve", help="Запустить API")
     p.add_argument("--host", default="0.0.0.0")
     p.add_argument("--port", type=int, default=8000)
@@ -45,6 +50,24 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "migrate":
         _alembic_upgrade()
         print("Миграции применены")
+        return 0
+    if args.cmd in ("worker", "run-jobs"):
+        import logging
+
+        from bis.db import SessionLocal
+        from bis.jobs import load_all_jobs, run_job, worker
+
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+        jobs = load_all_jobs()
+        if args.cmd == "worker":
+            worker(SessionLocal, poll_seconds=args.poll)
+            return 0
+        for name in args.names or list(jobs):
+            if name not in jobs:
+                print(f"Неизвестная задача: {name}. Доступны: {', '.join(jobs)}", file=sys.stderr)
+                return 1
+            r = run_job(SessionLocal, name)
+            print(f"{name}: {r.status}")
         return 0
     if args.cmd == "serve":
         import uvicorn

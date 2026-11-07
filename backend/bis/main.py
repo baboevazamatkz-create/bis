@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from bis import __version__
-from bis.api import admin, auth, chat, documents, knowledge, registry
+from bis.api import admin, auth, chat, control, documents, knowledge, registry
 from bis.config import get_settings
 
 
@@ -27,6 +27,7 @@ def create_app() -> FastAPI:
     api.include_router(knowledge.router)
     api.include_router(documents.router)
     api.include_router(documents.templates_router)
+    api.include_router(control.router)
     for r in registry.routers:
         api.include_router(r)
     app.include_router(api)

@@ -79,6 +79,9 @@ class Settings(BaseSettings):
     llm_config_file: Path | None = None
     llm_routes_json: str | None = None
 
+    # Уведомления в Telegram (бот организации); chat_id задаётся у пользователя
+    telegram_bot_token: str | None = None
+
     # Плагины: None — все найденные
     enabled_plugins: list[str] | None = None
 
