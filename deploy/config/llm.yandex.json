@@ -25,17 +25,59 @@
       "timeout": 120
     },
     {
+      "name": "yandex-vision",
+      "kind": "openai_compat",
+      "base_url": "https://llm.api.cloud.yandex.net/v1",
+      "model": "gpt://${YANDEX_FOLDER_ID}/gemma-3-27b-it/latest",
+      "api_key_env": "YANDEX_API_KEY",
+      "auth_scheme": "Api-Key",
+      "max_sensitivity": "internal",
+      "mask_pii": false,
+      "temperature": 0.1,
+      "timeout": 120,
+      "capabilities": [
+        "text",
+        "vision"
+      ]
+    },
+    {
       "name": "offline",
       "kind": "offline",
       "max_sensitivity": "confidential"
     }
   ],
   "routes": {
-    "route": ["yandexgpt-lite", "offline"],
-    "extract": ["yandexgpt-lite", "yandexgpt", "offline"],
-    "chat": ["yandexgpt", "yandexgpt-lite", "offline"],
-    "analysis": ["yandexgpt", "yandexgpt-lite", "offline"],
-    "verify": ["yandexgpt-lite", "offline"],
-    "default": ["yandexgpt", "yandexgpt-lite", "offline"]
+    "route": [
+      "yandexgpt-lite",
+      "offline"
+    ],
+    "extract": [
+      "yandexgpt-lite",
+      "yandexgpt",
+      "offline"
+    ],
+    "chat": [
+      "yandexgpt",
+      "yandexgpt-lite",
+      "offline"
+    ],
+    "analysis": [
+      "yandexgpt",
+      "yandexgpt-lite",
+      "offline"
+    ],
+    "verify": [
+      "yandexgpt-lite",
+      "offline"
+    ],
+    "default": [
+      "yandexgpt",
+      "yandexgpt-lite",
+      "offline"
+    ],
+    "vision": [
+      "yandex-vision",
+      "offline"
+    ]
   }
 }
