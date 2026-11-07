@@ -96,7 +96,13 @@ class Settings(BaseSettings):
     telegram_api_base: str = "https://api.telegram.org"  # или локальный Bot API сервер в закрытом контуре
     public_url: str | None = None  # адрес веб-интерфейса — для ссылок в сообщениях
 
-    # Голос (OpenAI-совместимые серверы в закрытом контуре)
+    # Yandex Cloud (SpeechKit, Vision OCR): каталог и переменная с ключом AI Studio
+    yandex_folder_id: str | None = None  # BIS_YANDEX_FOLDER_ID или YANDEX_FOLDER_ID
+    yandex_api_key_env: str = "YANDEX_API_KEY"
+    ocr_provider: Literal["none", "yandex"] = "none"  # распознавание сканов и фото документов
+
+    # Голос: stt_provider=openai — OpenAI-совместимый сервер в закрытом контуре; yandex — SpeechKit
+    stt_provider: Literal["openai", "yandex"] = "openai"
     stt_url: str | None = None  # например http://stt:8000/v1 (faster-whisper / speaches)
     stt_model: str = "Systran/faster-whisper-large-v3"
     stt_language: str = "ru"
@@ -111,6 +117,13 @@ class Settings(BaseSettings):
 
     # Плагины: None — все найденные
     enabled_plugins: list[str] | None = None
+
+    def yandex(self) -> tuple[str | None, str | None]:
+        """(каталог, ключ) для сервисов Yandex Cloud."""
+        import os
+
+        return (self.yandex_folder_id or os.environ.get("YANDEX_FOLDER_ID"),
+                os.environ.get(self.yandex_api_key_env))
 
     def llm_providers(self) -> list[ProviderConfig]:
         raw: list[dict[str, Any]] | None = None

@@ -52,12 +52,21 @@ BY_NAME = {s.name: s for s in SPECIALISTS}
 def model_status(gateway: LLMGateway, s: Specialist) -> dict[str, str | bool]:
     """Какая модель обслуживает специалиста, или он работает на правилах."""
     if s.capability == "speech":
+        from bis.config import get_settings
+
         on = voice.status()["stt"]
-        return {"connected": on, "model": "распознавание речи (Whisper)" if on else "не подключено — нужен сервер STT"}
+        engine = "Yandex SpeechKit" if get_settings().stt_provider == "yandex" else "Whisper"
+        return {"connected": on, "model": f"распознавание речи ({engine})" if on else "не подключено — нужен сервер STT"}
     if s.capability == "rules":
         llm = gateway.has_capability("text", s.task)
         return {"connected": True, "model": "алгоритмы" + (f" + {llm[0]}" if llm else "")}
     providers = gateway.has_capability(s.capability, s.task)
+    if s.name == "reader":
+        from bis import ocr
+
+        if ocr.available():
+            base = f"{providers[0]} ({getattr(gateway.entries[providers[0]].provider, 'model', '')})" if providers else "правила"
+            return {"connected": True, "model": f"{base} + Yandex Vision OCR (сканы и фото документов)"}
     if providers:
         entry = gateway.entries[providers[0]]
         return {"connected": True, "model": f"{providers[0]} ({getattr(entry.provider, 'model', '')})"}

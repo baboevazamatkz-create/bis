@@ -39,6 +39,9 @@ docker compose -f deploy/docker-compose.yml exec api bis seed-demo
   и чтения документов, YandexGPT Pro для ассистента и юриста. Переменные: `BIS_LLM_CONFIG_FILE=deploy/config/llm.yandex.json`,
   `YANDEX_API_KEY` (секретный ключ AI Studio, `AQVN…`), `YANDEX_FOLDER_ID` (каталог, `b1g…`). Сервисному аккаунту ключа
   нужна роль `ai.languageModels.user` в каталоге. Проверка: `bis llm-check` или «ИИ-специалисты» → «Проверить модели».
+- Голос и сканы тем же ключом: `BIS_STT_PROVIDER=yandex` (SpeechKit, роль `ai.speechkit-stt.user`, нужен `ffmpeg`)
+  и `BIS_OCR_PROVIDER=yandex` (Vision OCR, роль `ai.vision.user`). Голосовые режутся на части по 25 с; сканы PDF без
+  текстового слоя и фото накладных, сертификатов, протоколов распознаются и передаются чтецу документов.
 - Claude (`"kind": "anthropic"`, модель `claude-opus-5-5`) подключается там, где сервис доступен легально.
   Серверный fallback при отказе модели включён.
 

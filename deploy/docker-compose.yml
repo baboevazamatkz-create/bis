@@ -29,7 +29,7 @@ services:
         required: false
     environment:
       BIS_DATABASE_URL: postgresql+psycopg://bis:${POSTGRES_PASSWORD:-bis}@db:5432/bis
-      BIS_LLM_CONFIG_FILE: /config/llm.json
+      BIS_LLM_CONFIG_FILE: ${BIS_LLM_CONFIG_FILE:-/config/llm.json}
     volumes:
       - files:/data/files
       - ./config:/config:ro
@@ -47,7 +47,7 @@ services:
         required: false
     environment:
       BIS_DATABASE_URL: postgresql+psycopg://bis:${POSTGRES_PASSWORD:-bis}@db:5432/bis
-      BIS_LLM_CONFIG_FILE: /config/llm.json
+      BIS_LLM_CONFIG_FILE: ${BIS_LLM_CONFIG_FILE:-/config/llm.json}
     volumes:
       - files:/data/files
       - ./config:/config:ro

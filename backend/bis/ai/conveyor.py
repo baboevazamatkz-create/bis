@@ -167,17 +167,39 @@ def _process(env: Env, event: IntakeEvent) -> None:
                  "Распознавание речи не подключено (сервер STT). Подключите — и голосовые прорабов станут объёмами, "
                  "расходом и поручениями.", {"audience": "admins"}, 1.0, severity="warning")
             return _finish(env, event)
-        transcript = voice.transcribe(data, event.file_name or "voice.ogg", event.mime)
+        try:
+            transcript = voice.transcribe(data, event.file_name or "voice.ogg", event.mime)
+        except voice.VoiceError as e:
+            _act(env, event, "hearing", "flag_issue", "Голосовое не распознано", f"{e}. Сообщение сохранено.",
+                 {"audience": "admins"}, 1.0, severity="warning")
+            return _finish(env, event)
+        if not transcript:
+            _act(env, event, "hearing", "info", "В голосовом не найдено речи", "Запись сохранена.", {}, 1.0)
+            event.result = {**event.result, "transcript": ""}
+            return _finish(env, event)
         text = (transcript + (f"\n{event.text}" if event.text else "")).strip()
         event.result = {**event.result, "transcript": transcript}
     elif event.kind == "photo":
         images = [{"mime": event.mime or "image/jpeg", "data": base64.b64encode(data).decode()}]
+        doc_text = _ocr(event, data)
+        if doc_text and len(doc_text) >= 60:
+            dtype, conf, by = und.classify(env.gateway, doc_text, None, "document")
+            if dtype not in ("unknown", "site_photo", "foreman_report"):  # на фото — документ: читаем его текст
+                text = (doc_text + ("\n" + event.text if event.text else "")).strip()
+                event.result = {**event.result, "photo_of_document": True}
+                event.object_id = event.object_id or resolve_object(env, text)
+                # текст уже прочитан OCR — дальше работает языковая модель без изображения
+                return _dispatch(env, event, text, None, (dtype, conf, f"{by}+ocr"))
     elif event.kind == "document":
         try:
             parsed = parse_file(data, event.file_name or "file", event.mime)
             text = (parsed.text + "\n" + (event.text or "")).strip()
             if parsed.meta.get("needs_ocr") or not parsed.text.strip():
-                event.result = {**event.result, "needs_ocr": True}
+                scanned = _ocr(event, data)
+                if scanned:
+                    text = (scanned + "\n" + (event.text or "")).strip()
+                else:
+                    event.result = {**event.result, "needs_ocr": True}
         except UnsupportedFormat as e:
             event.result = {**event.result, "unsupported": str(e)}
     if event.object_id is None:
@@ -185,9 +207,30 @@ def _process(env: Env, event: IntakeEvent) -> None:
 
     # 2. диспетчер
     if event.kind == "photo":
-        dtype, conf, by = _photo_type(env, event, images, text)
+        found = _photo_type(env, event, images, text)
     else:
-        dtype, conf, by = und.classify(env.gateway, text, event.file_name, event.kind)
+        found = und.classify(env.gateway, text, event.file_name, event.kind)
+    _dispatch(env, event, text, images, found)
+
+
+def _ocr(event: IntakeEvent, data: bytes) -> str:
+    """Скан или фото документа → текст (если подключено распознавание)."""
+    from bis import ocr
+
+    if not ocr.available():
+        return ""
+    try:
+        text = ocr.recognize(data, event.mime or mimetypes.guess_type(event.file_name or "")[0])
+    except ocr.OCRError as e:
+        event.result = {**event.result, "ocr_error": str(e)[:300]}
+        return ""
+    if text:
+        event.result = {**event.result, "ocr": True}
+    return text
+
+
+def _dispatch(env: Env, event: IntakeEvent, text: str, images, found: tuple[str, float, str]) -> None:
+    dtype, conf, by = found
     event.detected_type = dtype
     event.result = {**event.result, "dispatcher": {"type": dtype, "title": und.TYPES[dtype], "confidence": conf, "by": by},
                     "excerpt": text[:600]}

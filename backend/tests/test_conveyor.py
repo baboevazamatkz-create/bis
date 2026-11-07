@@ -344,3 +344,24 @@ def test_usage_matched_by_context_and_checked_against_norm(db, demo):
     _, ok = run(env, text="Залили бетон плиты Пм1 захватка 5 — 100 м3. Бетона ушло 101 м3.")
     assert "в пределах" in by_kind(ok, "record_usage")[0].summary
     assert not [a for a in ok if "Перерасход к норме" in a.title]
+
+
+def test_scan_photo_and_voice_via_yandex_services(db, demo, monkeypatch):
+    """Фото накладной → OCR → чтец документов; голосовое → SpeechKit → объёмы (транспорт подменён)."""
+    from bis import ocr, voice
+    from bis.config import get_settings
+
+    s = get_settings()
+    monkeypatch.setattr(s, "ocr_provider", "yandex")
+    monkeypatch.setattr(s, "stt_provider", "yandex")
+    monkeypatch.setattr(s, "yandex_folder_id", "b1gtest")
+    monkeypatch.setattr(ocr, "recognize", lambda data, mime, client=None: UPD)
+    monkeypatch.setattr(voice, "_transcribe_yandex", lambda audio, client: "залили бетон плиты Пм1 захватка 6 — 120 кубов")
+    monkeypatch.setattr(voice.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    env = make_env(db, demo)
+    event, actions = run(env, data=PNG, name="IMG_upd.jpg", mime="image/jpeg")
+    assert event.detected_type == "upd" and event.result["ocr"] and event.result["photo_of_document"]
+    assert len(by_kind(actions, "create_receipt")) == 2
+    ev2, acts2 = run(env, data=b"OggS voice", name="voice.ogg", mime="audio/ogg")
+    assert ev2.result["transcript"].endswith("120 м3")
+    assert by_kind(acts2, "report_volume")[0].payload["quantity"] == 120
