@@ -218,3 +218,70 @@ def compare_estimate(doc_id: uuid.UUID, body: CompareIn, db: Session = Depends(g
     spec, _ = spec_for_document(agent_context(db, user), doc)
     db.commit()
     return compare_with_estimate(db, user.organization_id, contract.id, spec, body.tolerance_pct)
+
+
+# --- исполнительная документация ----------------------------------------------------------------
+
+
+@router.post("/documents/aook", response_model=DocumentOut, status_code=201)
+def create_aook(body: dict, db: Session = Depends(get_db), user: User = Depends(require("documents:write"))):
+    from bis.agents.tools_id import AOOKArgs, build_aook
+    from bis.api.deps import agent_context
+    from bis.services.exec_docs import create_aook as svc_create
+
+    try:
+        args = AOOKArgs.model_validate(body)
+        data, obj = build_aook(agent_context(db, user), args)
+    except (ValueError, LookupError) as e:
+        raise HTTPException(400, str(e)) from e
+    doc = svc_create(db, get_storage(), org_id=user.organization_id, data=data, created_by=f"user:{user.id}",
+                     object_id=obj.id)
+    db.commit()
+    return doc
+
+
+@router.post("/documents/aook/check")
+def check_aook(body: dict, db: Session = Depends(get_db), user: User = Depends(require("documents:read"))):
+    from bis.agents.tools_id import AOOKArgs, build_aook
+    from bis.api.deps import agent_context
+    from bis.documents.aook import validate_aook
+
+    try:
+        data, _ = build_aook(agent_context(db, user), AOOKArgs.model_validate(body))
+    except (ValueError, LookupError) as e:
+        raise HTTPException(400, str(e)) from e
+    return {"issues": [i.model_dump() for i in validate_aook(data)],
+            "representatives": {k: v.format() for k, v in data.representatives.items()}}
+
+
+@router.get("/objects/{object_id}/id-registry")
+def id_registry(object_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(require("documents:read"))):
+    from bis.services.exec_docs import id_registry as reg
+
+    obj = _owned(db, user, ConstructionObject, object_id, "Объект")
+    return reg(db, user.organization_id, obj.id)
+
+
+@router.post("/objects/{object_id}/id-registry/export", response_model=DocumentOut, status_code=201)
+def export_registry(object_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(require("documents:write"))):
+    from bis.services.exec_docs import export_registry as exp
+
+    obj = _owned(db, user, ConstructionObject, object_id, "Объект")
+    doc = exp(db, get_storage(), user.organization_id, obj.id, actor=f"user:{user.id}")
+    db.commit()
+    return doc
+
+
+@router.post("/objects/{object_id}/work-journal", response_model=DocumentOut, status_code=201)
+def export_journal(object_id: uuid.UUID, body: PeriodIn, db: Session = Depends(get_db),
+                   user: User = Depends(require("documents:write"))):
+    from bis.services.exec_docs import export_work_journal
+
+    obj = _owned(db, user, ConstructionObject, object_id, "Объект")
+    try:
+        doc = export_work_journal(db, get_storage(), user.organization_id, obj.id, body.period_start, body.period_end,
+                                  actor=f"user:{user.id}")
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    db.commit()
+    return doc

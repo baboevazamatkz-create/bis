@@ -46,6 +46,11 @@ def to_anthropic_messages(messages: list[Message], provider_name: str) -> list[d
                 if not content:
                     content = [{"type": "text", "text": "…"}]
             out.append({"role": "assistant", "content": content})
+        elif m.role == "user" and m.images:
+            blocks: list[dict[str, Any]] = [{"type": "image", "source": {"type": "base64", "media_type": img["mime"],
+                                                                         "data": img["data"]}} for img in m.images]
+            blocks.append({"type": "text", "text": m.content or "Опиши изображение."})
+            out.append({"role": "user", "content": blocks})
         elif m.role == "user":
             if out and out[-1]["role"] == "user" and isinstance(out[-1]["content"], str):
                 out[-1]["content"] += "\n\n" + m.content

@@ -159,8 +159,9 @@ def validate_aosr(d: AOSRData) -> list[Issue]:
     return issues
 
 
-def render_aosr(d: AOSRData) -> bytes:
-    doc = new_document(font_size=11, margins_cm=(2.5, 1.0, 1.5, 1.5))
+def act_header(doc, d, subtitle: str,
+               performer_label: str = "Лицо, выполнившее работы, подлежащие освидетельствованию") -> None:
+    """Общая шапка актов ИД (344/пр): объект, участники, заголовок, представители."""
     field_line(doc, "Объект капитального строительства", d.object_name,
                "наименование объекта капитального строительства в соответствии с проектной документацией, "
                "почтовый или строительный адрес объекта капитального строительства")
@@ -170,12 +171,12 @@ def render_aosr(d: AOSRData) -> bytes:
     field_line(doc, "Лицо, осуществляющее строительство", d.builder.format(), party_caption)
     if d.designer:
         field_line(doc, "Лицо, осуществляющее подготовку проектной документации", d.designer.format(), party_caption)
-    field_line(doc, "Лицо, выполнившее работы, подлежащие освидетельствованию",
+    field_line(doc, performer_label,
                (d.performer or d.builder).format(), party_caption)
 
     para(doc)
     para(doc, "АКТ", bold=True, size=13, align=WD_ALIGN_PARAGRAPH.CENTER)
-    para(doc, "освидетельствования скрытых работ", bold=True, size=12, align=WD_ALIGN_PARAGRAPH.CENTER)
+    para(doc, subtitle, bold=True, size=12, align=WD_ALIGN_PARAGRAPH.CENTER)
     t = borderless_table(doc, 1, 2, [8.5, 9.0])
     t.cell(0, 0).text = f"№ {d.number or '______'}"
     t.cell(0, 1).text = fmt_date_long(d.date)
@@ -192,6 +193,11 @@ def render_aosr(d: AOSRData) -> bytes:
         for rep in d.other_representatives:
             field_line(doc, None, rep.format(), "наименование, должность, фамилия, инициалы, реквизиты распорядительного документа")
 
+
+
+def render_aosr(d: AOSRData) -> bytes:
+    doc = new_document(font_size=11, margins_cm=(2.5, 1.0, 1.5, 1.5))
+    act_header(doc, d, "освидетельствования скрытых работ")
     performer = (d.performer or d.builder).name
     field_line(doc, "произвели осмотр работ, выполненных", performer, "наименование лица, выполнившего работы")
     para(doc, "и составили настоящий акт о нижеследующем:", space_after=4)
@@ -227,6 +233,12 @@ def render_aosr(d: AOSRData) -> bytes:
         for i, a in enumerate(d.attachments, 1):
             para(doc, f"{i}. {a}")
 
+    act_signatures(doc, d)
+    return to_bytes(doc)
+
+
+def act_signatures(doc, d) -> None:
+    """Подписи представителей (общие для АОСР и АООК)."""
     para(doc)
     for role, meta in REPRESENTATIVE_ROLES.items():
         rep = d.representatives.get(role)
@@ -241,4 +253,3 @@ def render_aosr(d: AOSRData) -> bytes:
         sig = borderless_table(doc, 1, 2, [11.5, 6.0])
         sig.cell(0, 0).text = f"{rep.position} {short_name(rep.full_name)}"
         sig.cell(0, 1).text = "_______________ (подпись)"
-    return to_bytes(doc)

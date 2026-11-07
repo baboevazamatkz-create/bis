@@ -37,6 +37,8 @@ class Message:
     # Передаётся обратно без изменений, если история уходит тому же провайдеру.
     raw: Any = None
     raw_provider: str | None = None
+    # Изображения для моделей зрения: [{"mime": "image/jpeg", "data": "<base64>"}]
+    images: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass

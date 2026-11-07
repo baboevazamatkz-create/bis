@@ -35,6 +35,11 @@ def to_openai_messages(messages: list[Message]) -> list[dict[str, Any]]:
                     ],
                 }
             )
+        elif m.images:
+            parts: list[dict[str, Any]] = [{"type": "text", "text": m.content or ""}]
+            parts += [{"type": "image_url", "image_url": {"url": f"data:{img['mime']};base64,{img['data']}"}}
+                      for img in m.images]
+            out.append({"role": m.role, "content": parts})
         else:
             out.append({"role": m.role, "content": m.content})
     return out

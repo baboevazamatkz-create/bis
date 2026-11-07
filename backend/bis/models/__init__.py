@@ -1,3 +1,4 @@
+from bis.models.ai import AIAction, IntakeEvent
 from bis.models.control import JobRun, Notification, Task
 from bis.models.core import (
     Appointment,
@@ -28,6 +29,8 @@ from bis.models.works import (
 )
 
 __all__ = [
+    "AIAction",
+    "IntakeEvent",
     "Appointment",
     "AuditLog",
     "ChatMessage",

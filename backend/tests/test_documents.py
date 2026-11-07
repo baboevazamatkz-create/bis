@@ -86,3 +86,46 @@ def test_helpers():
     assert short_name("Петров Пётр Петрович") == "Петров П.П."
     assert short_name("Петров П.П.") == "Петров П.П."
     assert fmt_date_long(date(2026, 1, 5)) == "«05» января 2026 г."
+
+
+# --- АООК, реестр ИД, журнал работ ---------------------------------------------------------------
+
+
+def _aook_body(object_id: str, **kw) -> dict:
+    return {"object_id": object_id, "works": "Фундаментная плита Пм1 в осях 1-9/А-В",
+            "project_docs": "ЖК-01-КЖ0, листы 1-12, ООО «ПроектДемо»", "materials": ["Бетон B25 W8 F150 — паспорт № 77"],
+            "executive_docs": ["Исполнительная схема плиты Пм1"], "work_start": "2026-05-18", "work_end": "2026-06-30",
+            "norms": ["СП 70.13330.2012, п. 5.17"], **kw}
+
+
+def test_aook_validation_and_render(client, auth):
+    import io
+
+    from docx import Document as Docx
+
+    obj = client.get("/api/objects", headers=auth).json()[0]
+    check = client.post("/api/documents/aook/check", headers=auth,
+                        json=_aook_body(obj["id"], permit="partial")).json()
+    fields = {i["field"] for i in check["issues"]}
+    assert {"aosr_refs", "tests", "load_percent"} <= fields
+    r = client.post("/api/documents/aook", headers=auth,
+                    json=_aook_body(obj["id"], aosr_refs=["АОСР № 12 от 10.06.2026"], tests=["Протокол № 45"]))
+    assert r.status_code == 201, r.text
+    doc = r.json()
+    assert doc["kind"] == "aook"
+    text = "\n".join(p.text for p in Docx(io.BytesIO(client.get(f"/api/documents/{doc['id']}/file", headers=auth).content)).paragraphs)
+    assert "ответственных конструкций" in text.lower() and "Фундаментная плита Пм1" in text
+
+
+def test_id_registry_and_work_journal(client, auth):
+    obj = client.get("/api/objects", headers=auth).json()[0]
+    reg = client.get(f"/api/objects/{obj['id']}/id-registry", headers=auth).json()
+    # в демо есть объёмы скрытых работ без АОСР — реестр показывает это как ошибку
+    assert reg["hidden_volumes"] > 0 and reg["coverage_percent"] == 0
+    assert any(i["level"] == "error" and "без утверждённого АОСР" in i["message"] for i in reg["issues"])
+    exp = client.post(f"/api/objects/{obj['id']}/id-registry/export", headers=auth)
+    assert exp.status_code == 201 and exp.json()["kind"] == "id_registry"
+    j = client.post(f"/api/objects/{obj['id']}/work-journal", headers=auth,
+                    json={"period_start": "2026-05-01", "period_end": "2026-05-31"})
+    assert j.status_code == 201, j.text
+    assert j.json()["kind"] == "work_journal"

@@ -36,6 +36,7 @@ class ProviderEntry:
     provider: LLMProvider
     max_sensitivity: str = "internal"
     mask_pii: bool = False
+    capabilities: tuple[str, ...] = ("text", "tools")
 
 
 @dataclass
@@ -53,9 +54,15 @@ class LLMGateway:
 
     @staticmethod
     def _entry(cfg: ProviderConfig) -> ProviderEntry:
-        return ProviderEntry(provider=build_provider(cfg), max_sensitivity=cfg.max_sensitivity, mask_pii=cfg.mask_pii)
+        return ProviderEntry(provider=build_provider(cfg), max_sensitivity=cfg.max_sensitivity, mask_pii=cfg.mask_pii,
+                             capabilities=tuple(cfg.capabilities))
 
     # --- маршрутизация -------------------------------------------------------------------------
+    def has_capability(self, capability: str, task: str = "default", sensitivity: str = "internal") -> list[str]:
+        """Провайдеры с нужной возможностью, доступные для задачи и уровня данных (без офлайн-заглушки)."""
+        return [n for n, _ in self.candidates(task, sensitivity) if capability in self.entries[n].capabilities
+                and getattr(self.entries[n].provider, "model", "") not in ("offline", "")]
+
     def candidates(self, task: str, sensitivity: str, *, auto_detected: bool = False) -> list[tuple[str, bool]]:
         """Возвращает [(имя провайдера, нужно_ли_маскировать)] в порядке приоритета."""
         names = self.routes.get(task) or self.routes.get("default") or list(self.entries)
@@ -97,6 +104,10 @@ class LLMGateway:
             sensitivity, auto = "confidential", True
 
         candidates = self.candidates(task, sensitivity, auto_detected=auto)
+        if any(m.images for m in messages):
+            candidates = [c for c in candidates if "vision" in self.entries[c[0]].capabilities]
+            if not candidates:
+                raise LLMError("Не подключена модель зрения (провайдер с возможностью vision)", retryable=False)
         if prefer:
             candidates.sort(key=lambda c: c[0] != prefer)
         if not candidates:

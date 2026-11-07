@@ -35,6 +35,8 @@ class ProviderConfig(BaseModel):
     auth_scheme: str = "Bearer"
     max_sensitivity: Sensitivity = "internal"
     mask_pii: bool = False
+    # Возможности модели: text, tools, vision (понимает изображения: фото, сканы, чертежи)
+    capabilities: list[str] = Field(default_factory=lambda: ["text", "tools"])
     timeout: float = 120.0
     temperature: float | None = 0.2
     effort: str | None = None
