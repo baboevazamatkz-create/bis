@@ -155,6 +155,7 @@ def worker(db_factory: Callable[[], Session], poll_seconds: int = 60, once: bool
 
 def load_all_jobs() -> dict[str, Job]:
     """Импортирует модули, регистрирующие свои фоновые задачи."""
+    import bis.brain.build  # noqa: F401
     import bis.connectors.mailbox  # noqa: F401
     import bis.services.digest  # noqa: F401
     import bis.services.works  # noqa: F401

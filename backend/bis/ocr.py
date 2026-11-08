@@ -43,7 +43,12 @@ def _pdf_pages(data: bytes) -> list[bytes]:
 
 
 def recognize(data: bytes, mime: str | None, client: httpx.Client | None = None) -> str:
-    """Текст документа. Многостраничный PDF распознаётся по страницам (синхронный API — одна страница)."""
+    """Текст документа целиком."""
+    return "\n\n".join(t.strip() for t in recognize_pages(data, mime, client) if t.strip())
+
+
+def recognize_pages(data: bytes, mime: str | None, client: httpx.Client | None = None) -> list[str]:
+    """Текст по страницам (порядок сохраняется). Многостраничный PDF — по странице на запрос (синхронный API)."""
     s = get_settings()
     folder, key = s.yandex()
     if not folder:
@@ -80,7 +85,7 @@ def recognize(data: bytes, mime: str | None, client: httpx.Client | None = None)
     else:
         with ThreadPoolExecutor(max_workers=4) as pool:
             texts = list(pool.map(page, items))
-    return "\n\n".join(t.strip() for t in texts if t.strip())
+    return texts
 
 
 _HTTP: httpx.Client | None = None

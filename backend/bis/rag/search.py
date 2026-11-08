@@ -41,6 +41,7 @@ class SearchHit:
     status: str
     score: float = 0.0
     n: int = 0
+    document_id: str | None = None
 
     @property
     def citation(self) -> str:
@@ -103,6 +104,7 @@ def _hit(chunk: KnowledgeChunk, src: KnowledgeSource) -> SearchHit:
         content=chunk.content,
         page=chunk.page,
         status=src.status,
+        document_id=str(src.document_id) if src.document_id else None,
     )
 
 

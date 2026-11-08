@@ -33,6 +33,11 @@ function Citations({ items }: { items: Citation[] }) {
         <details key={c.chunk_id}>
           <summary>
             [{i + 1}] {c.citation}
+            {c.document_id && (
+              <button className="link small" onClick={(e) => { e.preventDefault(); void openFile(`/documents/${c.document_id}/file`, c.title, c.page); }}>
+                {c.page ? `открыть стр. ${c.page}` : "открыть"}
+              </button>
+            )}
           </summary>
           <div className="small" style={{ whiteSpace: "pre-wrap", marginTop: 6 }}>
             {c.section_path && <div className="muted">{c.section_path}</div>}

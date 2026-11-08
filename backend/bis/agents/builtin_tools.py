@@ -109,6 +109,12 @@ def find_documents(ctx: AgentContext, args: FindDocumentsArgs) -> dict:
     ranked: dict[uuid.UUID, dict] = {}
     if args.query and args.query.strip():
         words = [w for w in _WORD.findall(args.query.lower()) if w not in _STOP]
+        # 0. по карточке «Оси»: марки (B25, А500С), оси, конструкции (Фм1), номера ссылок, шифр РД
+        tokens = [t for t in re.findall(r"[A-Za-zА-Яа-яЁё]*\d[\w.\-/]*|[А-ЯA-Z]{2,4}\d?", args.query) if len(t) >= 2]
+        if tokens:
+            for d in ctx.db.scalars(allowed(select(Document)).where(
+                    *(Document.data["card_text"].astext.ilike(f"%{t}%") for t in tokens[:4])).limit(50)).all():
+                ranked[d.id] = {"doc": d, "score": 1.5, "excerpt": None, "n": None}
         # 1. по названию и номеру: чем больше слов запроса в названии, тем выше
         if words:
             stems = [w[:max(4, len(w) - 2)] for w in words]
@@ -155,10 +161,33 @@ def find_documents(ctx: AgentContext, args: FindDocumentsArgs) -> dict:
         d = x["doc"]
         if i < cards:
             share_document(ctx, d)
+        card = (d.data or {}).get("card") or {}
         out.append({"id": str(d.id), "title": d.title, "kind": d.kind, "number": d.number, "date": d.date,
-                    "status": d.status, "object": objects.get(d.object_id), "n": x["n"], "excerpt": x["excerpt"]})
+                    "status": d.status, "object": objects.get(d.object_id), "card": card.get("title"),
+                    "n": x["n"], "excerpt": x["excerpt"]})
     return {"documents": out, "found": len(out),
             "hint": None if out else "Ничего не нашлось — попробуйте другие слова или поиск по базе знаний"}
+
+
+class CardArgs(BaseModel):
+    document_id: str
+
+
+@tool("document_card", "Карточка документа из «Оси»: вид, №, дата, стороны, РД (шифр, листы, изм.), конструкции, "
+      "материалы и марки, оси, отметки, нормы, суть — и связи: на какие документы ссылается (найдены ли в архиве) "
+      "и какие документы ссылаются на него.", scopes=("documents:read",))
+def document_card(ctx: AgentContext, args: CardArgs) -> dict:
+    from bis.brain.links import neighbours
+
+    doc = ctx.db.get(Document, _uuid(args.document_id, "документа"))
+    if doc is None or doc.organization_id != ctx.org_id:
+        raise LookupError("Документ не найден")
+    share_document(ctx, doc)
+    card = (doc.data or {}).get("card")
+    hit = _first_chunk(ctx, doc)
+    n = ctx.add_citation(hit) if hit else None
+    return {"id": str(doc.id), "title": doc.title, "kind": doc.kind, "card": card or "карточка ещё строится", "n": n,
+            **neighbours(ctx.db, doc)}
 
 
 # --- реестры ------------------------------------------------------------------------------------
@@ -350,6 +379,7 @@ def create_letter_draft(ctx: AgentContext, args: LetterArgs) -> dict:
 BUILTIN_TOOLS = [
     search_knowledge,
     find_documents,
+    document_card,
     find_objects,
     find_counterparties,
     find_contracts,

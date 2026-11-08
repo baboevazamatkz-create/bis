@@ -174,7 +174,7 @@ def main(argv: list[str] | None = None) -> int:
         from bis.db import SessionLocal
         from bis.models import KnowledgeChunk, KnowledgeSource
         from bis.rag.embeddings import get_embedder
-        from bis.rag.ingest import embedding_text
+        from bis.rag.ingest import chunk_head, embedding_text
 
         emb = get_embedder()
         dim = getattr(emb, "dim", None) or get_settings().embedding_dim
@@ -189,7 +189,7 @@ def main(argv: list[str] | None = None) -> int:
             for i in range(0, len(ids), 64):
                 part = db.execute(select(KnowledgeChunk, KnowledgeSource).join(
                     KnowledgeSource, KnowledgeSource.id == KnowledgeChunk.source_id).where(KnowledgeChunk.id.in_(ids[i:i + 64]))).all()
-                vecs = emb.embed_documents([embedding_text(s.designation or s.title, c.section_path, c.heading, c.content)
+                vecs = emb.embed_documents([embedding_text(chunk_head(s), c.section_path, c.heading, c.content)
                                             for c, s in part])
                 for (c, _), v in zip(part, vecs, strict=True):
                     c.embedding = v

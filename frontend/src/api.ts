@@ -127,13 +127,14 @@ export async function download(path: string, fallbackName = "document") {
 }
 
 /** Открыть документ: PDF, картинки и текст — в новой вкладке, остальное (Word, Excel, DWG) — скачать. */
-export async function openFile(path: string, fallbackName = "document") {
+export async function openFile(path: string, fallbackName = "document", page?: number | null) {
   if (DEMO) return download(path, fallbackName);
   const tab = window.open("", "_blank"); // окно открываем сразу по нажатию — иначе браузер его заблокирует
   try {
     const blob = await fetchBlob(path);
     if (tab && /^(application\/pdf|image\/|text\/)/.test(blob.type)) {
-      tab.location.href = URL.createObjectURL(blob);
+      // PDF открывается сразу на странице, где найден ответ
+      tab.location.href = URL.createObjectURL(blob) + (page && blob.type === "application/pdf" ? `#page=${page}` : "");
       return;
     }
     tab?.close();
@@ -163,6 +164,8 @@ export interface Citation {
   content: string;
   status: string;
   section_path: string | null;
+  page?: number | null;
+  document_id?: string | null;
 }
 
 export interface DocRef {

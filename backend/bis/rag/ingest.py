@@ -25,6 +25,11 @@ KNOWLEDGE_KINDS = {
 }
 
 
+def chunk_head(source: KnowledgeSource) -> str:
+    """Шапка фрагмента для смыслового поиска: обозначение норматива или карточка документа (вид, №, дата, о чём)."""
+    return source.designation or ((source.meta or {}).get("context")) or source.title
+
+
 def embedding_text(designation: str | None, section_path: str | None, heading: str | None, content: str) -> str:
     head = " | ".join(x for x in (designation, section_path, heading) if x)
     return f"{head}\n{content}" if head else content
@@ -78,7 +83,7 @@ def index_pages(db: Session, embedder: Embedder, source: KnowledgeSource, pages:
         chunks = NormativeChunker().chunk(pages, source.designation)
     else:
         chunks = GenericChunker().chunk(pages)
-    texts = [embedding_text(source.designation or source.title, c.section_path, c.heading, c.content) for c in chunks]
+    texts = [embedding_text(chunk_head(source), c.section_path, c.heading, c.content) for c in chunks]
     from bis.models.knowledge import VECTOR
 
     # без pgvector векторы не нужны: поиск полнотекстовый и по номерам пунктов
@@ -121,4 +126,25 @@ def ingest_text(
     db.add(source)
     db.flush()
     index_pages(db, embedder, source, [Page(None, text)])
+    return source
+
+
+def ingest_pages(
+    db: Session,
+    embedder: Embedder,
+    *,
+    org_id: uuid.UUID | None,
+    pages: list[Page],
+    kind: str,
+    title: str,
+    document_id: uuid.UUID | None = None,
+    context: str | None = None,
+) -> KnowledgeSource:
+    """Индексация текста по страницам: ссылка в ответе ведёт на страницу. context — шапка карточки документа
+    («АОСР № 1 от 12.04.2026 · армирование плиты Фм1»): добавляется к каждому фрагменту для смыслового поиска."""
+    source = KnowledgeSource(organization_id=org_id, kind=kind, title=title, designation=None, document_id=document_id,
+                             meta={"context": context} if context else {})
+    db.add(source)
+    db.flush()
+    index_pages(db, embedder, source, pages)
     return source

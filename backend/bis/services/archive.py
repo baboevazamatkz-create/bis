@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 
 from bis.ai import understanding as und
 from bis.models import ConstructionObject, Contract, Document
-from bis.rag.parsers import UnsupportedFormat, parse_file
+from bis.rag.parsers import Page, UnsupportedFormat, parse_file
 from bis.services.documents import save_document
 from bis.services.storage import Storage
 
@@ -45,8 +45,8 @@ TITLES = {"aosr": "АОСР", "aook": "АООК", "scheme": "Исполните�
 SKIP = re.compile(r"(^~\$|^\.|thumbs\.db$|desktop\.ini$)", re.IGNORECASE)
 
 
-def _text(data: bytes, name: str, mime: str | None) -> tuple[str, str]:
-    """(текст, как получен): parsed | ocr | dxf | none."""
+def _pages(data: bytes, name: str, mime: str | None) -> tuple[list[Page], str]:
+    """Текст по страницам и как получен: parsed | ocr | dxf | none. Номер страницы — для ссылок «стр. N»."""
     ext = Path(name).suffix.lower()
     if ext == ".dxf":
         try:
@@ -58,34 +58,33 @@ def _text(data: bytes, name: str, mime: str | None) -> tuple[str, str]:
                                          data.decode("utf-8", errors="ignore")))
             texts = [e.dxf.text for e in doc.modelspace().query("TEXT")] + \
                     [e.plain_text() for e in doc.modelspace().query("MTEXT")]
-            return "\n".join(t for t in texts if t), "dxf"
+            return [Page(None, "\n".join(t for t in texts if t))], "dxf"
         except Exception:  # noqa: BLE001 — чертёж без читаемых надписей
-            return "", "none"
+            return [], "none"
     if ext in (".dwg",):
-        return "", "none"
+        return [], "none"
     if (mime or "").startswith("image/") or ext in (".jpg", ".jpeg", ".png", ".tif", ".tiff"):
-        return _ocr(data, mime or mimetypes.guess_type(name)[0]), "ocr"
+        return [Page(1, t) for t in _ocr_pages(data, mime or mimetypes.guess_type(name)[0])[:1]], "ocr"
     try:
         parsed = parse_file(data, name, mime)
     except UnsupportedFormat:
-        return "", "none"
-    text = parsed.text
-    if parsed.meta.get("needs_ocr") or not text.strip():
-        scanned = _ocr(data, mime or "application/pdf")
-        if scanned:
-            return scanned, "ocr"
-    return text, "parsed"
+        return [], "none"
+    if parsed.meta.get("needs_ocr") or not parsed.text.strip():
+        scanned = _ocr_pages(data, mime or "application/pdf")
+        if any(t.strip() for t in scanned):
+            return [Page(i + 1, t) for i, t in enumerate(scanned)], "ocr"
+    return parsed.pages, "parsed"
 
 
-def _ocr(data: bytes, mime: str | None) -> str:
+def _ocr_pages(data: bytes, mime: str | None) -> list[str]:
     from bis import ocr
 
     if not ocr.available():
-        return ""
+        return []
     try:
-        return ocr.recognize(data, mime)
+        return ocr.recognize_pages(data, mime)
     except ocr.OCRError:
-        return ""
+        return []
 
 
 def detect_type(gateway, text: str, name: str) -> tuple[str, str]:
@@ -223,7 +222,8 @@ def import_file(db: Session, storage: Storage, gateway, embedder, org_id: uuid.U
     if dup:
         return {"file": name, "status": "duplicate", "document_id": str(dup)}
     mime = mime or mimetypes.guess_type(name)[0]
-    text, how = _text(data, name, mime)
+    pages, how = _pages(data, name, mime)
+    text = "\n".join(p.text for p in pages)
     dtype, by = detect_type(gateway, text, name)
     object_id = object_id or _object_for(db, org_id, f"{folder} {name} {text[:1500]}")
     kind = KIND.get(dtype, "other")
@@ -242,16 +242,29 @@ def import_file(db: Session, storage: Storage, gateway, embedder, org_id: uuid.U
     result: dict[str, Any] = {"file": name, "status": "ok", "type": dtype, "kind": kind, "document_id": str(doc.id),
                               "date": doc.date.isoformat() if doc.date else None,
                               "object_id": str(object_id) if object_id else None, "text": how, "chars": len(text)}
+    card = None
     if text.strip():
-        from bis.rag.ingest import ingest_text
+        from bis.brain.card import build_card
+
+        card = build_card(gateway, text, dtype, name)  # «Ось»: карточка — шапка для поиска, номер, дата, ссылки
+        result["card"] = card.title
+    if text.strip():
+        from bis.rag.ingest import ingest_pages
 
         try:
             with db.begin_nested():
-                ingest_text(db, embedder, org_id=org_id, text=text, title=doc.title,
-                            kind=KNOWLEDGE.get(dtype, "org_document"), document_id=doc.id)
+                ingest_pages(db, embedder, org_id=org_id, pages=[p for p in pages if p.text.strip()], title=doc.title,
+                             kind=KNOWLEDGE.get(dtype, "org_document"), document_id=doc.id,
+                             context=card.title if card else None)
             result["knowledge"] = True
         except Exception as e:  # noqa: BLE001 — документ в реестре есть, поиск по нему — нет
             result["knowledge_error"] = str(e)[:200]
+    if card is not None:
+        from bis.brain import links
+        from bis.brain.build import apply_card
+
+        apply_card(db, embedder, doc, card, reembed=False)
+        result["links"] = len(links.rebuild(db, doc, card))
     if dtype == "contract" and analyze_contracts and text.strip():
         from bis.ai.conveyor import contract_role
         from bis.models import Organization
