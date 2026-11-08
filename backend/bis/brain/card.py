@@ -12,7 +12,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-CARD_VERSION = 1
+CARD_VERSION = 2  # при изменении правил — карточки архива пересобираются фоном
 
 KIND_TITLES = {
     "aosr": "АОСР", "aook": "АООК", "scheme": "Исполнительная схема", "ks2": "КС-2", "ks3": "КС-3", "order": "Приказ",
@@ -228,6 +228,16 @@ INSTRUCTIONS = ("Ты разбираешь строительный докуме
                 "Материалы — с марками/классами и документами о качестве, если указаны.")
 
 
+def _merge_elements(model: list[str], rules: list[str]) -> list[str]:
+    """Конструкции от модели (в именительном падеже) + из правил только те марки, которых модель не назвала."""
+    if not model:
+        return rules
+    marks = {m.lower() for e in model for m in re.findall(r"[А-ЯA-Z][а-яa-z]?[-.]?\d+(?:[-.]\d+)?", e)}
+    extra = [e for e in rules if (found := re.findall(r"[А-ЯA-Z][а-яa-z]?[-.]?\d+(?:[-.]\d+)?", e))
+             and not {f.lower() for f in found} & marks]
+    return _uniq([*model, *extra], 8)
+
+
 def build_card(gateway, text: str, kind: str, name: str = "") -> Card:
     """Карточка: правила + модель (если доступна). Ошибка модели не мешает — остаётся карточка по правилам."""
     card = rules_card(text, kind, name)
@@ -239,7 +249,7 @@ def build_card(gateway, text: str, kind: str, name: str = "") -> Card:
             m = res.data
             if m is not None and res.provider not in (None, "offline"):
                 card.summary = (m.summary or "").strip()[:300] or None
-                card.elements = _uniq([*m.elements, *card.elements], 8)
+                card.elements = _merge_elements(m.elements, card.elements)
                 card.works = _uniq(m.works, 8)
                 card.materials = m.materials[:12]
                 card.sender = card.sender or m.sender
