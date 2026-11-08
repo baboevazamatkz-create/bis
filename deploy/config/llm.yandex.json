@@ -42,13 +42,13 @@
       "name": "yandex-vision",
       "kind": "openai_compat",
       "base_url": "https://llm.api.cloud.yandex.net/v1",
-      "model": "gpt://${YANDEX_FOLDER_ID}/gemma-3-27b-it/latest",
+      "model": "gpt://${YANDEX_FOLDER_ID}/qwen3.6-35b-a3b/latest",
       "api_key_env": "YANDEX_API_KEY",
       "auth_scheme": "Api-Key",
       "max_sensitivity": "internal",
       "mask_pii": false,
       "temperature": 0.1,
-      "timeout": 120,
+      "timeout": 180,
       "capabilities": [
         "text",
         "vision"
@@ -90,8 +90,8 @@
       "offline"
     ],
     "vision": [
-      "local-vision",
       "yandex-vision",
+      "local-vision",
       "offline"
     ]
   }
