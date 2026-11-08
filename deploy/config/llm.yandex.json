@@ -25,6 +25,20 @@
       "timeout": 120
     },
     {
+      "name": "local-vision",
+      "kind": "openai_compat",
+      "base_url": "${BIS_VISION_URL:-http://localhost:11434/v1}",
+      "model": "${BIS_VISION_MODEL:-llama3.2-vision}",
+      "max_sensitivity": "confidential",
+      "mask_pii": false,
+      "temperature": 0.1,
+      "timeout": 600,
+      "capabilities": [
+        "text",
+        "vision"
+      ]
+    },
+    {
       "name": "yandex-vision",
       "kind": "openai_compat",
       "base_url": "https://llm.api.cloud.yandex.net/v1",
@@ -76,6 +90,7 @@
       "offline"
     ],
     "vision": [
+      "local-vision",
       "yandex-vision",
       "offline"
     ]

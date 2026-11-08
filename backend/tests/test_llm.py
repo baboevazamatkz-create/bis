@@ -196,3 +196,35 @@ def test_yandex_embedder_and_semantic_search_without_pgvector(monkeypatch):
     emb = YandexEmbedder(Settings(), client=httpx.Client(transport=httpx.MockTransport(handler)))
     assert len(emb.embed_documents(["a", "b"])) == 2 and len(emb.embed_query("q")) == 256
     assert seen.count("emb://b1gx/text-search-doc/latest") == 2 and seen[-1] == "emb://b1gx/text-search-query/latest"
+
+
+def test_env_defaults_in_model_config(monkeypatch):
+    """${VAR:-по умолчанию}: локальная модель зрения работает без настроек, модель меняется переменной."""
+    from bis.config import ProviderConfig
+
+    monkeypatch.delenv("BIS_VISION_MODEL", raising=False)
+    assert ProviderConfig._expand_env("${BIS_VISION_MODEL:-llama3.2-vision}") == "llama3.2-vision"
+    monkeypatch.setenv("BIS_VISION_MODEL", "qwen2.5vl:7b")
+    assert ProviderConfig._expand_env("${BIS_VISION_MODEL:-llama3.2-vision}") == "qwen2.5vl:7b"
+
+
+def test_vision_falls_back_from_local_to_cloud():
+    """Локальная модель не запущена — зрение берёт следующую в очереди."""
+    import json
+
+    from bis.llm.gateway import LLMGateway, ProviderEntry
+    from bis.llm.providers.offline import ScriptedProvider
+    from bis.llm.types import LLMError, Message
+
+    class Down:
+        name, model = "local-vision", "llama3.2-vision"
+
+        def complete(self, *a, **k):
+            raise LLMError("local-vision: сеть: [WinError 10061] Connection refused")
+
+    cloud = ScriptedProvider([json.dumps({"ok": True})])
+    gw = LLMGateway(entries={"local-vision": ProviderEntry(Down(), capabilities=("text", "vision")),
+                             "cloud": ProviderEntry(cloud, capabilities=("text", "vision"))},
+                    routes={"default": ["cloud"], "vision": ["local-vision", "cloud"]})
+    r = gw.complete([Message(role="user", content="?", images=[{"mime": "image/jpeg", "data": "AA=="}])], task="vision")
+    assert r.provider != "local-vision" and cloud.calls  # ответила следующая в очереди

@@ -18,6 +18,8 @@ HINTS = [
     ("does not match with service account folder", "Каталог в адресе модели не совпадает с каталогом сервисного аккаунта ключа"),
     ('"Forbidden"', "Модель закрыта для ключа: откройте её в AI Studio (галерея моделей) и проверьте платёжный аккаунт"),
     ("Failed to get model", "Такой модели в AI Studio нет — проверьте название"),
+    ("local-vision: сеть", "Локальная модель зрения не запущена: установите Ollama и выполните ollama pull llama3.2-vision "
+                           "(deploy/install-vision-windows.ps1)"),
     ("сеть", "Нет связи с сервисом: проверьте сеть и адрес base_url"),
 ]
 

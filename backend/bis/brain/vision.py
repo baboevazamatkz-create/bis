@@ -59,7 +59,8 @@ class VisionUnavailable(Exception):
 
 
 _DOWN: dict[str, object] = {"until": None, "reason": None}
-_AUTH = ("403", "401", "Forbidden", "PermissionDenied", "Permission denied", "Не подключена модель зрения")
+_AUTH = ("403", "401", "Forbidden", "PermissionDenied", "Permission denied", "Не подключена модель зрения",
+         "сеть:", "Connection refused", "ConnectError")
 
 
 def available(gateway) -> bool:

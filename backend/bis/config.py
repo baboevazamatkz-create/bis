@@ -48,8 +48,12 @@ class ProviderConfig(BaseModel):
     def _expand_env(cls, v: Any) -> Any:
         """${YANDEX_FOLDER_ID} и подобные — из переменных окружения сервера (идентификаторы, не секреты)."""
         import os
+        import re
 
-        return os.path.expandvars(v) if isinstance(v, str) else v
+        if not isinstance(v, str):
+            return v
+        v = re.sub(r"\$\{(\w+):-([^}]*)\}", lambda m: os.environ.get(m.group(1)) or m.group(2), v)  # ${VAR:-по умолчанию}
+        return os.path.expandvars(v)
 
     def resolved_api_key(self) -> str | None:
         import os
