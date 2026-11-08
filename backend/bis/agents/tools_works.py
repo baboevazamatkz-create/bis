@@ -11,8 +11,8 @@ from sqlalchemy import func, or_, select
 
 from bis.agents.base import AgentContext, tool
 from bis.agents.builtin_tools import _doc_ref, _uuid
+from bis.agents.resolve import OBJ_HINT, contract_ref, contract_row, obj_row, object_ref
 from bis.models import (
-    ConstructionObject,
     Contract,
     Document,
     EstimateItem,
@@ -51,8 +51,8 @@ class FindItemsArgs(BaseModel):
 @tool("find_estimate_items", "Найти позиции сметы (ведомости объёмов) по описанию работы.", scopes=("registry:read",))
 def find_estimate_items(ctx: AgentContext, args: FindItemsArgs) -> dict:
     found = wsvc.find_items(ctx.db, ctx.org_id, args.query,
-                            object_id=_uuid(args.object_id, "объекта") if args.object_id else None,
-                            contract_id=_uuid(args.contract_id, "договора") if args.contract_id else None, limit=args.limit)
+                            object_id=object_ref(ctx, args.object_id) if args.object_id else None,
+                            contract_id=contract_ref(ctx, args.contract_id) if args.contract_id else None, limit=args.limit)
     return {"items": [_item_out(it, s) for it, s in found]}
 
 
@@ -129,7 +129,7 @@ def list_volumes(ctx: AgentContext, args: ListVolumesArgs) -> dict:
     stmt = select(WorkVolume, EstimateItem).join(EstimateItem, EstimateItem.id == WorkVolume.estimate_item_id).where(
         WorkVolume.organization_id == ctx.org_id)
     if args.object_id:
-        stmt = stmt.where(WorkVolume.object_id == _uuid(args.object_id, "объекта"))
+        stmt = stmt.where(WorkVolume.object_id == object_ref(ctx, args.object_id))
     if args.estimate_item_id:
         stmt = stmt.where(WorkVolume.estimate_item_id == _uuid(args.estimate_item_id, "позиции"))
     if args.status:
@@ -145,19 +145,19 @@ def list_volumes(ctx: AgentContext, args: ListVolumesArgs) -> dict:
 
 
 class ObjectDateArgs(BaseModel):
-    object_id: str
+    object_id: str | None = Field(None, description=OBJ_HINT)
     on_date: dt.date | None = None
 
 
 @tool("plan_fact", "План-факт по графику производства работ: отставания, прогноз окончания.", scopes=("registry:read",))
 def plan_fact_tool(ctx: AgentContext, args: ObjectDateArgs) -> dict:
-    obj = _owned(ctx, ConstructionObject, args.object_id, "объект")
+    obj = obj_row(ctx, args.object_id)
     return wsvc.plan_fact(ctx.db, ctx.org_id, obj.id, args.on_date)
 
 
 @tool("material_balance", "Остатки материалов на объекте: приход, расход, остаток, расхождения.", scopes=("registry:read",))
 def material_balance_tool(ctx: AgentContext, args: ObjectDateArgs) -> dict:
-    obj = _owned(ctx, ConstructionObject, args.object_id, "объект")
+    obj = obj_row(ctx, args.object_id)
     return {"materials": wsvc.material_balance(ctx.db, ctx.org_id, obj.id, args.on_date)}
 
 
@@ -177,7 +177,7 @@ def find_materials(ctx: AgentContext, args: FindMaterialsArgs) -> dict:
 
 
 class UsageArgs(BaseModel):
-    object_id: str
+    object_id: str | None = Field(None, description=OBJ_HINT)
     material_id: str
     quantity: float = Field(gt=0)
     date: dt.date | None = None
@@ -187,7 +187,7 @@ class UsageArgs(BaseModel):
 
 @tool("record_material_usage", "Записать фактический расход (отпуск в работу) материала.", scopes=("documents:write",))
 def record_material_usage(ctx: AgentContext, args: UsageArgs) -> dict:
-    obj = _owned(ctx, ConstructionObject, args.object_id, "объект")
+    obj = obj_row(ctx, args.object_id)
     mat = _owned(ctx, Material, args.material_id, "материал")
     u = MaterialUsage(organization_id=ctx.org_id, object_id=obj.id, material_id=mat.id, quantity=Decimal(str(args.quantity)),
                       date=args.date or dt.date.today(), note=args.note,
@@ -199,7 +199,7 @@ def record_material_usage(ctx: AgentContext, args: UsageArgs) -> dict:
 
 
 class ReceiptArgs(BaseModel):
-    object_id: str
+    object_id: str | None = Field(None, description=OBJ_HINT)
     material_id: str
     quantity: float = Field(gt=0)
     date: dt.date | None = None
@@ -210,7 +210,7 @@ class ReceiptArgs(BaseModel):
 
 @tool("record_material_receipt", "Записать поступление материала на объект (по УПД/накладной).", scopes=("documents:write",))
 def record_material_receipt(ctx: AgentContext, args: ReceiptArgs) -> dict:
-    obj = _owned(ctx, ConstructionObject, args.object_id, "объект")
+    obj = obj_row(ctx, args.object_id)
     mat = _owned(ctx, Material, args.material_id, "материал")
     r = MaterialReceipt(organization_id=ctx.org_id, object_id=obj.id, material_id=mat.id,
                         quantity=Decimal(str(args.quantity)), date=args.date or dt.date.today(),
@@ -223,7 +223,7 @@ def record_material_receipt(ctx: AgentContext, args: ReceiptArgs) -> dict:
 
 
 class PeriodArgs(BaseModel):
-    object_id: str
+    object_id: str | None = Field(None, description=OBJ_HINT)
     period_start: dt.date
     period_end: dt.date
     create_document: bool = Field(False, description="Сформировать файл М-29 в реестре документов")
@@ -232,7 +232,7 @@ class PeriodArgs(BaseModel):
 @tool("m29_report", "Расход материалов по нормам и факт за период (М-29): перерасход, экономия, нехватка данных.",
       scopes=("registry:read",))
 def m29_report(ctx: AgentContext, args: PeriodArgs) -> dict:
-    obj = _owned(ctx, ConstructionObject, args.object_id, "объект")
+    obj = obj_row(ctx, args.object_id)
     if args.create_document:
         doc, data = csvc.create_m29(ctx.db, ctx.storage, ctx.org_id, obj.id, args.period_start, args.period_end,
                                     actor=f"agent:{ctx.agent_name}", signer=ctx.user.full_name)
@@ -243,7 +243,7 @@ def m29_report(ctx: AgentContext, args: PeriodArgs) -> dict:
 
 
 class WriteOffArgs(BaseModel):
-    object_id: str
+    object_id: str | None = Field(None, description=OBJ_HINT)
     period_start: dt.date
     period_end: dt.date
     commission: list[str] = Field(default_factory=list, description="Члены комиссии: должность, ФИО")
@@ -252,7 +252,7 @@ class WriteOffArgs(BaseModel):
 @tool("create_writeoff_act", "Сформировать акт списания материалов за период (в пределах норм; перерасход отдельно).",
       scopes=("documents:write",))
 def create_writeoff_act(ctx: AgentContext, args: WriteOffArgs) -> dict:
-    obj = _owned(ctx, ConstructionObject, args.object_id, "объект")
+    obj = obj_row(ctx, args.object_id)
     doc, act = csvc.create_writeoff(ctx.db, ctx.storage, ctx.org_id, obj.id, args.period_start, args.period_end,
                                     actor=f"agent:{ctx.agent_name}", commission=args.commission)
     ref = _doc_ref(doc)
@@ -271,7 +271,7 @@ def _closing_target(ctx: AgentContext, args: ClosingArgs) -> tuple[Contract, dt.
     """Договор и период: что не задано — подставляем сами и сообщаем об этом."""
     assumed = []
     if args.contract_id:
-        c = _owned(ctx, Contract, args.contract_id, "договор")
+        c = contract_row(ctx, args.contract_id)
     else:
         open_by_contract = dict(ctx.db.execute(
             select(EstimateItem.contract_id, func.count(WorkVolume.id))
@@ -362,7 +362,7 @@ def create_executive_scheme(ctx: AgentContext, args: SchemeArgs) -> dict:
     from bis.models import Organization
     from bis.services.schemes import create_scheme
 
-    obj = _owned(ctx, ConstructionObject, args.object_id, "объект") if args.object_id else None
+    obj = obj_row(ctx, args.object_id) if args.object_id else None
     org = ctx.db.get(Organization, ctx.org_id)
     data = SchemeData(title=args.title, object_name=(obj.name if obj else ""), organization=org.name, code=args.code,
                       surveyor=args.surveyor, checker=args.checker or ctx.user.full_name,

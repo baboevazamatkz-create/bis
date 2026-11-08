@@ -17,13 +17,15 @@ def test_supervisor_keywords_and_tie_break():
     assert sup.route("Привет")[0] == "assistant"
 
 
-def test_supervisor_llm_route():
+def test_supervisor_default_orchestrator():
+    """Без явной задачи специалиста отвечает оркестратор — у него все данные, модель для маршрута не нужна."""
     reg = discover()
-    llm = ScriptedProvider(['{"agent": "secretary"}'])
+    llm = ScriptedProvider([])
     gw = LLMGateway(entries={"x": ProviderEntry(llm, "confidential")})
-    name, how = reg.supervisor().route("Нужно ответить заказчику", gw)
-    assert (name, how) == ("secretary", "моделью")
-    assert llm.calls[0]["json_mode"] is True
+    name, how = reg.supervisor().route("Что у нас по объекту?", gw)
+    assert (name, how) == ("assistant", "оркестратор")
+    assert not llm.calls
+    assert "*read" in reg.agents["assistant"].tools
 
 
 def test_inline_refs_removes_defs():

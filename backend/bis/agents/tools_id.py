@@ -8,18 +8,16 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from bis.agents.base import AgentContext, tool
-from bis.agents.builtin_tools import AOSRArgs, _doc_ref, _uuid
+from bis.agents.builtin_tools import AOSRArgs, _doc_ref
+from bis.agents.resolve import OBJ_HINT, obj_row
 from bis.documents.aook import AOOKData
 from bis.models import ConstructionObject
 from bis.services import documents as docsvc
 from bis.services import exec_docs as idsvc
 
 
-def _object(ctx: AgentContext, object_id: str) -> ConstructionObject:
-    obj = ctx.db.get(ConstructionObject, _uuid(object_id, "объекта"))
-    if obj is None or obj.organization_id != ctx.org_id:
-        raise LookupError("Объект не найден")
-    return obj
+def _object(ctx: AgentContext, object_id: str | None) -> ConstructionObject:
+    return obj_row(ctx, object_id)
 
 
 class AOOKArgs(AOSRArgs):
@@ -60,7 +58,7 @@ def create_aook_draft(ctx: AgentContext, args: AOOKArgs) -> dict:
 
 
 class ObjectArgs(BaseModel):
-    object_id: str
+    object_id: str | None = Field(None, description=OBJ_HINT)
 
 
 @tool("id_registry", "Реестр исполнительной документации объекта и проверка: все ли скрытые работы закрыты АОСР.",
@@ -71,7 +69,7 @@ def id_registry_tool(ctx: AgentContext, args: ObjectArgs) -> dict:
 
 
 class JournalArgs(BaseModel):
-    object_id: str
+    object_id: str | None = Field(None, description=OBJ_HINT)
     period_start: dt.date
     period_end: dt.date
     create_document: bool = Field(False, description="Выгрузить журнал в XLSX в реестр документов")

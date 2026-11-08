@@ -20,9 +20,13 @@ log = logging.getLogger(__name__)
 KIND_TO_TYPE = {"incoming_letter": "letter", "supply_doc": "upd", "photo": "site_photo"}
 
 
-def document_text(db: Session, doc: Document) -> str:
-    parts = db.scalars(select(KnowledgeChunk.content).join(KnowledgeSource, KnowledgeSource.id == KnowledgeChunk.source_id)
-                       .where(KnowledgeSource.document_id == doc.id).order_by(KnowledgeChunk.ord).limit(80)).all()
+def document_text(db: Session, doc: Document, tail: bool = False) -> str:
+    """Текст документа из базы знаний: начало (80 фрагментов), а с tail — и конец (реквизиты, подписи)."""
+    q = (select(KnowledgeChunk.content).join(KnowledgeSource, KnowledgeSource.id == KnowledgeChunk.source_id)
+         .where(KnowledgeSource.document_id == doc.id))
+    parts = db.scalars(q.order_by(KnowledgeChunk.ord).limit(80)).all()
+    if tail and len(parts) == 80:
+        parts += list(reversed(db.scalars(q.order_by(KnowledgeChunk.ord.desc()).limit(20)).all()))
     return "\n".join(parts)
 
 
@@ -108,7 +112,9 @@ def reread_scan(db: Session, gateway, embedder, storage, doc: Document) -> int:
     need = total > 20 if read == 0 else total > read
     if need:
         texts = ocr.recognize_pages(data, "application/pdf")
-        pages = [Page(i + 1, t) for i, t in enumerate(texts) if t.strip()]
+        from bis.rag.columns import split_columns
+
+        pages = [Page(i + 1, split_columns(t)) for i, t in enumerate(texts) if t.strip()]
         if pages:
             kind = next((s.kind for s in db.scalars(select(KnowledgeSource).where(KnowledgeSource.document_id == doc.id))),
                         "org_document")
@@ -266,4 +272,7 @@ def brain_job(db: Session, org: Organization, today: dt.date) -> dict[str, Any]:
         out = build_missing(db, gateway, embedder, org.id, limit=40)
     if vision_missing(db, org.id, 1):
         out |= see_missing(db, gateway, embedder, get_storage(), org.id, limit=5)
+    from bis.brain.parties import link_all
+
+    out["contract_parties"] = link_all(db, org.id)
     return out

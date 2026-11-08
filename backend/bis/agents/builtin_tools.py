@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import or_, select
 
 from bis.agents.base import AgentContext, tool
+from bis.agents.resolve import OBJ_HINT, contract_ref, object_ref
 from bis.documents import AOSRData, LetterData
 from bis.documents.aosr import REPRESENTATIVE_ROLES
 from bis.models import ConstructionObject, Contract, Counterparty, Document, KnowledgeSource, Organization
@@ -110,7 +111,7 @@ def find_documents(ctx: AgentContext, args: FindDocumentsArgs) -> dict:
             kinds = ["letter", "incoming_letter"] if letters else [args.kind]
             stmt = stmt.where(Document.kind.in_(kinds))
         if args.object_id:
-            stmt = stmt.where(or_(Document.object_id == _uuid(args.object_id, "объекта"), Document.object_id.is_(None)))
+            stmt = stmt.where(or_(Document.object_id == object_ref(ctx, args.object_id), Document.object_id.is_(None)))
         if args.date_from:
             stmt = stmt.where(Document.date >= args.date_from)
         if args.date_to:
@@ -230,7 +231,7 @@ class CorrespondenceArgs(BaseModel):
 def correspondence_status_tool(ctx: AgentContext, args: CorrespondenceArgs) -> dict:
     from bis.brain.chains import correspondence
 
-    res = correspondence(ctx.db, ctx.org_id, _uuid(args.object_id, "объекта") if args.object_id else None)
+    res = correspondence(ctx.db, ctx.org_id, object_ref(ctx, args.object_id) if args.object_id else None)
     return {"today": res["today"], "open": res["open"][:25], "requests": res["requests"][:20],
             "promises": res["promises"][:20]}
 
@@ -286,7 +287,7 @@ def find_contracts(ctx: AgentContext, args: FindContractArgs) -> dict:
         q = f"%{args.query}%"
         stmt = stmt.where(or_(Contract.number.ilike(q), Contract.subject.ilike(q)))
     if args.object_id:
-        stmt = stmt.where(Contract.object_id == _uuid(args.object_id, "объекта"))
+        stmt = stmt.where(Contract.object_id == object_ref(ctx, args.object_id))
     out = []
     for c in ctx.db.scalars(stmt.limit(args.limit)).all():
         cp = ctx.db.get(Counterparty, c.counterparty_id) if c.counterparty_id else None
@@ -297,13 +298,13 @@ def find_contracts(ctx: AgentContext, args: FindContractArgs) -> dict:
 
 
 class ObjectArgs(BaseModel):
-    object_id: str
+    object_id: str | None = Field(None, description=OBJ_HINT)
 
 
 @tool("get_object_participants", "Участники объекта для исполнительной документации: застройщик, проектировщик, "
       "генподрядчик и представители по приказам (с номерами НРС).", scopes=("registry:read",))
 def get_object_participants(ctx: AgentContext, args: ObjectArgs) -> dict:
-    p = docsvc.object_participants(ctx.db, ctx.org_id, _uuid(args.object_id, "объекта"))
+    p = docsvc.object_participants(ctx.db, ctx.org_id, object_ref(ctx, args.object_id))
     reps = {role: rep.format(REPRESENTATIVE_ROLES[role]["nrs"]) for role, rep in p["representatives"].items()}
     missing = [m["title"] for r, m in REPRESENTATIVE_ROLES.items() if m["required"] and r not in p["representatives"]]
     return {
@@ -330,7 +331,7 @@ def list_documents(ctx: AgentContext, args: ListDocumentsArgs) -> dict:
     if args.kind:
         stmt = stmt.where(Document.kind == args.kind)
     if args.object_id:
-        stmt = stmt.where(Document.object_id == _uuid(args.object_id, "объекта"))
+        stmt = stmt.where(Document.object_id == object_ref(ctx, args.object_id))
     if args.status:
         stmt = stmt.where(Document.status == args.status)
     rows = ctx.db.scalars(stmt.order_by(Document.date.desc().nulls_last(), Document.created_at.desc()).limit(args.limit)).all()
@@ -352,7 +353,7 @@ def get_organization_info(ctx: AgentContext, args: EmptyArgs) -> dict:
 
 
 class AOSRArgs(BaseModel):
-    object_id: str
+    object_id: str | None = Field(None, description=OBJ_HINT)
     works: str = Field(description="Наименование скрытых работ с указанием осей/отметок/захватки")
     project_docs: str = Field(description="Шифр и листы рабочей документации, наименование, разработчик")
     materials: list[str] = Field(default_factory=list, description="Материалы со ссылками на сертификаты/паспорта")
@@ -369,7 +370,7 @@ class AOSRArgs(BaseModel):
 @tool("create_aosr_draft", "Создать черновик АОСР по объекту. Участники и представители подставляются из реестра "
       "по приказам. Возвращает ссылку на документ и замечания проверки.", scopes=("documents:write",))
 def create_aosr_draft(ctx: AgentContext, args: AOSRArgs) -> dict:
-    object_id = _uuid(args.object_id, "объекта")
+    object_id = object_ref(ctx, args.object_id)
     p = docsvc.object_participants(ctx.db, ctx.org_id, object_id, args.act_date)
     if p["developer"] is None:
         raise ValueError("У объекта не указан застройщик/технический заказчик — заполните карточку объекта")
@@ -413,8 +414,8 @@ def create_letter_draft(ctx: AgentContext, args: LetterArgs) -> dict:
     )
     doc = docsvc.create_letter(
         ctx.db, ctx.storage, org_id=ctx.org_id, data=data, created_by=f"agent:{ctx.agent_name}",
-        object_id=_uuid(args.object_id, "объекта") if args.object_id else None,
-        contract_id=_uuid(args.contract_id, "договора") if args.contract_id else None,
+        object_id=object_ref(ctx, args.object_id) if args.object_id else None,
+        contract_id=contract_ref(ctx, args.contract_id) if args.contract_id else None,
     )
     ref = _doc_ref(doc)
     ctx.documents.append(ref)

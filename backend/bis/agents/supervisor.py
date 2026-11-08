@@ -2,8 +2,7 @@
 
 1. Явный выбор пользователя.
 2. Быстрые правила (ключевые слова агентов) — без вызова модели.
-3. При неоднозначности — классификация моделью (задача route, дешёвая/локальная модель).
-4. По умолчанию — «Помощник».
+3. Иначе — оркестратор («Помощник»): у него все инструменты чтения и делегирование специалистам.
 """
 
 from __future__ import annotations
@@ -46,8 +45,8 @@ class Supervisor:
             candidates = top + ([self.default] if len(top) > 1 and self.default not in top else [])
             chosen = self._llm_route(text, gateway, candidates)
             return (chosen, "моделью") if chosen else (top[0], "по ключевым словам (неоднозначно)")
-        chosen = self._llm_route(text, gateway, list(self.agents))
-        return (chosen, "моделью") if chosen else (self.default, "по умолчанию")
+        # явной задачи профильного специалиста нет — отвечает оркестратор: у него все данные и все специалисты
+        return self.default, "оркестратор"
 
     def _llm_route(self, text: str, gateway: LLMGateway | None, candidates: list[str]) -> str | None:
         if len(candidates) == 1:

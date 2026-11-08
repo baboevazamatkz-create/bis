@@ -195,6 +195,9 @@ def rules_card(text: str, kind: str, name: str = "") -> Card:
     c.refs = [r for r in refs if (r.kind, r.number.lower()) not in seen and not seen.add((r.kind, r.number.lower()))
               and not (r.kind == own and c.number and r.number.lower() == c.number.lower())][:30]  # не ссылка на себя
     orgs = _uniq(ORG.findall(head), 6)
+    if kind == "contract":  # стороны договора — ещё и в реквизитах в конце
+        tail = text[-4000:]
+        orgs = _uniq([*orgs, *ORG.findall(tail)], 6)
     c.parties = orgs
     if kind in ("letter", "incoming_letter") and orgs:
         c.sender = orgs[0]
@@ -225,7 +228,8 @@ class ModelCard(BaseModel):
 INSTRUCTIONS = ("Ты разбираешь строительный документ для «карточки». Верни только то, что прямо написано в тексте. "
                 "summary — суть одной фразой (например: «Освидетельствование армирования фундаментной плиты Фм1 в осях "
                 "1-6/А-Г»; для письма — что просят и к какому сроку). Конструкции — с марками, как в тексте. "
-                "Материалы — с марками/классами и документами о качестве, если указаны.")
+                "Материалы — с марками/классами и документами о качестве, если указаны. Для договора summary — "
+                "стороны, предмет, цена и срок, если они есть в тексте.")
 
 
 def _merge_elements(model: list[str], rules: list[str]) -> list[str]:
@@ -236,6 +240,20 @@ def _merge_elements(model: list[str], rules: list[str]) -> list[str]:
     extra = [e for e in rules if (found := re.findall(r"[А-ЯA-Z][а-яa-z]?[-.]?\d+(?:[-.]\d+)?", e))
              and not {f.lower() for f in found} & marks]
     return _uniq([*model, *extra], 8)
+
+
+def _fallback_summary(text: str, kind: str, card: Card) -> str | None:
+    """Суть без модели: для договора — стороны и предмет, иначе первая содержательная строка (не город и не дата)."""
+    if kind == "contract":
+        m = re.search(r"(?:предмет\w*\s+договора[^\n]*\n+)?([^\n]{0,40}обязу\w+[^\n]{20,300})", text, re.IGNORECASE)
+        about = re.sub(r"^\s*[\d.]+\s*", "", m.group(1)).strip() if m else ""
+        who = " и ".join(card.parties[:2])
+        out = "; ".join(x for x in (who, about) if x)
+        if out:
+            return out[:300]
+    first = next((ln.strip() for ln in text.splitlines() if len(ln.strip()) > 25 and "№" not in ln
+                  and not re.match(r"\s*г\.\s", ln)), "")
+    return first[:200] or None
 
 
 def build_card(gateway, text: str, kind: str, name: str = "") -> Card:
@@ -259,7 +277,6 @@ def build_card(gateway, text: str, kind: str, name: str = "") -> Card:
         except Exception:  # noqa: BLE001 — модель недоступна: карточка по правилам
             pass
     if not card.summary:
-        first = next((ln.strip() for ln in text.splitlines() if len(ln.strip()) > 25 and "№" not in ln), "")
-        card.summary = first[:200] or None
+        card.summary = _fallback_summary(text, kind, card)
     card.title = card.label()
     return card

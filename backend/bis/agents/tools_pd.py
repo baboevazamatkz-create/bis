@@ -6,7 +6,8 @@ from pydantic import BaseModel, Field
 
 from bis.agents.base import AgentContext, tool
 from bis.agents.builtin_tools import _doc_ref, _uuid
-from bis.models import ConstructionObject, Contract, Document
+from bis.agents.resolve import CONTRACT_HINT, OBJ_HINT, contract_row, obj_row
+from bis.models import Document
 from bis.rag.parsers import parse_file
 from bis.services import project_docs as pd
 from bis.services.documents import save_document
@@ -20,13 +21,13 @@ def _owned(ctx: AgentContext, model, value: str, what: str):
 
 
 class ObjectArgs(BaseModel):
-    object_id: str
+    object_id: str | None = Field(None, description=OBJ_HINT)
 
 
 @tool("pd_completeness", "Комплектность проектной документации объекта по разделам (ПП РФ № 87) и комплектам РД.",
       scopes=("documents:read",))
 def pd_completeness(ctx: AgentContext, args: ObjectArgs) -> dict:
-    obj = _owned(ctx, ConstructionObject, args.object_id, "объект")
+    obj = obj_row(ctx, args.object_id)
     return pd.completeness(ctx.db, ctx.org_id, obj.id)
 
 
@@ -57,7 +58,7 @@ def extract_specification(ctx: AgentContext, args: DocArgs) -> dict:
 
 class CompareArgs(BaseModel):
     document_id: str
-    contract_id: str
+    contract_id: str | None = Field(None, description=CONTRACT_HINT)
     tolerance_pct: float = 5.0
 
 
@@ -65,7 +66,7 @@ class CompareArgs(BaseModel):
       "отсутствующие в смете.", scopes=("documents:read",))
 def compare_spec_with_estimate(ctx: AgentContext, args: CompareArgs) -> dict:
     doc = _owned(ctx, Document, args.document_id, "документ")
-    contract = _owned(ctx, Contract, args.contract_id, "договор")
+    contract = contract_row(ctx, args.contract_id)
     spec, _ = spec_for_document(ctx, doc)
     return pd.compare_with_estimate(ctx.db, ctx.org_id, contract.id, spec, args.tolerance_pct)
 
@@ -79,7 +80,7 @@ class RemarksArgs(BaseModel):
 @tool("create_remarks_sheet", "Сформировать ведомость замечаний к проектной документации (DOCX).",
       scopes=("documents:write",))
 def create_remarks_sheet(ctx: AgentContext, args: RemarksArgs) -> dict:
-    obj = _owned(ctx, ConstructionObject, args.object_id, "объект") if args.object_id else None
+    obj = obj_row(ctx, args.object_id) if args.object_id else None
     content = pd.render_remarks(object_name=obj.name if obj else "", project=args.project, remarks=args.remarks,
                                 author=ctx.user.full_name)
     doc = save_document(ctx.db, ctx.storage, org_id=ctx.org_id, kind="remarks",

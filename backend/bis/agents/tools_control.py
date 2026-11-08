@@ -10,6 +10,7 @@ from sqlalchemy import or_, select
 
 from bis.agents.base import AgentContext, tool
 from bis.agents.builtin_tools import _uuid
+from bis.agents.resolve import CONTRACT_HINT, contract_ref, object_ref
 from bis.models import Contract, ContractObligation, Counterparty, Document, Person, Task, User
 from bis.services import contracts as csvc
 from bis.services.audit import audit
@@ -46,13 +47,13 @@ def find_persons(ctx: AgentContext, args: FindPersonsArgs) -> dict:
 
 
 class ContractArgs(BaseModel):
-    contract_id: str
+    contract_id: str | None = Field(None, description=CONTRACT_HINT)
 
 
 @tool("get_contract_details", "Карточка договора: стороны, суммы, сроки, результаты анализа, обязательства.",
       scopes=("registry:read",))
 def get_contract_details(ctx: AgentContext, args: ContractArgs) -> dict:
-    c = ctx.db.get(Contract, _uuid(args.contract_id, "договора"))
+    c = ctx.db.get(Contract, contract_ref(ctx, args.contract_id))
     if c is None or c.organization_id != ctx.org_id:
         raise LookupError("Договор не найден")
     cp = ctx.db.get(Counterparty, c.counterparty_id) if c.counterparty_id else None
@@ -68,13 +69,15 @@ def get_contract_details(ctx: AgentContext, args: ContractArgs) -> dict:
             "our_role": c.our_role, "counterparty": cp.name if cp else None, "amount": c.amount, "vat_rate": c.vat_rate,
             "start_date": c.start_date, "end_date": c.end_date, "status": c.status,
             "responsible": _person_name(ctx, c.responsible_id), "has_file": c.document_id is not None,
+            "document_id": str(c.document_id) if c.document_id else None,
+            "hint": "Полный текст договора (стороны, реквизиты, подписи, приложения) — get_document(document_id, query)",
             "analysis": (c.extra or {}).get("analysis"), "obligations": [_obligation_out(ctx, o) for o in obligations]}
 
 
 @tool("analyze_contract", "Проанализировать текст договора: извлечь обязательства, сроки, неустойки, риски и "
       "добавить обязательства в реестр контроля.", scopes=("registry:write",))
 def analyze_contract(ctx: AgentContext, args: ContractArgs) -> dict:
-    c = ctx.db.get(Contract, _uuid(args.contract_id, "договора"))
+    c = ctx.db.get(Contract, contract_ref(ctx, args.contract_id))
     if c is None or c.organization_id != ctx.org_id:
         raise LookupError("Договор не найден")
     data, result, added = csvc.analyze_contract(ctx.db, ctx.storage, ctx.gateway, c, actor=f"agent:{ctx.agent_name}")
@@ -98,7 +101,7 @@ def list_obligations(ctx: AgentContext, args: ListObligationsArgs) -> dict:
     today = dt.date.today()
     stmt = select(ContractObligation).where(ContractObligation.organization_id == ctx.org_id)
     if args.contract_id:
-        stmt = stmt.where(ContractObligation.contract_id == _uuid(args.contract_id, "договора"))
+        stmt = stmt.where(ContractObligation.contract_id == contract_ref(ctx, args.contract_id))
     if args.status:
         stmt = stmt.where(ContractObligation.status == args.status)
     if args.party:
@@ -211,8 +214,8 @@ def create_task(ctx: AgentContext, args: CreateTaskArgs) -> dict:
     t = Task(organization_id=ctx.org_id, title=args.title, description=args.description,
              assignee_person_id=person.id if person else None, assignee_user_id=person.user_id if person else None,
              due_date=args.due_date, priority=args.priority,
-             object_id=_uuid(args.object_id, "объекта") if args.object_id else None,
-             contract_id=_uuid(args.contract_id, "договора") if args.contract_id else None,
+             object_id=object_ref(ctx, args.object_id) if args.object_id else None,
+             contract_id=contract_ref(ctx, args.contract_id) if args.contract_id else None,
              source_type=args.source_type or "agent", source_id=args.source_id, created_by=f"agent:{ctx.agent_name}")
     ctx.db.add(t)
     ctx.db.flush()

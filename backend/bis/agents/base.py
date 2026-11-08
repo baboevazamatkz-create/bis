@@ -18,7 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from bis.llm.gateway import LLMGateway
-from bis.llm.types import LLMError, Message, ToolSpec
+from bis.llm.types import LLMError, Message, ToolCall, ToolSpec
 from bis.models import Organization, OrgMemory, User
 from bis.rag.embeddings import Embedder
 from bis.security import has_scope
@@ -48,6 +48,7 @@ class AgentContext:
     tool_registry: Any = None
     depth: int = 0  # глубина делегирования
     progress: Any = None  # callable(dict): шаги работы для показа пользователю (поток в чате)
+    ambiguous: bool = False  # инструмент вернул несколько вариантов — вопрос пользователю уместен
 
     def add_citation(self, hit: dict[str, Any]) -> int:
         for i, c in enumerate(self.citations, 1):
@@ -196,6 +197,77 @@ def step_label(tool_name: str, arguments: dict[str, Any] | None) -> str:
     return f"{label}: «{str(q)[:80]}»" if q else label
 
 
+DEFLECT = re.compile(
+    r"предостав(ьте|ите)|пришлите|сообщите\s+(номер|данные|реквизит)|укажите\s+(номер|какой|дату|договор)|"
+    r"уточните\s+(номер|данные|запрос|,|в\s+какой|какой)|необходимо\s+(уточнить|обратиться|просмотреть|предоставить)|"
+    r"обратит(есь|ься)\s+к\s+(документу|полному\s+тексту|договору)|нужно\s+обратиться|"
+    r"не\s+(указан[аоы]?|найден[аоы]?)\s+в\s+(карточке|данных|предоставленн|найденн)|нет\s+возможности\s+просмотреть|"
+    r"\[(не\s+указан|уточнить|указать)",
+    re.IGNORECASE)
+NUDGE = ("Не перекладывай поиск на пользователя и не ставь заглушки «[не указан]». Найди сам: открой документ "
+         "get_document с query "
+         "(он ищет по всем страницам, реквизиты и подписи — в конце), или find_documents, или нужный реестр. "
+         "Если подходящих документов или договоров несколько — коротко перечисли их и спроси, какой. "
+         "Если в данных этого действительно нет — так и скажи: что и где искал.")
+
+
+CLAIM = re.compile(r"\b(создан[аоы]?|сформирован[аоы]?|подготовлен[аоы]?|зарегистрирован[аоы]?|внесен[аоы]?|"
+                   r"отправлен[аоы]?|поставлен[аоы]?)\b", re.IGNORECASE)
+ACT_NUDGE = ("Пользователь просит сделать, а ты не вызвал инструмент — в системе ничего не появилось. "
+             "Вызови нужный инструмент сейчас (данные возьми из найденного; уже есть такой документ — скажи какой "
+             "и спроси, нужен ли новый), затем дай итог по его результату.")
+
+
+ASK_ACT = re.compile(r"\b(сделай|создай|подготовь|оформи|сформируй|внеси|зарегистрируй|составь|напиши|заведи|"
+                     r"поставь|запиши)\b", re.IGNORECASE)
+
+
+def claims_action(text: str, request: str = "") -> bool:
+    """Просили сделать, а модель лишь написала «создан» — без вызова инструмента."""
+    return bool(text and ASK_ACT.search(request) and CLAIM.search(text))
+
+
+def deflects(text: str) -> bool:
+    return bool(text and DEFLECT.search(text))
+
+
+_TEXT_CALL = re.compile(r"(?:```[a-z]*\s*)?\b([a-z_]{4,40})\s*\n?\s*(\{.*\})\s*(?:```)?", re.DOTALL)
+
+
+def text_tool_call(content: str, by_name: dict) -> ToolCall | None:
+    """YandexGPT иногда пишет вызов инструмента текстом («create_aosr_draft {...}») вместо вызова — выполняем его."""
+    if not content or "{" not in content:
+        return None
+    m = _TEXT_CALL.search(content)
+    if not m or m.group(1) not in by_name:
+        return None
+    try:
+        args = json.loads(m.group(2))
+    except ValueError:
+        return None
+    return ToolCall(id=f"text-{m.group(1)}", name=m.group(1), arguments=args) if isinstance(args, dict) else None
+
+
+def prefetch(ctx: AgentContext, question: str, k: int = 6) -> str:
+    """Найденное в данных организации по вопросу — до ответа модели. Ссылки [n] — те же, что у инструментов."""
+    from bis.rag.search import hybrid_search
+
+    try:
+        hits = hybrid_search(ctx.db, ctx.embedder, question, org_id=ctx.org_id, include_global=False, k=k)
+    except Exception:  # noqa: BLE001 — поиск не удался: агент справится инструментами
+        return ""
+    if not hits:
+        return ""
+    lines = ["Уже найдено в документах организации по вопросу пользователя (используй, если подходит, и ставь ссылки [n]; "
+             "если нужного здесь нет — ищи инструментами, весь документ — get_document с query):"]
+    for h in hits:
+        n = ctx.add_citation(h.to_dict() | {"prefetched": True})
+        where = h.citation + (f", стр. {h.page}" if h.page and "стр." not in h.citation else "")
+        lines.append(f"[{n}] {where}" + (f" (document_id {h.document_id})" if h.document_id else "") +
+                     f":\n{h.content[:900]}")
+    return "\n\n".join(lines)
+
+
 def org_brief(ctx: AgentContext) -> str:
     """Что есть в базе: объекты и договоры с id — чтобы агент не спрашивал то, что можно взять отсюда."""
     from bis.models import ConstructionObject, Contract, Counterparty
@@ -251,6 +323,7 @@ class Agent:
     priority: int = 0  # при равенстве ключевых слов выигрывает агент-исполнитель
     require_citations: bool = False  # ответ должен опираться на найденные источники [n]
     verify: bool = False  # самопроверка ответа моделью по цитируемым фрагментам
+    prefetch: bool = True  # до ответа — найденное в данных по вопросу (ответ из данных, а не из догадок)
 
     def system_prompt(self, ctx: AgentContext) -> str:
         org = ctx.db.get(Organization, ctx.org_id)
@@ -280,16 +353,33 @@ class Agent:
         ctx.agent_name = self.name
         if ctx.tool_registry is None:
             ctx.tool_registry = registry
-        tools = [t for t in (registry.get(n) for n in self.tools) if t is not None]
+        names = list(self.tools)
+        if "*read" in names:  # оркестратор: все инструменты чтения данных (записи — через профильных специалистов)
+            names = [n for n in names if n != "*read"] + [t.name for t in registry.all()
+                                                          if not any(sc.endswith(":write") for sc in t.scopes)]
+        tools = [t for t in (registry.get(n) for n in dict.fromkeys(names)) if t is not None]
         specs = [t.spec() for t in tools]
         by_name = {t.name: t for t in tools}
-        messages = [Message(role="system", content=self.system_prompt(ctx)), *history,
-                    Message(role="user", content=user_text)]
+        messages = [Message(role="system", content=self.system_prompt(ctx)), *history]
+        # предзагрузка — для вопросов; на поручение («сделай АОСР») модель с ней копирует найденное вместо вызова
+        if ctx.depth == 0 and self.prefetch and not ASK_ACT.search(user_text):
+            found = prefetch(ctx, user_text)
+            if found:
+                messages.append(Message(role="system", content=found))
+        messages.append(Message(role="user", content=user_text))
         provider: str | None = None
         model: str | None = None
         usage = {"input_tokens": 0, "output_tokens": 0}
         text = ""
-        for _step in range(self.max_steps):
+        retried = False
+        wrote = False  # черновик уже создан — «[уточнить]» в нём уместно
+        acted = False
+        tried_write = False
+        has_write = any(any(sc.endswith(":write") for sc in t.scopes) for t in tools)
+        steps = self.max_steps
+        step = 0
+        while step < steps:
+            step += 1
             try:
                 resp = ctx.gateway.complete(messages, task=self.task, sensitivity=self.sensitivity,
                                             tools=specs or None, prefer=provider)
@@ -299,12 +389,27 @@ class Agent:
             provider, model = resp.provider, resp.model
             for k in usage:
                 usage[k] += resp.usage.get(k, 0)
+            if not resp.message.tool_calls and (call := text_tool_call(resp.message.content, by_name)):
+                resp.message.tool_calls, resp.message.content = [call], ""  # модель написала вызов текстом
             messages.append(resp.message)
             text = resp.message.content
             if resp.stop_reason == "refusal":
                 text = text or "Модель отказалась выполнять этот запрос."
                 break
             if not resp.message.tool_calls:
+                if not acted and not tried_write and not ctx.ambiguous and has_write \
+                        and (claims_action(text, user_text) or ASK_ACT.search(user_text)):
+                    # «черновик создан» без вызова инструмента — действие выдумано: заставляем выполнить
+                    acted = True
+                    steps = step + 4
+                    messages.append(Message(role="user", content=ACT_NUDGE))
+                    continue
+                if not retried and deflects(text) and not ctx.ambiguous and not wrote:
+                    # отговорка вместо ответа: ещё одна попытка найти самому, а не перекладывать на пользователя
+                    retried = True
+                    steps = step + 4
+                    messages.append(Message(role="user", content=NUDGE))
+                    continue
                 break
             for call in resp.message.tool_calls:
                 if ctx.progress:
@@ -315,6 +420,11 @@ class Agent:
                     content, is_error = _json({"error": f"Инструмент {call.name} недоступен"}), True
                 else:
                     content, is_error = t.run(ctx, call.arguments)
+                    is_write = any(sc.endswith(":write") for sc in t.scopes)
+                    tried_write = tried_write or is_write
+                    wrote = wrote or (not is_error and is_write)
+                if is_error and "Несколько" in content:
+                    ctx.ambiguous = True  # вариантов несколько — честный вопрос «какой?» уместен
                 ctx.trace.append({"tool": call.name, "arguments": call.arguments, "error": is_error})
                 audit(ctx.db, ctx.org_id, actor_type="agent", actor=self.name, action=f"tool.{call.name}",
                       details={"arguments": call.arguments, "error": is_error, "user": str(ctx.user.id)})
@@ -323,8 +433,10 @@ class Agent:
         else:
             text = (text + "\n\n" if text else "") + "Достигнут лимит шагов агента — уточните запрос."
         text = self._check_citations(ctx, text)
-        if self.verify and provider not in (None, "offline") and ctx.citations:
-            text = self._verify(ctx, text, provider)
+        # проверять по фрагментам есть смысл, только если ответ на них ссылается (иначе он из реестров и контекста)
+        if self.verify and provider not in (None, "offline") and any(c.get("used") for c in ctx.citations):
+            data = [m.content for m in messages if m.role == "tool" and not m.is_error]
+            text = self._verify(ctx, text, provider, data)
         return AgentResult(text=text, agent=self.name, citations=ctx.citations, documents=ctx.documents,
                            trace=ctx.trace, provider=provider, model=model, usage=usage)
 
@@ -339,15 +451,18 @@ class Agent:
             text = re.sub(r"\s?\[(\d{1,3})\]", "", text)
         elif bad:
             text += f"\n\n⚠ Ссылки {', '.join(f'[{n}]' for n in bad)} не соответствуют найденным источникам — проверьте."
-        if self.require_citations and ctx.citations and not refs:
-            top = "; ".join(f"[{i}] {c['citation']}" for i, c in enumerate(ctx.citations[:3], 1))
+        if self.require_citations and any(not c.get("prefetched") for c in ctx.citations) and not refs:
+            own = [(i, c) for i, c in enumerate(ctx.citations, 1) if not c.get("prefetched")][:3]
+            top = "; ".join(f"[{i}] {c['citation']}" for i, c in own)
             text += f"\n\nИсточники: {top}"
         return text
 
-    def _verify(self, ctx: AgentContext, text: str, provider: str) -> str:
-        """Вторая модель (или та же) проверяет, подтверждается ли ответ цитируемыми фрагментами."""
+    def _verify(self, ctx: AgentContext, text: str, provider: str, data: list[str] | None = None) -> str:
+        """Вторая модель (или та же) проверяет, подтверждается ли ответ фрагментами и данными реестров."""
         fragments = "\n\n".join(f"[{i}] {c['citation']}: {c['content'][:1200]}" for i, c in enumerate(ctx.citations, 1)
                                   if c.get("used") or not any(x.get("used") for x in ctx.citations))
+        if data:  # ответ из реестров (объекты, договоры, план-факт) — тоже источник, а не выдумка
+            fragments += "\n\n<данные реестров>\n" + "\n".join(d[:3000] for d in data)[:6000]
         prompt = [
             Message(role="system", content="Ты проверяешь ответ на соответствие источникам. Ответь JSON "
                     '{"supported": true|false, "issues": ["…"]}: issues — утверждения, которых нет в фрагментах '

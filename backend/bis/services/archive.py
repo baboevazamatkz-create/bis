@@ -45,7 +45,30 @@ TITLES = {"aosr": "АОСР", "aook": "АООК", "scheme": "Исполните�
 SKIP = re.compile(r"(^~\$|^\.|thumbs\.db$|desktop\.ini$)", re.IGNORECASE)
 
 
+def contract_kind(text: str) -> str:
+    """Вид договора — по его названию («ДОГОВОР ПОДРЯДА №…», «договор поставки»), а не по любому слову в начале:
+    в договоре подряда «проектная документация» упоминается в предмете, но он от этого не проектный."""
+    head = text[:3000].lower().replace("ё", "е")
+    m = re.search(r"договор[а-я]*\s+(?:№\s*\S+\s+)?(?:на\s+)?([а-я\- ,]{3,80})", head)
+    title = m.group(1) if m else head[:300]
+    if "поставк" in title:
+        return "supply"
+    if "субподряд" in title:
+        return "subcontract"
+    if re.search(r"проектн|проектир|изыскан", title) and "строительн" not in title:
+        return "design"
+    return "general"
+
+
 def _pages(data: bytes, name: str, mime: str | None) -> tuple[list[Page], str]:
+    """Текст по страницам и как получен; колонки (реквизиты сторон, подписи) разложены по одной."""
+    from bis.rag.columns import split_columns
+
+    pages, how = _raw_pages(data, name, mime)
+    return [Page(p.number, split_columns(p.text)) for p in pages], how
+
+
+def _raw_pages(data: bytes, name: str, mime: str | None) -> tuple[list[Page], str]:
     """Текст по страницам и как получен: parsed | ocr | dxf | none. Номер страницы — для ссылок «стр. N»."""
     ext = Path(name).suffix.lower()
     if ext == ".dxf":
@@ -270,14 +293,15 @@ def import_file(db: Session, storage: Storage, gateway, embedder, org_id: uuid.U
         from bis.models import Organization
         from bis.services.contracts import analyze_contract
 
-        head = text.lower()[:800]
-        ckind = "supply" if "поставк" in head else "subcontract" if "субподряд" in head else \
-            "design" if "проектн" in head or "проектир" in head else "general"
+        ckind = contract_kind(text)
         c = Contract(organization_id=org_id, kind=ckind, our_role=contract_role(text, db.get(Organization, org_id), ckind),
                      number="б/н", object_id=object_id, document_id=doc.id)
         db.add(c)
         db.flush()
         doc.contract_id = c.id
+        from bis.brain.parties import link_contract
+
+        result["parties"] = link_contract(db, c, text)  # стороны → контрагенты, заказчик → объект
         try:
             with db.begin_nested():
                 extracted, _, added = analyze_contract(db, storage, gateway, c, actor="agent:lawyer", text=text)
