@@ -326,3 +326,4 @@ code { background: var(--track); padding: 1px 6px; border-radius: 4px; font-size
 .brain-links li { margin: 3px 0; }
 .brain-sheet { border-top: 1px solid var(--border); padding: 8px 0; }
 .panel h3 { font-size: 14px; margin: 16px 0 6px; }
+.danger-zone { border-color: var(--err); }

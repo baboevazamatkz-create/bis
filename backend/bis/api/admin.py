@@ -4,6 +4,7 @@
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
@@ -120,3 +121,21 @@ def run_evals(cases: list[dict] | None = None, k: int = 5, db: Session = Depends
     parsed = [EvalCase.model_validate(c) for c in cases]
     sup = get_registry().supervisor()
     return run_eval(db, get_embedder(), user.organization_id, parsed, k=k, route_fn=lambda q: sup.route(q)[0])
+
+
+class ResetIn(BaseModel):
+    confirm: str
+
+
+@router.post("/org/reset")
+def reset_org(body: ResetIn, db: Session = Depends(get_db), user: User = Depends(require("users:write"))):
+    """Очистить все данные организации (кроме реквизитов, пользователей и общих нормативов). Подтверждение: УДАЛИТЬ."""
+    from bis.services.reset import reset_organization
+    from bis.services.storage import get_storage
+
+    if body.confirm.strip().upper() not in ("УДАЛИТЬ", "DELETE"):
+        raise HTTPException(400, "Для подтверждения напишите УДАЛИТЬ")
+    res = reset_organization(db, get_storage(), user.organization_id)
+    audit(db, user.organization_id, actor_type="user", actor=str(user.id), action="org.reset", details=res)
+    db.commit()
+    return res

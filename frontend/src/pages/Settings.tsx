@@ -271,7 +271,48 @@ export default function Settings() {
           </button>
         </div>
       )}
+      {users.length > 0 && <ResetPanel />}
     </>
+  );
+}
+
+/** Очистка данных организации: чистый старт пилота. Только администратор, с подтверждением словом. */
+function ResetPanel() {
+  const [open, setOpen] = useState(false);
+  const [word, setWord] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  async function reset() {
+    setBusy(true);
+    setMsg("");
+    try {
+      const r = await api<{ rows: number; files: number }>("/org/reset", { method: "POST", json: { confirm: word } });
+      setMsg(`Готово: удалено записей ${r.rows}, файлов ${r.files}. Можно загружать архив заново.`);
+      setOpen(false);
+      setWord("");
+    } catch (e) {
+      setMsg((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="panel danger-zone">
+      <h2>Очистка данных <Hint>Удаляются документы и файлы, база знаний организации, карточки «Эрудита», объекты, договоры,
+        сметы, учёт, сообщения с площадки, поручения, уведомления и чаты. Остаются реквизиты, пользователи, общие нормативы
+        и ключи. Отменить нельзя.</Hint></h2>
+      {!open && <button className="btn danger" onClick={() => setOpen(true)}>Очистить все данные организации…</button>}
+      {open && (
+        <div className="row" style={{ alignItems: "center" }}>
+          <input value={word} onChange={(e) => setWord(e.target.value)} placeholder="Напишите УДАЛИТЬ" style={{ maxWidth: 220 }} autoFocus />
+          <button className="btn danger" disabled={busy || word.trim().toUpperCase() !== "УДАЛИТЬ"} onClick={() => void reset()}>
+            {busy ? "Удаляю…" : "Удалить безвозвратно"}
+          </button>
+          <button className="btn" onClick={() => { setOpen(false); setWord(""); }}>Отмена</button>
+        </div>
+      )}
+      {msg && <p className="small">{msg}</p>}
+    </div>
   );
 }
 
