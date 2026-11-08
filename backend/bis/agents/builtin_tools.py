@@ -190,6 +190,21 @@ def document_card(ctx: AgentContext, args: CardArgs) -> dict:
             **neighbours(ctx.db, doc)}
 
 
+class CorrespondenceArgs(BaseModel):
+    object_id: str | None = None
+
+
+@tool("correspondence_status", "Переписка по объекту: запросы заказчика и ведомств — ответили ли и не прошёл ли срок; "
+      "наши письма — какие документы в них названы и каких нет в архиве, к какому сроку. Для вопросов «что не "
+      "отправили», «ответили ли», «что обещали», «что ждёт ответа».", scopes=("documents:read",))
+def correspondence_status_tool(ctx: AgentContext, args: CorrespondenceArgs) -> dict:
+    from bis.brain.chains import correspondence
+
+    res = correspondence(ctx.db, ctx.org_id, _uuid(args.object_id, "объекта") if args.object_id else None)
+    return {"today": res["today"], "open": res["open"][:25], "requests": res["requests"][:20],
+            "promises": res["promises"][:20]}
+
+
 # --- реестры ------------------------------------------------------------------------------------
 
 
@@ -380,6 +395,7 @@ BUILTIN_TOOLS = [
     search_knowledge,
     find_documents,
     document_card,
+    correspondence_status_tool,
     find_objects,
     find_counterparties,
     find_contracts,

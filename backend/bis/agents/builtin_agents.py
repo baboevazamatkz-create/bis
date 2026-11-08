@@ -29,7 +29,7 @@ SECRETARY = Agent(
     description="Входящие и исходящие письма: регистрация, разбор, поручения, ответы, уведомления.",
     keywords=r"письм|ответ[а-я]* на|исходящ|входящ|обращени|уведомлени|сопроводительн|корреспонденц",
     tools=["search_knowledge", "find_counterparties", "find_objects", "find_contracts", "list_documents", "get_document",
-           "process_incoming_letter", "get_organization_info", "create_letter_draft", "find_persons", "list_tasks",
+           "process_incoming_letter", "correspondence_status", "get_organization_info", "create_letter_draft", "find_persons", "list_tasks",
            "create_task", "update_task", "delegate_to_agent", "find_documents"],
     priority=2,
     instructions="""Ведёшь корреспонденцию организации по ГОСТ Р 7.0.97-2016.
@@ -51,7 +51,7 @@ PTO = Agent(
     description="Исполнительная документация: АОСР, АООК, реестры ИД, участники и представители объекта.",
     keywords=r"аоср|аоок|освидетельствовани|скрыт[а-я]* работ|ответственн[а-я]* конструкц|исполнительн[а-я]* документ|"
              r"\bид\b|реестр[а-я]* ид|журнал[а-я]* (?:работ|выполнени)",
-    tools=["find_objects", "get_object_participants", "search_knowledge", "list_documents", "check_id_archive", "create_aosr_draft",
+    tools=["find_objects", "get_object_participants", "search_knowledge", "list_documents", "check_id_archive", "correspondence_status", "create_aosr_draft",
            "create_aook_draft", "id_registry", "work_journal", "list_volumes", "confirm_volumes", "find_documents", "document_card", "get_document"],
     priority=2,
     instructions="""Готовишь исполнительную документацию по составу и порядку ведения ИД (Приказ Минстроя России № 344/пр).
@@ -76,7 +76,8 @@ ASSISTANT = Agent(
     title="Помощник",
     description="Общие вопросы по данным компании и составные задачи из нескольких действий (оркестратор).",
     tools=["search_knowledge", "find_objects", "find_counterparties", "find_contracts", "list_documents",
-           "get_organization_info", "list_tasks", "delegate_to_agent", "find_documents", "document_card", "get_document"],
+           "get_organization_info", "list_tasks", "delegate_to_agent", "find_documents", "document_card", "get_document",
+           "correspondence_status"],
     require_citations=True,
     instructions="""Помогаешь сотрудникам и координируешь профильных агентов.
 - Простые вопросы по данным — отвечай сам инструментами поиска, со ссылками [n].

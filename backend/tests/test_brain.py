@@ -157,3 +157,31 @@ def test_vision_forbidden_keeps_documents_waiting(client, db):
     assert res["vision"] == 0 and res["waiting"] == 1 and not res["vision_status"]["available"]
     assert "403" in res["vision_status"]["reason"] and len(vision_missing(db, org.id)) == 1
     vision._DOWN.update(until=None, reason=None)
+
+
+def test_correspondence_chain(client, db):
+    """Запрос заказчика → наш ответ → обещанный протокол, которого в архиве нет; срок прошёл — в первую очередь."""
+    import datetime as dt
+
+    from bis.brain.chains import correspondence
+
+    org, auth = _org(client, db, "1435000095")
+    _upload(client, auth, "АОСР 1.txt", "АКТ освидетельствования скрытых работ № 1\nРаботы: армирование фундаментной плиты Фм1\n"
+                                        "окончание работ 12.04.2026")
+    _upload(client, auth, "Вх 112.txt", "АО «Заказчик»\nИсх. № 112 от 28.04.2026\nДиректору ООО «Пилот»\nО предоставлении ИД\n"
+                                        "Просим до 08.05.2026 предоставить ИД по АОСР № 1.")
+    _upload(client, auth, "Вх 200.txt", "АО «Заказчик»\nИсх. № 200 от 10.05.2026\nДиректору ООО «Пилот»\nО графике\n"
+                                        "Просим в срок до 01.06.2026 предоставить график работ.")
+    _upload(client, auth, "Исх 51.txt", "ООО «Пилот»\nИсх. № 51 от 05.05.2026\nГенеральному директору АО «Заказчик»\n"
+                                        "На ваш исх. № 112 от 28.04.2026\nНаправляем АОСР № 1. Протокол испытаний бетона № 56 "
+                                        "и исполнительные схемы будут направлены до 15.05.2026.")
+    res = correspondence(db, org.id, today=dt.date(2026, 11, 8))
+    by = {r["label"].split(" от ")[0]: r for r in res["requests"]}
+    assert by["№ 112"]["status"] == "answered" and by["№ 112"]["replied_by"][0]["label"].startswith("№ 51")
+    assert by["№ 200"]["status"] == "overdue" and by["№ 200"]["deadline"] == "2026-06-01"
+    (p,) = res["promises"]
+    assert p["deadline"] == "2026-05-15" and p["overdue"] and [m["number"] for m in p["missing"]] == ["56"]
+    assert any("протокол" in x.lower() and "№ 56" in x and "15.05.2026" in x and "срок прошёл" in x for x in res["open"])
+    assert not any("2026-" in x for x in res["open"])  # в тексте для пользователя — даты по-русски
+    assert res["open"][0].startswith(("Запрос № 200", "В письме"))  # просроченное — первым
+    assert not any("№ 112" in x for x in res["open"])  # на запрос ответили — в открытых его нет
