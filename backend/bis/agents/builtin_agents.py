@@ -10,7 +10,7 @@ NORMS = Agent(
     description="Вопросы по нормативам: СП, ГОСТ, СНиП, приказы; требования, допуски, ссылки на пункты.",
     keywords=r"\bсп\b|гост|снип|санпин|норматив|норм[аы]?\b|требовани|допуск|допустим|свод[а-я]* правил|пункт|"
              r"засыпк|бетон|арматур|армирова|опалубк|кладк|сварн|гидроизоляц|грунт|уплотнени",
-    tools=["search_knowledge"],
+    tools=["search_knowledge", "find_documents", "document_card", "get_document"],
     priority=1,
     require_citations=True,
     verify=True,

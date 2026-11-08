@@ -7,7 +7,7 @@ import uuid
 from datetime import date
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import or_, select
 
 from bis.agents.base import AgentContext, tool
@@ -89,6 +89,14 @@ class FindDocumentsArgs(BaseModel):
     date_to: date | None = None
     limit: int = Field(8, ge=1, le=30)
 
+    @field_validator("date_from", "date_to", mode="before")
+    @classmethod
+    def _ru_date(cls, v):
+        """Модель часто пишет дату по-русски: 18.03.2026."""
+        if isinstance(v, str) and (m := re.fullmatch(r"\s*(\d{1,2})\.(\d{1,2})\.(\d{4})\s*", v)):
+            return date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+        return v
+
 
 @tool("find_documents", "Найти документы организации — и созданные в BIS, и загруженный архив (АОСР, схемы, договоры, "
       "письма, сертификаты, протоколы, приказы) — по смыслу текста и по названию. Возвращает дату, объект, выдержку "
@@ -97,7 +105,10 @@ def find_documents(ctx: AgentContext, args: FindDocumentsArgs) -> dict:
     def allowed(stmt):
         stmt = stmt.where(Document.organization_id == ctx.org_id)
         if args.kind:
-            stmt = stmt.where(Document.kind == args.kind)
+            # при поиске конкретного письма модель путает входящее и исходящее; список «входящих» — строго
+            letters = args.query and args.kind in ("letter", "incoming_letter")
+            kinds = ["letter", "incoming_letter"] if letters else [args.kind]
+            stmt = stmt.where(Document.kind.in_(kinds))
         if args.object_id:
             stmt = stmt.where(or_(Document.object_id == _uuid(args.object_id, "объекта"), Document.object_id.is_(None)))
         if args.date_from:
@@ -165,8 +176,29 @@ def find_documents(ctx: AgentContext, args: FindDocumentsArgs) -> dict:
         out.append({"id": str(d.id), "title": d.title, "kind": d.kind, "number": d.number, "date": d.date,
                     "status": d.status, "object": objects.get(d.object_id), "card": card.get("title"),
                     "n": x["n"], "excerpt": x["excerpt"]})
+    if not out and args.query and (args.kind or args.date_from or args.date_to):
+        # модель могла ошибиться видом документа или датой — ищем ещё раз без этих фильтров
+        res = find_documents.handler(ctx, args.model_copy(update={"kind": None, "date_from": None, "date_to": None}))
+        return res | {"note": "С указанными видом и датой ничего не нашлось — показан поиск без этих фильтров"}
     return {"documents": out, "found": len(out),
             "hint": None if out else "Ничего не нашлось — попробуйте другие слова или поиск по базе знаний"}
+
+
+def resolve_document(ctx: AgentContext, ref: str) -> Document:
+    """Документ по id, а если модель передала номер («45», «№ 4512») — по номеру документа."""
+    try:
+        doc = ctx.db.get(Document, uuid.UUID(str(ref)))
+    except ValueError:
+        num = re.sub(r"^\s*№\s*", "", str(ref)).strip()
+        docs = ctx.db.scalars(select(Document).where(Document.organization_id == ctx.org_id, or_(
+            Document.number == num, Document.data["card"]["number"].astext == num)).limit(6)).all()
+        if len(docs) > 1:
+            raise LookupError("С этим номером несколько документов — уточните: " + "; ".join(
+                f"{d.title} (id {d.id})" for d in docs)) from None
+        doc = docs[0] if docs else None
+    if doc is None or doc.organization_id != ctx.org_id:
+        raise LookupError("Документ не найден — найдите его find_documents")
+    return doc
 
 
 class CardArgs(BaseModel):
@@ -179,9 +211,7 @@ class CardArgs(BaseModel):
 def document_card(ctx: AgentContext, args: CardArgs) -> dict:
     from bis.brain.links import neighbours
 
-    doc = ctx.db.get(Document, _uuid(args.document_id, "документа"))
-    if doc is None or doc.organization_id != ctx.org_id:
-        raise LookupError("Документ не найден")
+    doc = resolve_document(ctx, args.document_id)
     share_document(ctx, doc)
     card = (doc.data or {}).get("card")
     hit = _first_chunk(ctx, doc)

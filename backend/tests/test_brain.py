@@ -185,3 +185,58 @@ def test_correspondence_chain(client, db):
     assert not any("2026-" in x for x in res["open"])  # в тексте для пользователя — даты по-русски
     assert res["open"][0].startswith(("Запрос № 200", "В письме"))  # просроченное — первым
     assert not any("№ 112" in x for x in res["open"])  # на запрос ответили — в открытых его нет
+
+
+def test_selfcheck_generates_grounded_questions_and_scores(client, db):
+    """Самопроверка: вопросы по архиву с эталоном из текста документа; правильный ответ засчитан, неправильный — нет."""
+    from bis.agents.base import AgentResult
+    from bis.brain import selfcheck
+    from bis.models import User
+    from bis.plugins.sdk import get_registry
+
+    org, auth = _org(client, db, "1435000094")
+    r = _upload(client, auth, "АОСР 1.txt", AOSR)
+    cases = selfcheck.generate(db, org.id, n=10, per_doc=10)
+    whats = {c["what"] for c in cases}
+    assert {"поиск документа", "шифр РД", "дата окончания работ"} <= whats
+    rd = next(c for c in cases if c["what"] == "шифр РД")
+    assert rd["expect"] == ["17-2026-КЖ0"] and "АОСР № 1 от 12.04.2026" in rd["question"]
+
+    def fake_run(self, ctx, registry, history, text):  # «ассистент»: знает шифр, путает дату
+        answer = "Шифр 17-2026-КЖ0, лист 3-7." if "шифр" in text else "Работы окончены 13.04.2026."
+        return AgentResult(text=answer, agent=self.name, documents=[{"id": r["document_id"]}])
+
+    reg = get_registry()
+    orig = type(next(iter(reg.agents.values()))).run
+    type(next(iter(reg.agents.values()))).run = fake_run
+    try:
+        user = db.scalar(__import__("sqlalchemy").select(User).where(User.organization_id == org.id))
+        own = selfcheck.parse_questions("Какой шифр у АОСР 1? → 17-2026-КЖ0\n# комментарий\nГде паспорт на бетон?")
+        assert own[0]["expect"] == ["17-2026-КЖ0"] and own[1]["expect"] == []
+        rep = selfcheck.run(db, user, [rd, next(c for c in cases if c["what"] == "дата окончания работ"), *own])
+    finally:
+        type(next(iter(reg.agents.values()))).run = orig
+    s = rep["summary"]
+    assert s["graded"] == 3 and s["correct"] == 2 and s["accuracy"] == 67 and s["found"] == 2
+    assert s["by_what"]["дата окончания работ"] == {"ok": 0, "total": 1}
+
+
+def test_find_documents_forgives_model_mistakes(client, db):
+    """Модель путает вид письма, пишет дату по-русски и передаёт номер вместо id — документ всё равно находится."""
+    from bis.agents.base import AgentContext
+    from bis.agents.builtin_tools import CardArgs, FindDocumentsArgs, document_card, find_documents
+    from bis.models import User
+    from bis.rag.embeddings import get_embedder
+    from bis.services.storage import get_storage
+
+    org, auth = _org(client, db, "1435000093")
+    _upload(client, auth, "Исх 45.txt", "ООО «Пилот»\nИсх. № 45 от 18.03.2026\nДиректору ООО «Метиз»\nО поставке арматуры до 01.04.2026")
+    user = db.scalar(select(User).where(User.organization_id == org.id))
+    ctx = AgentContext(db=db, org_id=org.id, user=user, gateway=None, embedder=get_embedder(), storage=get_storage(), agents={})
+    args = FindDocumentsArgs.model_validate({"query": "Письмо № 45", "kind": "incoming_letter",
+                                             "date_from": "18.03.2026", "date_to": "18.03.2026"})
+    res = find_documents.handler(ctx, args)
+    assert res["documents"] and res["documents"][0]["title"] == "Исх 45"
+    wrong_date = find_documents.handler(ctx, FindDocumentsArgs(query="Письмо № 45", date_from="2026-01-01", date_to="2026-01-02"))
+    assert wrong_date["documents"] and "note" in wrong_date
+    assert document_card.handler(ctx, CardArgs(document_id="45"))["title"] == "Исх 45"

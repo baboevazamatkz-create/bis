@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from bis.api.deps import agent_context, require
@@ -56,3 +57,73 @@ def card(doc_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(
     return {"id": str(doc.id), "title": doc.title, "kind": doc.kind, "file_name": doc.file_name,
             "date": doc.date.isoformat() if doc.date else None, "card": (doc.data or {}).get("card"),
             "text_from": (doc.data or {}).get("text_from"), **neighbours(db, doc)}
+
+
+# --- самопроверка ----------------------------------------------------------------------------------
+
+_RUNS: dict[str, dict] = {}  # организация → ход проверки (в памяти процесса)
+
+
+class SelfCheckIn(BaseModel):
+    auto: int = Field(40, ge=0, le=150)
+    questions: str = ""  # свои вопросы: «вопрос → ответ», по одному на строку
+
+
+@router.post("/selfcheck")
+def selfcheck_start(body: SelfCheckIn, user: User = Depends(require("documents:read"))):
+    """Запустить самопроверку фоном: вопросы по архиву (и свои), ответы ассистента, процент верных."""
+    import threading
+
+    from bis.db import SessionLocal
+
+    key = str(user.organization_id)
+    if _RUNS.get(key, {}).get("running"):
+        raise HTTPException(409, "Проверка уже идёт")
+    state = _RUNS[key] = {"running": True, "done": 0, "total": 0, "error": None}
+    user_id, org_id = user.id, user.organization_id
+
+    def work() -> None:
+        from bis.brain import selfcheck
+        from bis.models import Organization
+
+        try:
+            with SessionLocal() as db:
+                me = db.get(User, user_id)
+                cases = selfcheck.parse_questions(body.questions) + selfcheck.generate(db, org_id, body.auto)
+                state["total"] = len(cases)
+                report = selfcheck.run(db, me, cases, progress=lambda i, n: state.update(done=i))
+                org = db.get(Organization, org_id)
+                org.settings = {**(org.settings or {}), "brain_selfcheck": report}
+                db.commit()
+                _save_file(report)
+        except Exception as e:  # noqa: BLE001
+            state["error"] = str(e)[:300]
+        finally:
+            state["running"] = False
+
+    threading.Thread(target=work, daemon=True, name="bis-selfcheck").start()
+    return state
+
+
+@router.get("/selfcheck")
+def selfcheck_status(db: Session = Depends(get_db), user: User = Depends(require("documents:read"))):
+    from bis.models import Organization
+
+    org = db.get(Organization, user.organization_id)
+    return {**_RUNS.get(str(user.organization_id), {"running": False}),
+            "report": (org.settings or {}).get("brain_selfcheck") if org else None}
+
+
+def _save_file(report: dict) -> None:
+    """Копия отчёта рядом с BIS (C:\\BIS\\eval) — её удобно переслать целиком."""
+    import json
+
+    from bis.cli import _local_home
+
+    home = _local_home()
+    if home is None:
+        return
+    out = home / "eval"
+    out.mkdir(exist_ok=True)
+    (out / f"selfcheck-{report['at'].replace(':', '-')}.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=1, default=str), encoding="utf-8")

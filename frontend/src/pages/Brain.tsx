@@ -29,6 +29,85 @@ const show = (v: unknown): string =>
   Array.isArray(v) ? v.map((x) => (typeof x === "object" && x ? Object.values(x).filter(Boolean).join(" ") : String(x))).join(", ")
     : String(ruDate(v) ?? "");
 
+interface CheckResult { question: string; expect: string[]; what: string; source: string; found: boolean | null;
+  correct: boolean | null; answer_text: string; seconds: number; error: string | null }
+interface CheckReport { at: string; summary: { questions: number; correct: number; graded: number; accuracy: number | null;
+  found: number; searched: number; found_rate: number | null; avg_seconds: number | null; errors: number;
+  by_what: Record<string, { ok: number; total: number }> }; results: CheckResult[] }
+interface CheckState { running: boolean; done?: number; total?: number; error?: string | null; report?: CheckReport | null }
+
+function SelfCheck() {
+  const [st, setSt] = useState<CheckState | null>(null);
+  const [own, setOwn] = useState("");
+  const [showOwn, setShowOwn] = useState(false);
+  const load = () => api<CheckState>("/brain/selfcheck").then(setSt).catch(() => setSt(null));
+  useEffect(() => { void load(); }, []);
+  useEffect(() => {
+    if (!st?.running) return;
+    const t = setInterval(() => void load(), 3000);
+    return () => clearInterval(t);
+  }, [st?.running]);
+  async function start() {
+    await api("/brain/selfcheck", { method: "POST", json: { auto: 40, questions: own } });
+    await load();
+  }
+  const rep = st?.report;
+  const s = rep?.summary;
+  const fails = rep?.results.filter((r) => r.correct === false || r.found === false || r.error) ?? [];
+  return (
+    <div className="panel">
+      <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+        <h2 style={{ margin: 0 }}>Самопроверка <Hint>«Эрудит» сам составляет вопросы по вашему архиву (правильный ответ берётся
+          из карточки и сверяется с текстом документа), отвечает на них как ассистент и считает процент верных. Свои вопросы —
+          «вопрос → ответ», по одному на строку. Проверка ничего не меняет в данных; 40 вопросов — несколько минут.</Hint></h2>
+        <div className="row">
+          <button className="btn small" onClick={() => setShowOwn(!showOwn)}>{showOwn ? "Скрыть свои вопросы" : "+ Свои вопросы"}</button>
+          <button className="btn primary" disabled={!!st?.running} onClick={() => void start()}>
+            {st?.running ? `Проверяю… ${st.done ?? 0} из ${st.total || "…"}` : "Проверить «Эрудита»"}
+          </button>
+        </div>
+      </div>
+      {showOwn && (
+        <textarea rows={5} value={own} onChange={(e) => setOwn(e.target.value)} style={{ marginTop: 10 }}
+                  placeholder={"Какой класс бетона у плиты Фм1? → B25\nКогда окончено армирование плиты Фм1? → 12.04.2026"} />
+      )}
+      {st?.error && <p className="small text-bad">Проверка прервалась: {st.error}</p>}
+      {s && (
+        <>
+          <div className="stats" style={{ marginTop: 12 }}>
+            <div className={`stat ${s.accuracy !== null && s.accuracy < 70 ? "warn" : "ok"}`}><div className="stat-value">{s.accuracy ?? "—"}%</div>
+              <div className="stat-label">верных ответов ({s.correct} из {s.graded})</div></div>
+            <div className="stat"><div className="stat-value">{s.found_rate ?? "—"}%</div><div className="stat-label">нашёл нужный документ ({s.found} из {s.searched})</div></div>
+            <div className="stat"><div className="stat-value">{s.avg_seconds ?? "—"} с</div><div className="stat-label">в среднем на вопрос</div></div>
+          </div>
+          <table className="brain-card">
+            <tbody>
+              {Object.entries(s.by_what).map(([k, v]) => (
+                <tr key={k}><td className="muted">{k}</td><td>{v.ok} из {v.total}</td></tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="small muted">Проверка от {new Date(rep!.at).toLocaleString("ru-RU")}</p>
+          {fails.length > 0 && (
+            <details>
+              <summary>Ошибки ({fails.length})</summary>
+              {fails.map((r, i) => (
+                <div key={i} className="brain-sheet">
+                  <b>{r.question}</b>
+                  <div className="small">{r.expect.length ? <>Ожидалось: {r.expect.join(", ")}. </> : null}
+                    {r.found === false && <span className="text-bad">Документ не найден. </span>}
+                    {r.error && <span className="text-bad">Сбой: {r.error}</span>}</div>
+                  <div className="small muted">Ответ: {r.answer_text || "—"}</div>
+                </div>
+              ))}
+            </details>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function Brain() {
   const [cov, setCov] = useState<Coverage | null>(null);
   const [q, setQ] = useState("");
@@ -82,6 +161,8 @@ export default function Brain() {
           {cov.pending > 0 && <div className="stat warn"><div className="stat-value">{cov.pending}</div><div className="stat-label">ждут карточки</div></div>}
         </div>
       )}
+
+      <SelfCheck />
 
       <div className="panel">
         <div className="row" style={{ alignItems: "center" }}>

@@ -256,12 +256,9 @@ class DocumentArgs(BaseModel):
 
 
 def _owned_document(ctx: AgentContext, document_id: str):
-    from bis.models import Document
+    from bis.agents.builtin_tools import resolve_document
 
-    doc = ctx.db.get(Document, _uuid(document_id, "документа"))
-    if doc is None or doc.organization_id != ctx.org_id:
-        raise LookupError("Документ не найден")
-    return doc
+    return resolve_document(ctx, document_id)
 
 
 @tool("get_document", "Документ из реестра: реквизиты, результаты разбора и текст (для ответа на письмо, проверки).",
