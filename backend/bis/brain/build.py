@@ -7,7 +7,7 @@ import logging
 import uuid
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from bis.brain import links
@@ -77,6 +77,71 @@ def build_missing(db: Session, gateway, embedder, org_id: uuid.UUID, limit: int 
             failed += 1
             log.warning("Эрудит: карточка документа %s не построена: %s", doc.id, e)
     return {"cards": done, "failed": failed, "left": len(missing(db, org_id, 1000))}
+
+
+# --- дочитать сканы: раньше распознавание обрывалось на 20-й странице --------------------------------
+
+
+def unread_scans(db: Session, org_id: uuid.UUID, limit: int = 5) -> list[Document]:
+    """Сканы PDF, у которых могли быть прочитаны не все страницы (ещё не сверены с числом страниц файла)."""
+    return list(db.scalars(select(Document).where(
+        Document.organization_id == org_id, Document.file_key.is_not(None), Document.file_name.ilike("%.pdf"),
+        Document.data["text_from"].astext == "ocr", Document.data["pages_checked"].is_(None))
+        .order_by(Document.created_at).limit(limit)))
+
+
+def reread_scan(db: Session, gateway, embedder, storage, doc: Document) -> int:
+    """Распознать скан заново целиком, если прочитано меньше страниц, чем в файле. Возвращает число страниц."""
+    import io
+
+    from pypdf import PdfReader
+
+    from bis import ocr
+    from bis.rag.ingest import ingest_pages
+    from bis.rag.parsers import Page
+
+    data = storage.get(doc.file_key)
+    total = len(PdfReader(io.BytesIO(data)).pages)
+    read = db.scalar(select(func.max(KnowledgeChunk.page)).join(KnowledgeSource, KnowledgeSource.id == KnowledgeChunk.source_id)
+                     .where(KnowledgeSource.document_id == doc.id)) or 0
+    # без номеров страниц (старая загрузка) прочитано было не больше 20 страниц
+    need = total > 20 if read == 0 else total > read
+    if need:
+        texts = ocr.recognize_pages(data, "application/pdf")
+        pages = [Page(i + 1, t) for i, t in enumerate(texts) if t.strip()]
+        if pages:
+            kind = next((s.kind for s in db.scalars(select(KnowledgeSource).where(KnowledgeSource.document_id == doc.id))),
+                        "org_document")
+            for src in db.scalars(select(KnowledgeSource).where(KnowledgeSource.document_id == doc.id)):
+                if not (src.meta or {}).get("vision"):
+                    db.delete(src)
+            db.flush()
+            card = (doc.data or {}).get("card") or {}
+            ingest_pages(db, embedder, org_id=doc.organization_id, pages=pages, kind=kind, title=doc.title,
+                         document_id=doc.id, context=card.get("title"))
+            from bis.rag.search import invalidate_vectors
+
+            invalidate_vectors()
+            build_document(db, gateway, embedder, doc, text="\n".join(p.text for p in pages))
+    doc.data = {**(doc.data or {}), "pages_checked": total}
+    return total
+
+
+def reread_missing(db: Session, gateway, embedder, storage, org_id: uuid.UUID, limit: int = 5) -> dict[str, Any]:
+    from bis import ocr
+
+    if not ocr.available():
+        return {}
+    done = 0
+    for doc in unread_scans(db, org_id, limit):
+        try:
+            with db.begin_nested():
+                reread_scan(db, gateway, embedder, storage, doc)
+            done += 1
+        except Exception as e:  # noqa: BLE001
+            log.warning("Эрудит: скан %s не перечитан: %s", doc.id, e)
+            doc.data = {**(doc.data or {}), "pages_checked": -1}
+    return {"reread": done, "reread_left": len(unread_scans(db, org_id, 1000))}
 
 
 # --- зрение: схемы, чертежи, сканы листов ----------------------------------------------------------
@@ -195,6 +260,8 @@ def brain_job(db: Session, org: Organization, today: dt.date) -> dict[str, Any]:
 
     gateway, embedder = get_gateway(), get_embedder()
     out: dict[str, Any] = {"cards": 0}
+    if unread_scans(db, org.id, 1):
+        out |= reread_missing(db, gateway, embedder, get_storage(), org.id, limit=5)
     if missing(db, org.id, 1):
         out = build_missing(db, gateway, embedder, org.id, limit=40)
     if vision_missing(db, org.id, 1):

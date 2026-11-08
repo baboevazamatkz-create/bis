@@ -261,27 +261,47 @@ def _owned_document(ctx: AgentContext, document_id: str):
     return resolve_document(ctx, document_id)
 
 
-@tool("get_document", "Документ из реестра: реквизиты, результаты разбора и текст (для ответа на письмо, проверки).",
-      scopes=("documents:read",))
-def get_document(ctx: AgentContext, args: DocumentArgs) -> dict:
+class GetDocumentArgs(BaseModel):
+    document_id: str
+    query: str | None = Field(None, description="Что ищете в документе: «реквизиты заказчика», «срок оплаты», "
+                              "«неустойка» — вернутся нужные места из всего документа, а не только начало")
+
+
+@tool("get_document", "Текст документа: с query — места из всего документа, где об этом сказано (с номерами страниц), "
+      "плюс первая и последняя страницы; без query — начало и конец документа. Для договоров реквизиты сторон обычно "
+      "в конце.", scopes=("documents:read",))
+def get_document(ctx: AgentContext, args: GetDocumentArgs) -> dict:
     from bis.agents.builtin_tools import share_document
     from bis.models import KnowledgeChunk, KnowledgeSource
     from bis.rag.parsers import UnsupportedFormat, parse_file
+    from bis.rag.search import hybrid_search
 
     doc = _owned_document(ctx, args.document_id)
-    text = None
-    if doc.file_key:
+    chunks = ctx.db.execute(select(KnowledgeChunk.content, KnowledgeChunk.page, KnowledgeChunk.id)
+                            .join(KnowledgeSource, KnowledgeSource.id == KnowledgeChunk.source_id)
+                            .where(KnowledgeSource.document_id == doc.id).order_by(KnowledgeChunk.ord)).all()
+    full = "\n".join(c[0] for c in chunks)
+    if not full.strip() and doc.file_key:
         try:
-            text = parse_file(ctx.storage.get(doc.file_key), doc.file_name or "file", doc.mime).text[:8000]
+            full = parse_file(ctx.storage.get(doc.file_key), doc.file_name or "file", doc.mime).text
         except UnsupportedFormat:
-            text = None
-    if not (text or "").strip():  # скан или чертёж: текст, распознанный при загрузке, — в базе знаний
-        parts = ctx.db.scalars(select(KnowledgeChunk.content).join(KnowledgeSource, KnowledgeSource.id == KnowledgeChunk.source_id)
-                               .where(KnowledgeSource.document_id == doc.id).order_by(KnowledgeChunk.ord).limit(40)).all()
-        text = "\n".join(parts)[:8000] or None
+            full = ""
+    out: dict = {"id": str(doc.id), "kind": doc.kind, "title": doc.title, "number": doc.number, "date": doc.date,
+                 "status": doc.status, "analysis": (doc.data or {}).get("analysis"),
+                 "card": (doc.data or {}).get("card"), "length": len(full)}
+    if len(full) <= 14000:
+        out["text"] = full or None
+    else:
+        out["beginning"] = full[:4000]
+        out["ending"] = full[-6000:]  # реквизиты, подписи, приложения — в конце
+        if args.query:
+            sources = ctx.db.scalars(select(KnowledgeSource.id).where(KnowledgeSource.document_id == doc.id)).all()
+            hits = hybrid_search(ctx.db, ctx.embedder, args.query, org_id=ctx.org_id, include_global=False,
+                                 source_ids=list(sources), k=6) if sources else []
+            out["found"] = [{"n": ctx.add_citation(h.to_dict()), "page": h.page, "text": h.content[:1500]} for h in hits]
+        out["note"] = "Документ длинный: показаны начало, конец и найденные места; уточните query, если нужного нет"
     share_document(ctx, doc)
-    return {"id": str(doc.id), "kind": doc.kind, "title": doc.title, "number": doc.number, "date": doc.date,
-            "status": doc.status, "analysis": (doc.data or {}).get("analysis"), "text": text}
+    return out
 
 
 @tool("process_incoming_letter", "Разобрать входящее письмо: зарегистрировать, определить суть и срок ответа, "

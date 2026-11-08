@@ -25,12 +25,14 @@ def coverage(db: Session = Depends(get_db), user: User = Depends(require("docume
 @router.post("/build")
 def build_now(db: Session = Depends(get_db), user: User = Depends(require("documents:write"))):
     """Досчитать сейчас: карточки и связи (до 100 документов), зрение по листам (до 10)."""
-    from bis.brain.build import build_missing, see_missing
+    from bis.brain.build import build_missing, reread_missing, see_missing
     from bis.llm.gateway import get_gateway
     from bis.rag.embeddings import get_embedder
     from bis.services.storage import get_storage
 
-    out = build_missing(db, get_gateway(), get_embedder(), user.organization_id, limit=100)
+    out = reread_missing(db, get_gateway(), get_embedder(), get_storage(), user.organization_id, limit=10)
+    db.commit()
+    out |= build_missing(db, get_gateway(), get_embedder(), user.organization_id, limit=100)
     db.commit()
     out |= see_missing(db, get_gateway(), get_embedder(), get_storage(), user.organization_id, limit=10)
     db.commit()

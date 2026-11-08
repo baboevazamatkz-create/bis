@@ -240,3 +240,41 @@ def test_find_documents_forgives_model_mistakes(client, db):
     wrong_date = find_documents.handler(ctx, FindDocumentsArgs(query="Письмо № 45", date_from="2026-01-01", date_to="2026-01-02"))
     assert wrong_date["documents"] and "note" in wrong_date
     assert document_card.handler(ctx, CardArgs(document_id="45"))["title"] == "Исх 45"
+
+
+def test_truncated_scan_is_reread_fully(client, db, monkeypatch):
+    """Скан на 25 страниц, раньше прочитанный до 20-й: «Эрудит» дочитывает его целиком и находит конец документа."""
+    import io
+
+    from pypdf import PdfWriter
+
+    from bis import ocr
+    from bis.brain.build import reread_missing, unread_scans
+    from bis.models import Document, KnowledgeChunk, KnowledgeSource
+    from bis.rag.embeddings import get_embedder
+    from bis.services.storage import get_storage
+
+    org, auth = _org(client, db, "1435000092")
+    w = PdfWriter()
+    for _ in range(25):
+        w.add_blank_page(width=300, height=400)
+    buf = io.BytesIO()
+    w.write(buf)
+    pages = [f"Страница {i + 1}. Договор подряда № 77 — условия." for i in range(25)]
+    pages[-1] = "13. Адреса и реквизиты сторон. Заказчик: АО «Заказчик», ИНН 7701234567. Подрядчик: ООО «Пилот»."
+    monkeypatch.setattr(ocr, "available", lambda: True)
+    monkeypatch.setattr(ocr, "recognize_pages", lambda data, mime, client=None: pages[:20])  # прежнее ограничение
+    r = client.post("/api/archive/import", headers=auth, files={"file": ("Договор 77.pdf", buf.getvalue(), "application/pdf")}).json()
+    doc = db.get(Document, r["document_id"])
+    text = lambda: " ".join(db.scalars(select(KnowledgeChunk.content).join(KnowledgeSource).where(  # noqa: E731
+        KnowledgeSource.document_id == doc.id)).all())
+    assert "7701234567" not in text() and unread_scans(db, org.id)
+
+    monkeypatch.setattr(ocr, "recognize_pages", lambda data, mime, client=None: pages)
+    res = reread_missing(db, None, get_embedder(), get_storage(), org.id)
+    db.commit()
+    db.expire_all()
+    assert res["reread"] == 1 and res["reread_left"] == 0 and "7701234567" in text()
+    assert db.scalar(select(__import__("sqlalchemy").func.max(KnowledgeChunk.page)).join(KnowledgeSource).where(
+        KnowledgeSource.document_id == doc.id)) == 25
+    assert db.get(Document, doc.id).data["pages_checked"] == 25
