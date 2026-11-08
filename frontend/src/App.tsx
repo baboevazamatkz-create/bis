@@ -112,7 +112,7 @@ export default function App() {
         <div className="nav-block">
           {nav("feed", "Лента ИИ", pendingAI)}
           {nav("chat", "Ассистент")}
-          {nav("brain", "Ось")}
+          {nav("brain", "Эрудит")}
           {nav("control", "Контроль", unread)}
         </div>
         <div className="nav-block">

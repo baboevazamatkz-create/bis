@@ -1,4 +1,4 @@
-"""«Ось»: карточки документов, связи (в т.ч. когда документ появился позже), досчёт, инструмент карточки."""
+"""«Эрудит»: карточки документов, связи (в т.ч. когда документ появился позже), досчёт, инструмент карточки."""
 
 from sqlalchemy import select
 
@@ -66,7 +66,7 @@ def test_card_tool_and_backfill(client, db):
     org, auth = _org(client, db, "1435000098")
     r = _upload(client, auth, "АОСР 1.txt", AOSR)
     doc = db.get(Document, r["document_id"])
-    doc.data = {k: v for k, v in doc.data.items() if k not in ("card", "card_text")}  # как будто загружено до «Оси»
+    doc.data = {k: v for k, v in doc.data.items() if k not in ("card", "card_text")}  # как будто загружено до «Эрудита»
     db.commit()
     assert coverage(db, org.id)["pending"] == 1
     res = build_missing(db, None, get_embedder(), org.id)

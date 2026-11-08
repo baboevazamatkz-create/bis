@@ -1,4 +1,4 @@
-"""Построение «Оси»: карточка и связи документа при загрузке; фоновый досчёт для уже загруженного архива."""
+"""Построение «Эрудита»: карточка и связи документа при загрузке; фоновый досчёт для уже загруженного архива."""
 
 from __future__ import annotations
 
@@ -75,7 +75,7 @@ def build_missing(db: Session, gateway, embedder, org_id: uuid.UUID, limit: int 
             done += 1
         except Exception as e:  # noqa: BLE001 — один документ не останавливает остальные
             failed += 1
-            log.warning("Ось: карточка документа %s не построена: %s", doc.id, e)
+            log.warning("Эрудит: карточка документа %s не построена: %s", doc.id, e)
     return {"cards": done, "failed": failed, "left": len(missing(db, org_id, 1000))}
 
 
@@ -187,7 +187,7 @@ def coverage(db: Session, org_id: uuid.UUID) -> dict[str, Any]:
             "vision_status": vis.status(get_gateway())}
 
 
-@job("brain", "Ось: карточки и связи документов", every_minutes=10)
+@job("brain", "Эрудит: карточки и связи документов", every_minutes=10)
 def brain_job(db: Session, org: Organization, today: dt.date) -> dict[str, Any]:
     from bis.llm.gateway import get_gateway
     from bis.rag.embeddings import get_embedder

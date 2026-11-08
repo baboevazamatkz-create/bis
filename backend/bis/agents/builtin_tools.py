@@ -109,7 +109,7 @@ def find_documents(ctx: AgentContext, args: FindDocumentsArgs) -> dict:
     ranked: dict[uuid.UUID, dict] = {}
     if args.query and args.query.strip():
         words = [w for w in _WORD.findall(args.query.lower()) if w not in _STOP]
-        # 0. по карточке «Оси»: марки (B25, А500С), оси, конструкции (Фм1), номера ссылок, шифр РД
+        # 0. по карточке «Эрудита»: марки (B25, А500С), оси, конструкции (Фм1), номера ссылок, шифр РД
         tokens = [t for t in re.findall(r"[A-Za-zА-Яа-яЁё]*\d[\w.\-/]*|[А-ЯA-Z]{2,4}\d?", args.query) if len(t) >= 2]
         if tokens:
             for d in ctx.db.scalars(allowed(select(Document)).where(
@@ -173,7 +173,7 @@ class CardArgs(BaseModel):
     document_id: str
 
 
-@tool("document_card", "Карточка документа из «Оси»: вид, №, дата, стороны, РД (шифр, листы, изм.), конструкции, "
+@tool("document_card", "Карточка документа из «Эрудита»: вид, №, дата, стороны, РД (шифр, листы, изм.), конструкции, "
       "материалы и марки, оси, отметки, нормы, суть — и связи: на какие документы ссылается (найдены ли в архиве) "
       "и какие документы ссылаются на него.", scopes=("documents:read",))
 def document_card(ctx: AgentContext, args: CardArgs) -> dict:

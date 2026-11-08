@@ -246,7 +246,7 @@ def import_file(db: Session, storage: Storage, gateway, embedder, org_id: uuid.U
     if text.strip():
         from bis.brain.card import build_card
 
-        card = build_card(gateway, text, dtype, name)  # «Ось»: карточка — шапка для поиска, номер, дата, ссылки
+        card = build_card(gateway, text, dtype, name)  # «Эрудит»: карточка — шапка для поиска, номер, дата, ссылки
         result["card"] = card.title
     if text.strip():
         from bis.rag.ingest import ingest_pages
