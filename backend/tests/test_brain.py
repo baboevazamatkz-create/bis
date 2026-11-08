@@ -79,3 +79,81 @@ def test_card_tool_and_backfill(client, db):
     assert out["card"]["number"] == "1" and [x["number"] for x in out["references"]] == ["4512", "ИС-1"]
     found = find_documents.handler(ctx, FindDocumentsArgs(query="А500С 1-6/А-Г"))
     assert found["documents"][0]["id"] == str(doc.id) and found["documents"][0]["card"].startswith("АОСР № 1")
+
+
+def test_vision_reads_scheme_sheets(client, db, monkeypatch):
+    """Схема в PDF: листы → модель зрения → штамп, оси, отклонения в карточке и описание листа в поиске."""
+    import io
+    import json
+
+    from pypdf import PdfWriter
+
+    from bis.brain.build import coverage, see_missing, vision_missing
+    from bis.llm.gateway import LLMGateway, ProviderEntry
+    from bis.llm.providers.offline import ScriptedProvider
+    from bis.models import Document, KnowledgeSource
+    from bis.rag.embeddings import get_embedder
+    from bis.services.storage import get_storage
+
+    org, auth = _org(client, db, "1435000097")
+    w = PdfWriter()
+    w.add_blank_page(width=400, height=300)
+    buf = io.BytesIO()
+    w.write(buf)
+    r = client.post("/api/archive/import", headers=auth, files={"file": ("ИС-1 армирование плиты.pdf", buf.getvalue(),
+                                                                          "application/pdf")}).json()
+    assert r["type"] == "scheme"
+    assert [d.id for d in vision_missing(db, org.id)] == [__import__("uuid").UUID(r["document_id"])]
+    assert see_missing(db, None, get_embedder(), get_storage(), org.id)["vision"] == "не подключено"
+
+    sheet = {"sheet_type": "исполнительная схема", "description": "Исполнительная схема армирования плиты Фм1 в осях 1-6/А-Г",
+             "title_block": {"code": "17-2026-КЖ0", "sheet": "1", "title": "Плита Фм1", "revision": "2"},
+             "elements": ["плита Фм1"], "axes": ["1-6", "А-Г"], "levels": ["-3.300"],
+             "deviations": [{"point": "1/А", "plan_mm": "+8", "height_mm": "-5"}]}
+    vlm = ScriptedProvider([json.dumps(sheet, ensure_ascii=False)] * 3)
+    gw = LLMGateway(entries={"vlm": ProviderEntry(vlm, capabilities=("text", "vision"))},
+                    routes={"default": ["vlm"], "vision": ["vlm"]})
+    res = see_missing(db, gw, get_embedder(), get_storage(), org.id)
+    db.commit()
+    assert res["vision"] == 1 and res["waiting"] == 0 and vlm.calls[0]["messages"][1].images
+    doc = db.get(Document, r["document_id"])
+    card = doc.data["card"]
+    assert card["rd_code"] == "17-2026-КЖ0" and card["revision"] == "2" and "1-6" in card["axes"]
+    assert card["vision"]["sheets"][0]["deviations"][0]["plan_mm"] == "+8"
+    src = db.scalars(select(KnowledgeSource).where(KnowledgeSource.document_id == doc.id)).all()
+    assert any((s.meta or {}).get("vision") for s in src)
+    assert coverage(db, org.id)["vision"] == 1
+
+
+def test_vision_forbidden_keeps_documents_waiting(client, db):
+    """Модель зрения есть в настройках, но закрыта (403): документы ждут, зрение помечено недоступным на 30 минут."""
+    import io
+
+    from pypdf import PdfWriter
+
+    from bis.brain import vision
+    from bis.brain.build import see_missing, vision_missing
+    from bis.llm.gateway import LLMGateway, ProviderEntry
+    from bis.llm.types import LLMError
+    from bis.rag.embeddings import get_embedder
+    from bis.services.storage import get_storage
+
+    class Forbidden:
+        name, model = "yandex-vision", "gemma"
+
+        def complete(self, *a, **k):
+            raise LLMError('yandex-vision: HTTP 403: {"error":{"message":"Forbidden"}}', retryable=False)
+
+    org, auth = _org(client, db, "1435000096")
+    w = PdfWriter()
+    w.add_blank_page(width=400, height=300)
+    buf = io.BytesIO()
+    w.write(buf)
+    client.post("/api/archive/import", headers=auth, files={"file": ("ИС-2.pdf", buf.getvalue(), "application/pdf")})
+    gw = LLMGateway(entries={"v": ProviderEntry(Forbidden(), capabilities=("text", "vision"))},
+                    routes={"default": ["v"], "vision": ["v"]})
+    vision._DOWN.update(until=None, reason=None)
+    res = see_missing(db, gw, get_embedder(), get_storage(), org.id)
+    assert res["vision"] == 0 and res["waiting"] == 1 and not res["vision_status"]["available"]
+    assert "403" in res["vision_status"]["reason"] and len(vision_missing(db, org.id)) == 1
+    vision._DOWN.update(until=None, reason=None)

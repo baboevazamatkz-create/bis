@@ -13,7 +13,20 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from bis import __version__
-from bis.api import admin, ai, auth, chat, control, documents, knowledge, registry, telegram, voice, works
+from bis.api import (
+    admin,
+    ai,
+    auth,
+    brain,
+    chat,
+    control,
+    documents,
+    knowledge,
+    registry,
+    telegram,
+    voice,
+    works,
+)
 from bis.config import get_settings
 
 log = logging.getLogger("bis.http")
@@ -47,6 +60,7 @@ def create_app() -> FastAPI:
 
     api = APIRouter(prefix="/api")
     api.include_router(admin.router)
+    api.include_router(brain.router)
     api.include_router(auth.router)
     api.include_router(chat.router)
     api.include_router(knowledge.router)

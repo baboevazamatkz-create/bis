@@ -118,6 +118,7 @@ REPLY_TO = re.compile(r"\bна\s+(?:ваш[ее]?\s+)?(?:исх(?:одящ\w*)?\
 CONTRACT_REF = re.compile(r"\b(?:по\s+)?договор\w*(?:\s+(?:поставки|подряда|субподряда|оказания\s+услуг))?\s*№\s*([\w\-/.]+)",
                           re.IGNORECASE)
 ACT_REF = re.compile(r"\b(?:АОСР|АООК|акт\w*\s+освидетельствования[^№\n]{0,40})\s*№\s*([\w\-/.]+)", re.IGNORECASE)
+_MORE = re.compile(r"(?:\s*,\s*|\s+и\s+)№\s*([\w\-/]+)")
 NUMBER_BY_KIND = {
     "aosr": r"АКТ[^\n№]{0,120}№\s*([\w\-/.]+)", "aook": r"АКТ[^\n№]{0,120}№\s*([\w\-/.]+)",
     "letter": r"\bисх\.?\s*№\s*([\w\-/.]+)", "incoming_letter": r"\bисх\.?\s*№\s*([\w\-/.]+)",
@@ -182,9 +183,17 @@ def rules_card(text: str, kind: str, name: str = "") -> Card:
     if kind != "contract":
         refs += [DocRef(kind="contract", number=n.rstrip(".,"), label="договор") for n in CONTRACT_REF.findall(text)]
     if kind not in ("aosr", "aook"):
-        refs += [DocRef(kind="act", number=n.rstrip(".,"), label="акт") for n in ACT_REF.findall(text)]
+        for m in ACT_REF.finditer(text):  # «АОСР № 1, № 2 и № 3»
+            refs.append(DocRef(kind="act", number=m.group(1).rstrip(".,"), label="акт"))
+            pos = m.end()
+            while more := _MORE.match(text, pos):
+                refs.append(DocRef(kind="act", number=more.group(1).rstrip(".,"), label="акт"))
+                pos = more.end()
+    own = {"certificate": "quality", "test_protocol": "protocol", "scheme": "scheme", "letter": "letter",
+           "incoming_letter": "letter", "contract": "contract", "aosr": "act", "aook": "act"}.get(kind)
     seen: set[tuple[str, str]] = set()
-    c.refs = [r for r in refs if (r.kind, r.number.lower()) not in seen and not seen.add((r.kind, r.number.lower()))][:30]
+    c.refs = [r for r in refs if (r.kind, r.number.lower()) not in seen and not seen.add((r.kind, r.number.lower()))
+              and not (r.kind == own and c.number and r.number.lower() == c.number.lower())][:30]  # не ссылка на себя
     orgs = _uniq(ORG.findall(head), 6)
     c.parties = orgs
     if kind in ("letter", "incoming_letter") and orgs:
@@ -240,7 +249,7 @@ def build_card(gateway, text: str, kind: str, name: str = "") -> Card:
         except Exception:  # noqa: BLE001 — модель недоступна: карточка по правилам
             pass
     if not card.summary:
-        first = next((ln.strip() for ln in text.splitlines() if len(ln.strip()) > 25), "")
+        first = next((ln.strip() for ln in text.splitlines() if len(ln.strip()) > 25 and "№" not in ln), "")
         card.summary = first[:200] or None
     card.title = card.label()
     return card

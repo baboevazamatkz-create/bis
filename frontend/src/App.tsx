@@ -3,6 +3,7 @@ import { api, DEMO, setToken, type User } from "./api";
 import { previewFor } from "./demo/mock";
 import Login from "./pages/Login";
 import Feed from "./pages/Feed";
+import Brain from "./pages/Brain";
 import Specialists from "./pages/Specialists";
 import ArchiveImport from "./pages/ArchiveImport";
 import Chat from "./pages/Chat";
@@ -89,6 +90,7 @@ export default function App() {
     case "specialists": content = <Specialists user={user} />; break;
     case "archive": content = <ArchiveImport />; break;
     case "chat": content = <Chat />; break;
+    case "brain": content = <Brain />; break;
     case "control": content = <Control />; break;
     case "contracts": content = <Contracts />; break;
     case "works": content = <Works />; break;
@@ -110,6 +112,7 @@ export default function App() {
         <div className="nav-block">
           {nav("feed", "Лента ИИ", pendingAI)}
           {nav("chat", "Ассистент")}
+          {nav("brain", "Ось")}
           {nav("control", "Контроль", unread)}
         </div>
         <div className="nav-block">

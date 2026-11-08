@@ -316,3 +316,13 @@ code { background: var(--track); padding: 1px 6px; border-radius: 4px; font-size
 .risk { padding: 8px 0 8px 12px; border-left: 3px solid var(--border); margin: 6px 0; }
 .risk-high { border-left-color: var(--err); }
 .risk-medium { border-left-color: var(--warn); }
+.brain-list { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+.brain-item { text-align: left; background: var(--soft); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px;
+  cursor: pointer; font: inherit; color: inherit; display: flex; flex-direction: column; gap: 2px; }
+.brain-item:hover { border-color: var(--accent); }
+.brain-card td { padding: 4px 12px 4px 0; vertical-align: top; }
+.brain-card td:first-child { white-space: nowrap; }
+.brain-links { padding-left: 18px; margin: 6px 0; }
+.brain-links li { margin: 3px 0; }
+.brain-sheet { border-top: 1px solid var(--border); padding: 8px 0; }
+.panel h3 { font-size: 14px; margin: 16px 0 6px; }
