@@ -16,6 +16,35 @@ def _alembic_upgrade() -> None:
     command.upgrade(cfg, "head")
 
 
+# команды, которым база не нужна (или которые сами её поднимают)
+NO_DB = {"local", "cad-mcp", "cad-check", "llm-check", "doctor", "serve"}
+
+
+def _local_home() -> Path | None:
+    """Папка локальной установки BIS (C:\\BIS): там .env и встроенная база."""
+    import os
+
+    for d in [os.environ.get("BIS_HOME"), Path(sys.executable).resolve().parents[2], "C:\\BIS", "C:\\Users\\Public\\BIS"]:
+        if d and (Path(d) / ".env").exists() and (Path(d) / "data").exists():
+            return Path(d)
+    return None
+
+
+def _auto_local(cmd: str) -> None:
+    """Команда запущена на компьютере с локальной установкой (bis.exe из C:\\BIS\\venv) без отдельного сервера
+    PostgreSQL: поднимаем встроенную базу и берём настройки из .env — как это делает ярлык BIS."""
+    import os
+
+    if cmd in NO_DB or os.environ.get("BIS_DATABASE_URL"):
+        return
+    home = _local_home()
+    if home is None:
+        return
+    from bis import local
+
+    local.prepare(home)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="bis", description="BIS — управление платформой")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -72,6 +101,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--port", type=int, default=8000)
 
     args = parser.parse_args(argv)
+    _auto_local(args.cmd)
 
     if args.cmd == "migrate":
         _alembic_upgrade()
@@ -130,7 +160,9 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(diagnose(), ensure_ascii=False, indent=2))
         return 0
     if args.cmd == "import-archive":
+        import threading
         from collections import Counter
+        from concurrent.futures import ThreadPoolExecutor
 
         from sqlalchemy import select
 
@@ -152,20 +184,32 @@ def main(argv: list[str] | None = None) -> int:
                 obj = db.scalar(select(ConstructionObject).where(ConstructionObject.organization_id == org.id,
                                                                  ConstructionObject.code == args.object))
                 obj_id = obj.id if obj else None
-            files = [f for f in sorted(args.folder.rglob("*")) if f.is_file()]
-            stats: Counter = Counter()
-            for i, f in enumerate(files, 1):
+            org_id = org.id
+        files = [f for f in sorted(args.folder.rglob("*")) if f.is_file()]
+        stats: Counter = Counter()
+        done = [0]
+        lock = threading.Lock()
+
+        def one(f: Path) -> None:
+            # свой сеанс базы на поток: распознавание, модели и векторы — сетевые, по 3 файла одновременно
+            with SessionLocal() as s:
                 try:
-                    r = import_file(db, get_storage(), get_gateway(), get_embedder(), org.id, data=f.read_bytes(),
+                    r = import_file(s, get_storage(), get_gateway(), get_embedder(), org_id, data=f.read_bytes(),
                                     name=f.name, object_id=obj_id, folder=str(f.parent.relative_to(args.folder)),
                                     analyze_contracts=not args.no_contracts)
-                    db.commit()
-                except Exception as e:  # noqa: BLE001
-                    db.rollback()
+                    s.commit()
+                except Exception as e:  # noqa: BLE001 — один файл не останавливает загрузку
+                    s.rollback()
                     r = {"status": "error", "error": str(e)[:200]}
+            with lock:
+                done[0] += 1
                 stats[r.get("type") or r["status"]] += 1
-                print(f"[{i}/{len(files)}] {f.name}: {r.get('type', r['status'])}" + (f" — {r['error']}" if r.get("error") else ""))
-            print("Итого:", ", ".join(f"{k}: {v}" for k, v in stats.most_common()))
+                print(f"[{done[0]}/{len(files)}] {f.name}: {r.get('type', r['status'])}"
+                      + (f" — {r['error']}" if r.get("error") else ""), flush=True)
+
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            list(pool.map(one, files))
+        print("Итого:", ", ".join(f"{k}: {v}" for k, v in stats.most_common()))
         return 0
     if args.cmd == "reindex":
         from sqlalchemy import select
