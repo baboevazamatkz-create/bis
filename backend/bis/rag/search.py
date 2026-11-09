@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 import re
 import uuid
 from dataclasses import asdict, dataclass
@@ -20,7 +21,7 @@ from bis.rag.chunking import parse_reference
 from bis.rag.embeddings import Embedder
 from bis.rag.thesaurus import expand, org_terms
 
-_TOKEN_RE = re.compile(r"[а-яёa-z]{3,}|\d+", re.IGNORECASE)
+_TOKEN_RE = re.compile(r"[а-яёa-z]{2,}|\d+", re.IGNORECASE)
 RRF_K = 60
 
 STATUS_LABELS = {"cancelled": "отменён", "replaced": "заменён", "unknown": "статус не проверен"}
@@ -218,8 +219,11 @@ def hybrid_search(
 
     # 2. Векторный поиск: исходный запрос и запрос, расширенный терминами тезауруса
     if qvec is not None and not VECTOR and getattr(embedder, "semantic", False):  # без pgvector: сравнение в памяти
-        ranked.append(_semantic_in_memory(db, qvec, flt, pool))
-        weights.append(1.3)
+        try:
+            ranked.append(_semantic_in_memory(db, qvec, flt, pool))
+            weights.append(1.3)
+        except ImportError:
+            logging.getLogger(__name__).warning("Недоступен NumPy: поиск продолжится по тексту")
     vectors = [(qvec, 1.0)] if VECTOR and qvec is not None else []
     if expansions and vectors:
         with contextlib.suppress(Exception):
@@ -238,6 +242,18 @@ def hybrid_search(
         stmt = stmt.order_by(func.ts_rank_cd(KnowledgeChunk.tsv, tsq).desc()).limit(pool)
         ranked.append(list(db.execute(stmt).all()))
         weights.append(1.0)
+
+    # Native Windows pilots use lexical search. Filenames, short drawing codes and exact
+    # identifiers must remain searchable even when Russian full-text tokenization differs.
+    if len(query) <= 300:
+        literal = _base_filter(select(KnowledgeChunk, KnowledgeSource), **flt).where(or_(
+            KnowledgeChunk.content.icontains(query, autoescape=True),
+            KnowledgeSource.title.icontains(query, autoescape=True),
+            KnowledgeSource.designation.icontains(query, autoescape=True),
+            KnowledgeSource.file_name.icontains(query, autoescape=True),
+        )).order_by(KnowledgeChunk.ord, KnowledgeSource.created_at.desc()).limit(pool)
+        ranked.append(list(db.execute(literal).all()))
+        weights.append(1.2)
 
     scores: dict[uuid.UUID, float] = {}
     rows: dict[uuid.UUID, tuple[KnowledgeChunk, KnowledgeSource]] = {}

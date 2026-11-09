@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from bis.api.deps import require
 from bis.db import get_db
 from bis.models import KnowledgeChunk, KnowledgeSource, User
-from bis.rag.embeddings import get_embedder
+from bis.rag.embeddings import get_embedder, get_query_embedder
 from bis.rag.ingest import KNOWLEDGE_KINDS, ingest_bytes
 from bis.rag.parsers import UnsupportedFormat
 from bis.rag.search import hybrid_search
@@ -155,7 +155,7 @@ def search(q: str, scope: Literal["norms", "organization", "project", "all"] = "
 
     policy = db.info.get("source_context")
     level = {"norms": "knowledge", "organization": "organization", "project": "project"}.get(scope) if policy and policy.strict else None
-    hits = hybrid_search(db, get_embedder(), q, org_id=user.organization_id, kinds=SCOPE_KINDS[scope], library_level=level, k=min(k, 30))
+    hits = hybrid_search(db, get_query_embedder(), q, org_id=user.organization_id, kinds=SCOPE_KINDS[scope], library_level=level, k=min(k, 30))
     return {"query": q, "results": [h.to_dict() for h in hits]}
 
 

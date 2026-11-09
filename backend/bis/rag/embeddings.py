@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import math
 import re
 from typing import Protocol
@@ -139,6 +140,15 @@ class YandexEmbedder:
 
 
 _embedder: Embedder | None = None
+
+
+def get_query_embedder() -> Embedder:
+    """A broken embedding configuration must not prevent ordinary lexical searches."""
+    try:
+        return get_embedder()
+    except (ValueError, TypeError):
+        logging.getLogger(__name__).warning("Эмбеддинги не настроены: поиск продолжится по тексту")
+        return HashingEmbedder(get_settings().embedding_dim)
 
 
 def get_embedder() -> Embedder:

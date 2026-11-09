@@ -16,12 +16,14 @@ export default function Knowledge({ user }: { user: User }) {
   const [results, setResults] = useState<Citation[] | null>(null);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState("");
 
   const load = () => api<Source[]>("/knowledge/sources").then(setSources);
   useEffect(() => {
     void api<{ strict: boolean }>("/libraries").then((r) => setStrict(r.strict)).catch(() => {});
-    api<Record<string, string>>("/knowledge/kinds").then(setKinds);
-    load();
+    api<Record<string, string>>("/knowledge/kinds").then(setKinds).catch((e) => setSearchError(e.message));
+    void load().catch((e) => setSearchError(e.message));
   }, []);
 
   async function send() {
@@ -50,9 +52,14 @@ export default function Knowledge({ user }: { user: User }) {
   }
 
   async function search(q: string = query) {
-    if (!q.trim()) return;
-    const r = await api<{ results: Citation[] }>(`/knowledge/search?q=${encodeURIComponent(q)}&scope=${searchScope}`);
-    setResults(r.results);
+    if (!q.trim() || searching) return;
+    setResults(null); setSearchError(""); setSearching(true);
+    try {
+      const r = await api<{ results: Citation[] }>(`/knowledge/search?q=${encodeURIComponent(q)}&scope=${searchScope}`, { signal: AbortSignal.timeout(30_000) });
+      setResults(r.results);
+    } catch (e) {
+      setSearchError((e as Error).name === "TimeoutError" ? "Поиск не завершился за 30 секунд. Проверьте окно запуска BIS." : (e as Error).message);
+    } finally { setSearching(false); }
   }
 
   async function setStatus(s: Source, status: string) {
@@ -98,13 +105,14 @@ export default function Knowledge({ user }: { user: User }) {
           <div className="field" style={{ flex: "0 0 auto" }}>
             <div className="row" style={{ gap: 6, alignItems: "flex-start" }}>
               <VoiceButton onText={(t) => { setQuery(t); void search(t); }} />
-              <button className="btn primary" onClick={() => void search()}>
-                Найти
+              <button className="btn primary" disabled={searching || !query.trim()} onClick={() => void search()}>
+                {searching ? "Ищу…" : "Найти"}
               </button>
             </div>
           </div>
         </div>
-        {results && results.length === 0 && <p className="muted">Ничего не найдено.</p>}
+        {searchError && <div className="alert error" role="alert">{searchError}</div>}
+        {results && results.length === 0 && <p className="muted">Ничего не найдено. Проверьте активный проект и наличие прочитанных документов в библиотеке.</p>}
         {results?.map((r, i) => (
           <details key={r.chunk_id} open={i < 3} style={{ marginBottom: 6 }}>
             <summary>

@@ -98,6 +98,7 @@ class Settings(BaseSettings):
     llm_providers_json: str | None = None
     llm_config_file: Path | None = None
     llm_routes_json: str | None = None
+    chat_timeout_seconds: float = Field(180, ge=1, le=1800)
 
     # Telegram-бот: приём фото, голосовых и документов с площадки, уведомления, решения по предложениям ИИ
     # сводка дня руководителям и напоминание прорабам (местное время BIS)

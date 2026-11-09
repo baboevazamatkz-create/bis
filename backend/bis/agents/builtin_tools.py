@@ -61,7 +61,7 @@ def search_knowledge(ctx: AgentContext, args: SearchArgs) -> dict:
 # --- документы организации (в т.ч. загруженный архив) ---------------------------------------------
 
 ORG_KINDS = SCOPE_KINDS["organization"]
-_WORD = re.compile(r"[а-яёa-z0-9]{3,}", re.IGNORECASE)
+_WORD = re.compile(r"[а-яёa-z0-9]{2,}", re.IGNORECASE)
 _STOP = {"найди", "покажи", "открой", "какие", "какой", "какая", "есть", "все", "всё", "документ", "документы", "про",
          "для", "что", "где", "нам", "наш", "наши", "по", "на", "мне", "пожалуйста"}
 
@@ -138,6 +138,13 @@ def find_documents(ctx: AgentContext, args: FindDocumentsArgs) -> dict:
                     Document.number == exact, Document.data["card"]["number"].astext == exact))).all():
                 ranked[d.id] = {"doc": d, "score": 5.0, "excerpt": None, "n": None}
         words = [w for w in _WORD.findall(args.query.lower()) if w not in _STOP]
+        literal = args.query.strip()
+        if len(literal) <= 300:
+            for d in ctx.db.scalars(allowed(select(Document)).where(or_(
+                    Document.title.icontains(literal, autoescape=True),
+                    Document.number.icontains(literal, autoescape=True),
+                    Document.file_name.icontains(literal, autoescape=True))).limit(50)).all():
+                ranked.setdefault(d.id, {"doc": d, "score": 2.5, "excerpt": None, "n": None})
         # 0. по карточке «Синапса»: марки (B25, А500С), оси, конструкции (Фм1), номера ссылок, шифр РД
         tokens = [t for t in re.findall(r"[A-Za-zА-Яа-яЁё]*\d[\w.\-/]*|[А-ЯA-Z]{2,4}\d?", args.query) if len(t) >= 2]
         if tokens:
@@ -148,10 +155,11 @@ def find_documents(ctx: AgentContext, args: FindDocumentsArgs) -> dict:
         if words:
             stems = [w[:max(4, len(w) - 2)] for w in words]
             rows = ctx.db.scalars(allowed(select(Document)).where(or_(*(Document.title.ilike(f"%{t}%") for t in stems),
-                                                                       *(Document.number.ilike(f"%{t}%") for t in stems)))
+                                                                       *(Document.number.ilike(f"%{t}%") for t in stems),
+                                                                       *(Document.file_name.ilike(f"%{t}%") for t in stems)))
                                   .limit(300)).all()
             for d in rows:
-                low = f"{d.title} {d.number or ''}".lower()
+                low = f"{d.title} {d.number or ''} {d.file_name or ''}".lower()
                 share = sum(1 for t in stems if t in low) / len(stems)
                 if share >= 0.5 or len(stems) == 1:
                     ranked.setdefault(d.id, {"doc": d, "score": 1.0 + share, "excerpt": None, "n": None})

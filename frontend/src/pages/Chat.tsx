@@ -102,6 +102,8 @@ export default function Chat({ workspace = "platform" }: { workspace?: "platform
   const [steps, setSteps] = useState<string[]>([]);
   const [error, setError] = useState("");
   const bottom = useRef<HTMLDivElement>(null);
+  const pending = useRef<AbortController | null>(null);
+  useEffect(() => () => pending.current?.abort(), []);
   const [voice, setVoice] = useState({ stt: false, tts: false });
   const [speakReplies, setSpeakReplies] = useState(false);
   const [recording, setRecording] = useState(false);
@@ -175,11 +177,13 @@ export default function Chat({ workspace = "platform" }: { workspace?: "platform
     setMessages((m) => [...m, { role: "user", content: message }]);
     setBusy(true);
     setSteps([]);
+    const controller = new AbortController();
+    pending.current = controller;
     try {
       const r = await streamChat<ChatReply>({ message, session_id: sessionId, agent: agent || null, workspace }, (e) => {
         if (e.type === "route" && e.title) setSteps((s) => [...s, `Отвечает: ${e.title}`]);
         if (e.type === "step" && e.label) setSteps((s) => [...s, e.label!]);
-      });
+      }, { signal: controller.signal });
       setSessionId(r.session_id);
       setMessages((m) => [...m, { role: "assistant", content: r.text, agent: r.agent, meta: r }]);
       if (speakReplies) speak(r.text);
@@ -187,6 +191,7 @@ export default function Chat({ workspace = "platform" }: { workspace?: "platform
     } catch (e) {
       setError((e as Error).message);
     } finally {
+      pending.current = null;
       setBusy(false);
       setSteps([]);
     }
@@ -265,6 +270,7 @@ export default function Chat({ workspace = "platform" }: { workspace?: "platform
                 <>
                   <Docs items={m.meta?.documents ?? []} />
                   <Citations items={m.meta?.citations ?? []} />
+                  {(m.meta?.provider === "offline" || m.meta?.model === "offline") && <p className="small text-bad">Ответ получен без языковой модели. Проверьте подключение ИИ; поиск по документам доступен отдельно в разделе «Синапс».</p>}
                   <div className="meta">{agentTitle(m.agent) || "Синапс"}
                     {(m.meta?.provider || !!m.meta?.trace?.length) && <details className="chat-tech"><summary>Детали ответа</summary><p>{m.meta?.provider}{m.meta?.routed_by ? ` · ${m.meta.routed_by}` : ""}</p>{m.meta?.trace?.map((t, n) => <span key={n}>{t.tool}{t.error ? " · ошибка" : ""}<br /></span>)}</details>}
                   </div>
@@ -278,6 +284,7 @@ export default function Chat({ workspace = "platform" }: { workspace?: "platform
                 {(steps.length ? steps : ["Разбираю вопрос"]).map((x, i, all) => (
                   <div key={i} className={i === all.length - 1 ? "step now" : "step"}>{i === all.length - 1 ? "⏳" : "✓"} {x}</div>
                 ))}
+                <button className="btn small" onClick={() => pending.current?.abort()}>Остановить запрос</button>
               </div>
             </div>
           )}

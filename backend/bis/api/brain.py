@@ -47,7 +47,7 @@ def search(q: str = "", kind: str | None = None, limit: int = 20, db: Session = 
            user: User = Depends(require("documents:read")), workspace: Literal["platform", "executive"] = "platform"):
     from bis.agents.builtin_tools import FindDocumentsArgs, find_documents
 
-    ctx = agent_context(db, user)
+    ctx = agent_context(db, user, query_only=True)
     res = find_documents.handler(ctx, FindDocumentsArgs(query=q or None, kind=kind or None, limit=min(limit, 30), workspace=workspace))
     return res["documents"]
 

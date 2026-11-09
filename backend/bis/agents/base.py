@@ -55,6 +55,11 @@ class AgentContext:
     writes: int = 0
     choices: list[dict[str, Any]] = field(default_factory=list)
     workspace: str = "platform"
+    is_cancelled: Callable[[], bool] | None = None
+
+    def check_cancelled(self) -> None:
+        if self.is_cancelled and self.is_cancelled():
+            raise TimeoutError("Запрос остановлен или превышено время ожидания")
 
     def __post_init__(self):
         if self.db is None or self.org_id is None:
@@ -113,6 +118,7 @@ class Tool:
         return {"name": self.name, "description": self.description, "inputSchema": self.spec().parameters}
 
     def run(self, ctx: AgentContext, arguments: dict[str, Any]) -> tuple[str, bool]:
+        ctx.check_cancelled()
         for scope in self.scopes:
             if not has_scope(ctx.user.role, scope):
                 return _json({"error": f"Недостаточно прав ({scope}) для инструмента {self.name}"}), True
@@ -130,6 +136,7 @@ class Tool:
                 ctx.choices = e.candidates
                 return _json({"error": str(e), "candidates": e.candidates}), True
             return _json({"error": str(e)}), True
+        ctx.check_cancelled()
         if any(sc.endswith(":write") for sc in self.scopes):
             ctx.writes += 1
         return bounded_json(result if isinstance(result, dict | list) else {"result": result}), False
@@ -439,6 +446,7 @@ class Agent:
     def run(self, ctx: AgentContext, registry: ToolRegistry, history: list[Message], user_text: str) -> AgentResult:
         from bis.agents.grounding import recovery_answer, remember, retrieve, shared_evidence
 
+        ctx.check_cancelled()
         ctx.agent_name = self.name
         if ctx.tool_registry is None:
             ctx.tool_registry = registry
@@ -472,6 +480,8 @@ class Agent:
         if inherited:
             messages.append(Message(role="system", content=inherited))
         if ctx.depth == 0 and self.prefetch:
+            if ctx.progress:
+                ctx.progress({"label": "Ищу основания в документах"})
             found = prefetch(ctx, user_text)
             if found:
                 messages.append(Message(role="system", content=found))
@@ -508,13 +518,17 @@ class Agent:
         steps = self.max_steps
         step = 0
         while step < steps:
+            ctx.check_cancelled()
             step += 1
+            if ctx.progress:
+                ctx.progress({"label": "Запрашиваю ответ языковой модели"})
             try:
                 resp = ctx.gateway.complete(messages, task=self.task, sensitivity=self.sensitivity,
                                             tools=specs or None, prefer=provider)
             except LLMError as e:
                 text = f"Не удалось получить ответ модели: {e}"
                 break
+            ctx.check_cancelled()
             provider, model = resp.provider, resp.model
             for k in usage:
                 usage[k] += resp.usage.get(k, 0)

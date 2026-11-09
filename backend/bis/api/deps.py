@@ -61,15 +61,20 @@ def require(scope: str) -> Callable[..., User]:
     return dep
 
 
-def agent_context(db: Session, user: User) -> AgentContext:
+def agent_context(db: Session, user: User, *, query_only: bool = False) -> AgentContext:
     from bis.plugins.sdk import get_registry
 
     reg = get_registry()
     from bis.services.library_access import bind_context
 
     scope = db.info.get("source_context") or bind_context(db, user.organization_id)
+    from bis.llm.gateway import LLMGateway
+    from bis.rag.embeddings import get_query_embedder
+
     ctx = AgentContext(
-        db=db, org_id=user.organization_id, user=user, gateway=get_gateway(), embedder=get_embedder(),
+        db=db, org_id=user.organization_id, user=user,
+        gateway=LLMGateway(entries={}) if query_only else get_gateway(),
+        embedder=get_query_embedder() if query_only else get_embedder(),
         storage=get_storage(), agents=reg.agents, tool_registry=reg.tools,
     )
     if scope.object_id:

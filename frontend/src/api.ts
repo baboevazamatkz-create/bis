@@ -42,13 +42,13 @@ export class ApiError extends Error {
   }
 }
 
-function detail(data: unknown): string {
+function detail(data: unknown, status?: number): string {
   if (data && typeof data === "object" && "detail" in data) {
     const d = (data as { detail: unknown }).detail;
     if (typeof d === "string") return d;
     if (Array.isArray(d)) return d.map((e) => `${(e.loc ?? []).join(".")}: ${e.msg}`).join("; ");
   }
-  return "Ошибка запроса";
+  return status ? `Ошибка сервера (HTTP ${status}). Подробности — в окне запуска BIS.` : "Ошибка запроса";
 }
 
 export async function api<T = unknown>(path: string, options: RequestInit & { json?: unknown } = {}): Promise<T> {
@@ -68,42 +68,64 @@ export async function api<T = unknown>(path: string, options: RequestInit & { js
     window.dispatchEvent(new Event("bis:logout"));
   }
   if (res.status === 204) return undefined as T;
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new ApiError(res.status, detail(data));
+  let invalidJson = false;
+  const data = await res.json().catch(() => { invalidJson = true; return null; });
+  if (!res.ok) throw new ApiError(res.status, detail(data, res.status));
+  if (invalidJson) throw new ApiError(502, "Сервер вернул некорректный ответ. Обновите BIS и повторите запрос.");
   return data as T;
 }
 
 export interface StreamEvent { type: "step" | "route" | "done" | "error"; label?: string; title?: string; agent?: string; reply?: unknown; detail?: string }
 
 /** Ответ ассистента потоком: шаги работы приходят по мере выполнения, в конце — ответ целиком. */
-export async function streamChat<T>(body: unknown, onEvent: (e: StreamEvent) => void): Promise<T> {
+export async function streamChat<T>(body: unknown, onEvent: (e: StreamEvent) => void,
+  options: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<T> {
   if (DEMO) return api<T>("/chat", { method: "POST", json: body });
   const headers = new Headers({ "Content-Type": "application/json", Accept: "text/event-stream" });
   projectHeader(headers);
   const token = getToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
-  const res = await fetch("/api/chat/stream", { method: "POST", headers, body: JSON.stringify(body) });
-  if (!res.ok || !res.body) throw new ApiError(res.status, detail(await res.json().catch(() => ({}))));
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buf = "";
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
-    let cut: number;
-    while ((cut = buf.indexOf("\n\n")) >= 0) {
-      const chunk = buf.slice(0, cut);
-      buf = buf.slice(cut + 2);
-      const line = chunk.split("\n").find((l) => l.startsWith("data: "));
-      if (!line) continue;
-      const e = JSON.parse(line.slice(6)) as StreamEvent;
-      onEvent(e);
-      if (e.type === "done") return e.reply as T;
-      if (e.type === "error") throw new ApiError(400, String(e.detail ?? "Ошибка"));
+  const controller = new AbortController();
+  let timedOut = false;
+  const abort = () => controller.abort();
+  if (options.signal?.aborted) abort();
+  else options.signal?.addEventListener("abort", abort, { once: true });
+  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, options.timeoutMs ?? 240_000);
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  try {
+    const res = await fetch("/api/chat/stream", { method: "POST", headers, body: JSON.stringify(body), signal: controller.signal });
+    if (!res.ok || !res.body) throw new ApiError(res.status, detail(await res.json().catch(() => ({})), res.status));
+    reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf = (buf + decoder.decode(value, { stream: true })).replace(/\r\n/g, "\n");
+      let cut: number;
+      while ((cut = buf.indexOf("\n\n")) >= 0) {
+        const chunk = buf.slice(0, cut);
+        buf = buf.slice(cut + 2);
+        const data = chunk.split("\n").filter((l) => l.startsWith("data:")).map((l) => l.slice(5).trimStart()).join("\n");
+        if (!data) continue;
+        const e = JSON.parse(data) as StreamEvent;
+        onEvent(e);
+        if (e.type === "done") return e.reply as T;
+        if (e.type === "error") throw new ApiError(400, String(e.detail ?? "Ошибка"));
+      }
     }
+    throw new ApiError(500, "Ответ прервался — повторите вопрос");
+  } catch (e) {
+    if (controller.signal.aborted) throw new ApiError(timedOut ? 408 : 499,
+      timedOut ? "Сервер не завершил ответ вовремя. Проверьте подключение модели и окно запуска BIS." :
+        "Запрос остановлен. Если создавался документ, проверьте реестр перед повтором.");
+    throw e;
+  } finally {
+    clearTimeout(timer);
+    options.signal?.removeEventListener("abort", abort);
+    controller.abort();
+    if (reader) { await reader.cancel().catch(() => {}); reader.releaseLock(); }
   }
-  throw new ApiError(500, "Ответ прервался — повторите вопрос");
 }
 
 export async function upload<T = unknown>(path: string, form: FormData): Promise<T> {

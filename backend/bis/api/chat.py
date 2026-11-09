@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Literal
@@ -18,6 +20,8 @@ from bis.plugins.sdk import get_registry
 
 router = APIRouter(tags=["chat"])
 HISTORY_LIMIT = 20
+STREAM_HEARTBEAT_SECONDS = 15
+log = logging.getLogger(__name__)
 
 
 class ChatIn(BaseModel):
@@ -46,7 +50,7 @@ def chat(body: ChatIn, db: Session = Depends(get_db), user: User = Depends(requi
     return _answer(db, user, body)
 
 
-def _answer(db: Session, user: User, body: ChatIn, progress=None, on_route=None) -> dict:
+def _answer(db: Session, user: User, body: ChatIn, progress=None, on_route=None, is_cancelled=None) -> dict:
     from bis.services.library_access import bind_context
 
     current = db.info.get("source_context")
@@ -101,8 +105,12 @@ def _answer(db: Session, user: User, body: ChatIn, progress=None, on_route=None)
     agent = reg.agents[agent_name]
     if on_route:
         on_route(agent_name, agent.title)
+    if progress:
+        progress({"label": "Готовлю данные выбранного проекта"})
     ctx = agent_context(db, user)
     ctx.workspace = body.workspace
+    ctx.is_cancelled = is_cancelled
+    ctx.check_cancelled()
     previous = next((m for m in rows if m.role == "assistant"), None)
     if previous:
         state = (previous.meta or {}).get("context") or {}
@@ -148,6 +156,7 @@ def _answer(db: Session, user: User, body: ChatIn, progress=None, on_route=None)
               "provider": result.provider, "model": result.model, "routed_by": routed_by,
               "context": {"focus": ctx.focus}, "workspace": body.workspace},
     ))
+    ctx.check_cancelled()
     db.commit()
     return {
         "session_id": session.id,
@@ -164,7 +173,7 @@ def _answer(db: Session, user: User, body: ChatIn, progress=None, on_route=None)
 
 
 @router.post("/chat/stream")
-def chat_stream(body: ChatIn, user: User = Depends(require("knowledge:read"))):
+def chat_stream(body: ChatIn, db: Session = Depends(get_db), user: User = Depends(require("knowledge:read"))):
     """Как /chat, но шаги работы ИИ приходят сразу (text/event-stream): маршрут, поиск, чтение документов, ответ."""
     import json
     import queue
@@ -172,36 +181,67 @@ def chat_stream(body: ChatIn, user: User = Depends(require("knowledge:read"))):
 
     from fastapi.responses import StreamingResponse
 
+    from bis.config import get_settings
     from bis.db import SessionLocal
 
     events: queue.Queue = queue.Queue()
     user_id = user.id
+    scope = db.info.get("source_context")
+    project_id = scope.object_id if scope else None
+    if project_id and body.object_id and project_id != body.object_id:
+        raise HTTPException(409, "Объект запроса отличается от активного проекта")
+    if project_id and not body.object_id:
+        body = body.model_copy(update={"object_id": project_id})
+    cancelled = threading.Event()
+    started = time.monotonic()
+    deadline = started + get_settings().chat_timeout_seconds
+
+    def is_cancelled():
+        return cancelled.is_set() or time.monotonic() >= deadline
+
+    events.put({"type": "step", "label": "Проверяю проект и доступ к документам"})
 
     def work() -> None:
-        with SessionLocal() as db:
-            try:
+        try:
+            with SessionLocal() as db:
                 me = db.get(User, user_id)
+                if me is None or not me.is_active:
+                    raise HTTPException(401, "Пользователь недоступен")
+                if is_cancelled():
+                    return
                 events.put({"type": "step", "label": "Разбираю вопрос"})
                 out = _answer(db, me, body, progress=lambda e: events.put({"type": "step", "label": e["label"]}),
-                              on_route=lambda name, title: events.put({"type": "route", "agent": name, "title": title}))
+                              on_route=lambda name, title: events.put({"type": "route", "agent": name, "title": title}),
+                              is_cancelled=is_cancelled)
                 events.put({"type": "done", "reply": out})
-            except HTTPException as e:
-                events.put({"type": "error", "detail": e.detail})
-            except Exception as e:  # noqa: BLE001 — показать пользователю, а не оборвать поток
-                events.put({"type": "error", "detail": f"Не удалось ответить: {e}"})
+        except HTTPException as e:
+            events.put({"type": "error", "detail": e.detail})
+        except Exception as e:  # noqa: BLE001 — показать пользователю, а не оборвать поток
+            log.exception("Ошибка фонового ответа в чате")
+            events.put({"type": "error", "detail": f"Не удалось ответить: {e}"})
 
     threading.Thread(target=work, daemon=True, name="bis-chat").start()
 
     def stream():
-        while True:
-            try:
-                e = events.get(timeout=15)
-            except queue.Empty:
-                yield ": ping\n\n"  # соединение живо, ИИ ещё работает
-                continue
-            yield "data: " + json.dumps(e, ensure_ascii=False, default=str) + "\n\n"
-            if e["type"] in ("done", "error"):
-                return
+        try:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    cancelled.set()
+                    e = {"type": "error", "detail": "Превышено время ожидания ответа. Проверьте подключение модели. "
+                         "Если создавался документ, проверьте реестр перед повторным запросом."}
+                else:
+                    try:
+                        e = events.get(timeout=min(STREAM_HEARTBEAT_SECONDS, remaining))
+                    except queue.Empty:
+                        if time.monotonic() >= deadline:
+                            continue
+                        e = {"type": "step", "label": f"Ожидаю завершения запроса: {int(time.monotonic() - started)} с"}
+                yield "data: " + json.dumps(e, ensure_ascii=False, default=str) + "\n\n"
+                if e["type"] in ("done", "error"):
+                    return
+        finally:
+            cancelled.set()
 
     return StreamingResponse(stream(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Content-Encoding": "identity"})

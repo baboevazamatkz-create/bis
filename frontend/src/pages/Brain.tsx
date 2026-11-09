@@ -115,16 +115,25 @@ export default function Brain({ executive = false }: { executive?: boolean }) {
   const [view, setView] = useState<CardView | null>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
+  const [error, setError] = useState("");
+  const [searching, setSearching] = useState(false);
 
   const load = () => api<Coverage>("/brain/coverage").then(setCov).catch(() => setCov(null));
   useEffect(() => { void load(); }, []);
 
   async function search(text = q) {
+    if (!text.trim() || searching) return;
     setView(null);
-    setFound(await api<Found[]>(`/brain/search?q=${encodeURIComponent(text)}&workspace=${executive ? "executive" : "platform"}`));
+    setFound(null); setError(""); setSearching(true);
+    try {
+      setFound(await api<Found[]>(`/brain/search?q=${encodeURIComponent(text)}&workspace=${executive ? "executive" : "platform"}`, { signal: AbortSignal.timeout(30_000) }));
+    } catch (e) {
+      setError((e as Error).name === "TimeoutError" ? "Поиск не завершился за 30 секунд. Проверьте окно запуска BIS." : (e as Error).message);
+    } finally { setSearching(false); }
   }
   async function open(id: string) {
-    setView(await api<CardView>(`/brain/documents/${id}`));
+    try { setError(""); setView(await api<CardView>(`/brain/documents/${id}`)); }
+    catch (e) { setError((e as Error).message); }
   }
   async function buildNow() {
     setBusy(true);
@@ -133,7 +142,7 @@ export default function Brain({ executive = false }: { executive?: boolean }) {
       const r = await api<{ cards: number; vision?: number | string; left: number }>("/brain/build", { method: "POST" });
       setMsg(`Карточек построено: ${r.cards}` + (typeof r.vision === "number" ? `, листов прочитано зрением: ${r.vision}` : ""));
       await load();
-    } finally {
+    } catch (e) { setError((e as Error).message); } finally {
       setBusy(false);
     }
   }
@@ -149,6 +158,7 @@ export default function Brain({ executive = false }: { executive?: boolean }) {
         <button className="btn" disabled={busy} onClick={() => void buildNow()}>{busy ? "Досчитываю…" : "Досчитать сейчас"}</button>
       </PageHead>
       {msg && <div className="alert ok">{msg}</div>}
+      {error && <div className="alert error" role="alert">{error}</div>}
       {cov && (
         <div className="stats">
           <div className="stat"><div className="stat-value">{cov.cards}<span className="muted small"> / {cov.documents}</span></div><div className="stat-label">карточек</div></div>
@@ -169,7 +179,7 @@ export default function Brain({ executive = false }: { executive?: boolean }) {
           <input value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && void search()}
                  placeholder="Что найти: «А500С 1-6/А-Г», «схема плиты Фм1», «письмо заказчика про ИД», «КЖ0 лист 4»" style={{ flex: 1 }} />
           <VoiceButton onText={(t) => { setQ(t); void search(t); }} />
-          <button className="btn primary" onClick={() => void search()}>Найти</button>
+          <button className="btn primary" disabled={searching || !q.trim()} onClick={() => void search()}>{searching ? "Ищу…" : "Найти"}</button>
         </div>
         {found && found.length === 0 && <p className="muted">Ничего не нашлось.</p>}
         {found && found.length > 0 && !view && (
