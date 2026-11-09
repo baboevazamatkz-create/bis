@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -23,6 +24,8 @@ class ChatIn(BaseModel):
     message: str = Field(min_length=1, max_length=20000)
     session_id: uuid.UUID | None = None
     agent: str | None = None
+    object_id: uuid.UUID | None = None
+    workspace: Literal["platform", "executive"] = "platform"
 
 
 @router.get("/agents")
@@ -44,29 +47,97 @@ def chat(body: ChatIn, db: Session = Depends(get_db), user: User = Depends(requi
 
 
 def _answer(db: Session, user: User, body: ChatIn, progress=None, on_route=None) -> dict:
+    from bis.services.library_access import bind_context
+
+    current = db.info.get("source_context")
+    if body.object_id and current and current.object_id and current.object_id != body.object_id:
+        raise HTTPException(409, "Объект запроса отличается от активного проекта")
+    selected_project = body.object_id or (current.object_id if current else None)
+    if not selected_project and body.session_id:
+        own_session = db.scalar(select(ChatSession).where(ChatSession.id == body.session_id,
+            ChatSession.user_id == user.id, ChatSession.organization_id == user.organization_id)
+            .execution_options(library_management=True))
+        if own_session:
+            selected_project = own_session.object_id
+    if not selected_project:
+        from bis.brain.orchestrator import question_plan
+        from bis.models import ConstructionObject
+        from bis.services.executive_pipeline import is_work_report
+
+        if question_plan(body.message)['predicates'] or is_work_report(body.message):
+            projects = db.scalars(select(ConstructionObject.id).where(ConstructionObject.organization_id == user.organization_id,
+                ConstructionObject.status == 'active').limit(2)).all()
+            if len(projects) == 1:
+                selected_project = projects[0]
+    scope = bind_context(db, user.organization_id, selected_project)
     reg = get_registry()
     if body.session_id:
         session = db.get(ChatSession, body.session_id)
-        if session is None or session.user_id != user.id:
+        if session is None or session.user_id != user.id or (scope.object_id and session.object_id != scope.object_id):
             raise HTTPException(404, "Диалог не найден")
+        first = db.scalar(select(ChatMessage).where(ChatMessage.session_id == session.id, ChatMessage.role == "assistant")
+                          .order_by(ChatMessage.created_at).limit(1))
+        if first and (first.meta or {}).get("workspace", "platform") != body.workspace:
+            raise HTTPException(404, "Диалог относится к другому рабочему пространству")
     else:
-        session = ChatSession(organization_id=user.organization_id, user_id=user.id, title=body.message[:80])
+        session = ChatSession(organization_id=user.organization_id, user_id=user.id, title=body.message[:80], object_id=scope.object_id)
         db.add(session)
         db.flush()
     rows = db.scalars(select(ChatMessage).where(ChatMessage.session_id == session.id)
                       .order_by(ChatMessage.created_at.desc()).limit(HISTORY_LIMIT)).all()
     history = [Message(role=m.role, content=m.content) for m in reversed(rows)]
 
+    explicit = body.agent
+    if body.workspace == "executive":
+        from bis.modules.executive import AGENTS
+
+        if explicit and explicit not in AGENTS:
+            raise HTTPException(400, "Специалист недоступен в блоке исполнительной документации")
+        explicit = explicit or "pto"
     try:
-        agent_name, routed_by = reg.supervisor().route(body.message, get_gateway(), body.agent)
+        agent_name, routed_by = reg.supervisor().route(body.message, get_gateway(), explicit)
     except LookupError as e:
         raise HTTPException(404, str(e)) from e
     agent = reg.agents[agent_name]
     if on_route:
         on_route(agent_name, agent.title)
     ctx = agent_context(db, user)
+    ctx.workspace = body.workspace
+    previous = next((m for m in rows if m.role == "assistant"), None)
+    if previous:
+        state = (previous.meta or {}).get("context") or {}
+        ctx.focus = {k: v for k, v in state.get("focus", {}).items()
+                     if k in ("document", "contract", "object", "fact_location", "fact_work", "fact_predicate", "fact_category") and isinstance(v, str)}
+    if scope.strict:
+        if session.object_id != scope.object_id:
+            ctx.focus = {}
+        if scope.object_id:
+            ctx.focus['object'] = str(scope.object_id)
+        else:
+            ctx.focus = {}
     ctx.progress = progress
-    result = agent.run(ctx, reg.tools, history, body.message)
+    from bis.services.executive_pipeline import is_work_report
+
+    if body.workspace == "executive" and agent_name == "pto" and is_work_report(body.message):
+        import json
+
+        from bis.agents.base import AgentResult
+        from bis.agents.tools_id import prepare_executive_package
+
+        ctx.conversation = [*history, Message(role="user", content=body.message)]
+        raw, error = prepare_executive_package.run(ctx, {"text": body.message})
+        payload = json.loads(raw)
+        if error:
+            text = payload.get("error", "Не удалось собрать комплект")
+        else:
+            text = "Черновик комплекта ИД подготовлен." if payload.get("documents") else "Сообщение сохранено; для сборки нужны уточнения."
+            if payload.get("gaps"):
+                text += "\n\n" + "\n".join("• " + g["message"] for g in payload["gaps"])
+            text += "\n\nРезультат и приложения доступны в разделе «Сообщить о работе». Утверждение — после проверки инженером."
+        ctx.trace.append({"tool": "prepare_executive_package", "arguments": {"text": body.message}, "error": error})
+        result = AgentResult(text=text, agent="pto", documents=ctx.documents, trace=ctx.trace, provider="executive_pipeline", model="evidence-v1")
+    else:
+        result = agent.run(ctx, reg.tools, history, body.message)
 
     now = datetime.now(UTC)
     db.add(ChatMessage(session_id=session.id, role="user", content=body.message, created_at=now))
@@ -74,7 +145,8 @@ def _answer(db: Session, user: User, body: ChatIn, progress=None, on_route=None)
         session_id=session.id, role="assistant", content=result.text, agent=agent_name,
         created_at=now + timedelta(microseconds=1),
         meta={"citations": result.citations, "documents": result.documents, "trace": result.trace,
-              "provider": result.provider, "model": result.model, "routed_by": routed_by},
+              "provider": result.provider, "model": result.model, "routed_by": routed_by,
+              "context": {"focus": ctx.focus}, "workspace": body.workspace},
     ))
     db.commit()
     return {
@@ -136,18 +208,26 @@ def chat_stream(body: ChatIn, user: User = Depends(require("knowledge:read"))):
 
 
 @router.get("/chat/sessions")
-def sessions(db: Session = Depends(get_db), user: User = Depends(require("knowledge:read"))):
-    rows = db.scalars(select(ChatSession).where(ChatSession.user_id == user.id)
+def sessions(workspace: Literal["platform", "executive"] = "platform", db: Session = Depends(get_db),
+             user: User = Depends(require("knowledge:read"))):
+    executive = select(ChatMessage.session_id).where(ChatMessage.role == "assistant",
+                                                    ChatMessage.meta["workspace"].astext == "executive")
+    scope = ChatSession.id.in_(executive) if workspace == "executive" else ChatSession.id.notin_(executive)
+    rows = db.scalars(select(ChatSession).where(ChatSession.user_id == user.id, scope)
                       .order_by(ChatSession.created_at.desc()).limit(100))
     return [{"id": s.id, "title": s.title, "created_at": s.created_at} for s in rows]
 
 
 @router.get("/chat/sessions/{session_id}")
-def session_messages(session_id: uuid.UUID, db: Session = Depends(get_db),
+def session_messages(session_id: uuid.UUID, workspace: Literal["platform", "executive"] = "platform", db: Session = Depends(get_db),
                      user: User = Depends(require("knowledge:read"))):
     session = db.get(ChatSession, session_id)
     if session is None or session.user_id != user.id:
         raise HTTPException(404, "Диалог не найден")
     rows = db.scalars(select(ChatMessage).where(ChatMessage.session_id == session_id).order_by(ChatMessage.created_at))
+    messages = list(rows)
+    first = next((m for m in messages if m.role == "assistant"), None)
+    if first and (first.meta or {}).get("workspace", "platform") != workspace:
+        raise HTTPException(404, "Диалог относится к другому рабочему пространству")
     return [{"role": m.role, "content": m.content, "agent": m.agent, "meta": m.meta, "created_at": m.created_at}
-            for m in rows]
+            for m in messages]

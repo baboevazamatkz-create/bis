@@ -17,7 +17,9 @@
       "max_sensitivity": "internal",
       "mask_pii": true,
       "verify_ssl": true,
-      "extra": {"scope": "GIGACHAT_API_CORP"}
+      "extra": {
+        "scope": "GIGACHAT_API_CORP"
+      }
     },
     {
       "name": "yandexgpt",
@@ -35,9 +37,44 @@
     }
   ],
   "routes": {
-    "route": ["local", "gigachat", "offline"],
-    "chat": ["local", "gigachat", "yandexgpt", "offline"],
-    "analysis": ["gigachat", "yandexgpt", "local", "offline"],
-    "default": ["local", "gigachat", "offline"]
+    "route": [
+      "local",
+      "gigachat",
+      "offline"
+    ],
+    "chat": [
+      "local",
+      "gigachat",
+      "yandexgpt",
+      "offline"
+    ],
+    "analysis": [
+      "gigachat",
+      "yandexgpt",
+      "local",
+      "offline"
+    ],
+    "default": [
+      "local",
+      "gigachat",
+      "offline"
+    ],
+    "executive_report": [
+      "local",
+      "gigachat",
+      "offline"
+    ],
+    "executive_document": [
+      "gigachat",
+      "yandexgpt",
+      "local",
+      "offline"
+    ],
+    "project_reading": [
+      "gigachat",
+      "yandexgpt",
+      "local",
+      "offline"
+    ]
   }
 }

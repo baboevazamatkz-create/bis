@@ -5,10 +5,11 @@ import { PageHead } from "../components";
 const lines = (s: string) => s.split("\n").map((x) => x.trim()).filter(Boolean);
 
 export default function AosrForm({ onCreated }: { onCreated: () => void }) {
+  const [actKind, setActKind] = useState<"aosr" | "aook">("aosr");
   const [objects, setObjects] = useState<{ id: string; name: string; code: string | null }[]>([]);
   const [f, setF] = useState({
     object_id: "", works: "", project_docs: "", materials: "", executive_docs: "", norms: "",
-    work_start: "", work_end: "", act_date: new Date().toISOString().slice(0, 10), next_works: "", additional_info: "",
+    work_start: "", work_end: "", act_date: new Date().toISOString().slice(0, 10), next_works: "", additional_info: "", aosr_refs: "", tests: "",
   });
   const [issues, setIssues] = useState<Issue[] | null>(null);
   const [reps, setReps] = useState<Record<string, string>>({});
@@ -28,6 +29,8 @@ export default function AosrForm({ onCreated }: { onCreated: () => void }) {
     materials: lines(f.materials),
     executive_docs: lines(f.executive_docs),
     norms: lines(f.norms),
+    aosr_refs: lines(f.aosr_refs),
+    tests: lines(f.tests),
     next_works: f.next_works || null,
     additional_info: f.additional_info || null,
     act_date: f.act_date || null,
@@ -36,7 +39,7 @@ export default function AosrForm({ onCreated }: { onCreated: () => void }) {
   async function check() {
     setError("");
     try {
-      const r = await api<{ issues: Issue[]; representatives?: Record<string, string> }>("/documents/aosr/check", {
+      const r = await api<{ issues: Issue[]; representatives?: Record<string, string> }>(`/documents/${actKind}/check`, {
         method: "POST",
         json: body(),
       });
@@ -51,7 +54,7 @@ export default function AosrForm({ onCreated }: { onCreated: () => void }) {
     setBusy(true);
     setError("");
     try {
-      await api<DocumentRow>("/documents/aosr", { method: "POST", json: body() });
+      await api<DocumentRow>(`/documents/${actKind}`, { method: "POST", json: body() });
       onCreated();
     } catch (e) {
       setError((e as Error).message);
@@ -69,10 +72,13 @@ export default function AosrForm({ onCreated }: { onCreated: () => void }) {
 
   return (
     <>
-      <PageHead title="Акт освидетельствования скрытых работ" hint={<>Участники и представители подставляются из карточки объекта и приказов о назначении (раздел «Назначения»). Нумерация —
+      <PageHead title={actKind === "aosr" ? "Акт освидетельствования скрытых работ" : "Акт освидетельствования ответственных конструкций"} hint={<>Участники и представители подставляются из карточки объекта и приказов о назначении (раздел «Назначения»). Нумерация —
         автоматическая по объекту. Тот же акт можно попросить у агента «ПТО» в чате.</>} />
       {error && <div className="alert error">{error}</div>}
       <div className="panel">
+        <div className="field"><label htmlFor="act-kind">Вид акта</label><select id="act-kind" value={actKind} onChange={(e) => { setActKind(e.target.value as "aosr" | "aook"); setIssues(null); setReps({}); }}>
+          <option value="aosr">АОСР — скрытые работы</option><option value="aook">АООК — ответственные конструкции</option>
+        </select></div>
         <div className="row">
           <div className="field">
             <label>Объект</label>
@@ -91,6 +97,7 @@ export default function AosrForm({ onCreated }: { onCreated: () => void }) {
           </div>
         </div>
         {area("works", "1. Работы, предъявленные к освидетельствованию", "Армирование фундаментной плиты Пм1 в осях 1-5/А-Г")}
+        {actKind === "aook" && <>{area("aosr_refs", "АОСР в составе конструкции — по строке", "АОСР № 1 от 01.05.2026")}{area("tests", "Испытания и протоколы — по строке", "Протокол прочности бетона № 56")}</>}
         {area("project_docs", "2. Проектная документация", "ЖК-01-КЖ1, листы 3-7, ООО «ПроектДемо»")}
         {area("materials", "3. Материалы — по строке, со ссылкой на документ о качестве", "Арматура А500С d12, сертификат № 123 от 01.05.2026")}
         {area("executive_docs", "4. Исполнительные схемы, протоколы — по строке", "Исполнительная схема № 5")}

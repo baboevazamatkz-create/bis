@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import mimetypes
 import uuid
+from typing import Literal
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
@@ -37,6 +38,9 @@ def _owned(db: Session, user: User, doc_id: uuid.UUID) -> Document:
     doc = db.get(Document, doc_id)
     if doc is None or doc.organization_id != user.organization_id:
         raise HTTPException(404, "Документ не найден")
+    from bis.services.library_access import assert_document
+
+    assert_document(db, doc)
     return doc
 
 
@@ -70,8 +74,13 @@ def representative_roles():
 @router.get("", response_model=list[DocumentOut])
 def list_documents(kind: str | None = None, status: str | None = None, object_id: uuid.UUID | None = None,
                    limit: int = 100, offset: int = 0, db: Session = Depends(get_db),
-                   user: User = Depends(require("documents:read"))):
+                   user: User = Depends(require("documents:read")), workspace: Literal["platform", "executive"] = "platform",
+                   collection: Literal["records", "sources"] = "records"):
     stmt = select(Document).where(Document.organization_id == user.organization_id)
+    if workspace == "executive":
+        from bis.modules.executive import DOCUMENT_KINDS, SOURCE_KINDS
+
+        stmt = stmt.where(Document.kind.in_(SOURCE_KINDS if collection == "sources" else DOCUMENT_KINDS))
     if kind:
         stmt = stmt.where(Document.kind == kind)
     if status:
@@ -159,6 +168,17 @@ def upload_document(
     user: User = Depends(require("documents:write")),
 ):
     """Регистрация входящего/внешнего документа и (по умолчанию) индексация в базе знаний организации."""
+    scope = db.info.get("source_context")
+    if scope and scope.strict:
+        if object_id and scope.object_id and object_id != scope.object_id:
+            raise HTTPException(409, "Объект загрузки отличается от активного проекта")
+        object_id = object_id or scope.object_id
+    if object_id:
+        from bis.models import ConstructionObject
+
+        obj = db.get(ConstructionObject, object_id)
+        if obj is None or obj.organization_id != user.organization_id:
+            raise HTTPException(404, "Объект не найден")
     data = file.file.read()
     name = file.filename or "file"
     mime = file.content_type or mimetypes.guess_type(name)[0]

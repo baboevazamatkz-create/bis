@@ -63,6 +63,8 @@ class HashingEmbedder:
 
 
 class OpenAICompatEmbedder:
+    semantic = True
+
     def __init__(self, settings: Settings, client: httpx.Client | None = None, batch_size: int = 32):
         if not settings.embedding_url:
             raise ValueError("Не задан BIS_EMBEDDING_URL")

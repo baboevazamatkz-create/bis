@@ -17,6 +17,9 @@ from sqlalchemy.exc import OperationalError  # noqa: E402
 from bis.config import get_settings  # noqa: E402
 
 TABLES = [
+    "project_readings",
+    "brain_investigations", "fact_decisions", "fact_conflicts", "project_facts", "fact_snapshots",
+    "library_versions", "library_files", "library_connections",
     "knowledge_chunks", "knowledge_sources", "contract_obligations", "appointments", "chat_messages", "chat_sessions",
     "documents", "contracts", "persons", "construction_objects", "document_templates", "counters", "org_memory",
     "audit_log", "users", "counterparties", "organizations",

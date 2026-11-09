@@ -1,6 +1,6 @@
 """Очистка данных организации: чистый старт для пилота.
 
-Удаляется всё, что накоплено: документы и файлы, база знаний организации, «Эрудит», объекты, договоры, сметы, учёт,
+Удаляется всё, что накоплено: документы и файлы, база знаний организации, «Синапс», объекты, договоры, сметы, учёт,
 приём с площадки, поручения, уведомления, чаты, журнал. Остаются организация (реквизиты, настройки), пользователи
 и общие нормативы. Ключи и настройки BIS (.env) не затрагиваются.
 """
@@ -22,9 +22,11 @@ def reset_organization(db: Session, storage, org_id: uuid.UUID) -> dict[str, Any
     import bis.models  # noqa: F401 — все таблицы в метаданных
     from bis.db import Base
     from bis.models import Document, IntakeEvent, KnowledgeSource, Organization
+    from bis.models.facts import FactSnapshot
+    from bis.models.project_reading import ProjectReading
 
     keys: set[str] = set()
-    for model in (Document, IntakeEvent, KnowledgeSource):
+    for model in (Document, IntakeEvent, KnowledgeSource, FactSnapshot, ProjectReading):
         keys |= set(db.scalars(select(model.file_key).where(model.organization_id == org_id, model.file_key.is_not(None))))
 
     counts: dict[str, int] = {}

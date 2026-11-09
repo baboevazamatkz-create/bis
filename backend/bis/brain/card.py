@@ -12,7 +12,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-CARD_VERSION = 2  # при изменении правил — карточки архива пересобираются фоном
+CARD_VERSION = 3  # rebuild cards that previously read only the first 8000 characters
 
 KIND_TITLES = {
     "aosr": "АОСР", "aook": "АООК", "scheme": "Исполнительная схема", "ks2": "КС-2", "ks3": "КС-3", "order": "Приказ",
@@ -63,6 +63,8 @@ class Card(BaseModel):
     summary: str | None = None
     by: str = "rules"
     vision: dict | None = None  # что увидела модель зрения на листе (схема, чертёж)
+    text_chars: int = 0
+    model_read_complete: bool | None = None
 
     def label(self) -> str:
         """Шапка для поиска и ссылок."""
@@ -259,13 +261,15 @@ def _fallback_summary(text: str, kind: str, card: Card) -> str | None:
 def build_card(gateway, text: str, kind: str, name: str = "") -> Card:
     """Карточка: правила + модель (если доступна). Ошибка модели не мешает — остаётся карточка по правилам."""
     card = rules_card(text, kind, name)
+    card.text_chars = len(text)
     if gateway is not None and text.strip():
         try:
             from bis.llm.extract import extract
 
-            res = extract(gateway, ModelCard, text[:8000], instructions=INSTRUCTIONS, task="extract")
+            res = extract(gateway, ModelCard, text, instructions=INSTRUCTIONS, task="extract")
             m = res.data
             if m is not None and res.provider not in (None, "offline"):
+                card.model_read_complete = res.complete
                 card.summary = (m.summary or "").strip()[:300] or None
                 card.elements = _merge_elements(m.elements, card.elements)
                 card.works = _uniq(m.works, 8)

@@ -200,7 +200,7 @@ def _process(env: Env, event: IntakeEvent) -> None:
             if parsed.meta.get("needs_ocr") or not parsed.text.strip():
                 scanned = _ocr(event, data)
                 if scanned:
-                    text = (scanned + "\n" + (event.text or "")).strip()
+                    text = (parsed.text + "\n" + scanned + "\n" + (event.text or "")).strip()
                 else:
                     event.result = {**event.result, "needs_ocr": True}
         except UnsupportedFormat as e:
@@ -237,6 +237,9 @@ def _dispatch(env: Env, event: IntakeEvent, text: str, images, found: tuple[str,
     event.detected_type = dtype
     event.result = {**event.result, "dispatcher": {"type": dtype, "title": und.TYPES[dtype], "confidence": conf, "by": by},
                     "excerpt": text[:600]}
+    if text.strip() and (event.result or {}).get("ocr"):
+        event.result = {**event.result, "perception_text_key": env.storage.put(
+            text.encode("utf-8"), "recognized.txt", prefix=f"intake-text/{env.org_id}")}
 
     # 3. специалист
     PIPELINES[dtype](env, event, text, images)
@@ -346,12 +349,14 @@ def remember_alias(env: Env, what: str, text: str, target_id: Any) -> None:
     text = (text or "").strip()[:2000]
     if not text or not target_id:
         return
-    row = env.db.scalar(select(OrgMemory).where(OrgMemory.organization_id == env.org_id, OrgMemory.kind == "alias",
+    target = env.db.get(EstimateItem, _uuid(target_id)) if what == "works" else None
+    project_id = target.object_id if target else None
+    row = env.db.scalar(select(OrgMemory).where(OrgMemory.organization_id == env.org_id, OrgMemory.kind == "alias", OrgMemory.object_id == project_id,
                                                 OrgMemory.scope == f"alias:{what}", OrgMemory.content == text))
     if row:
         row.source, row.is_active = str(target_id), True
     else:
-        env.db.add(OrgMemory(organization_id=env.org_id, kind="alias", scope=f"alias:{what}", content=text,
+        env.db.add(OrgMemory(organization_id=env.org_id, kind="alias", scope=f"alias:{what}", content=text, object_id=project_id,
                              source=str(target_id)))
     env.db.flush()
 
@@ -847,7 +852,7 @@ def assemble_aosr(env: Env, event: IntakeEvent | None, item: EstimateItem, objec
                                                    WorkVolume.aosr_document_id.is_(None)).order_by(WorkVolume.date)).all()
     if location:
         here = [v for v in vols if _loc_key(v.location) == _loc_key(location)]
-        vols = here or vols
+        vols = here  # another section is never a substitute for the requested location
     if not vols:
         return None
     start, end = vols[0].date, vols[-1].date
@@ -918,7 +923,7 @@ def _event(env: Env, a: AIAction) -> IntakeEvent | None:
 
 
 def _apply_register(env: Env, a: AIAction) -> dict:
-    from bis.rag.ingest import ingest_bytes
+    from bis.rag.ingest import ingest_bytes, ingest_text
 
     ev = _event(env, a)
     p = a.payload
@@ -933,12 +938,18 @@ def _apply_register(env: Env, a: AIAction) -> dict:
     env.db.add(doc)
     env.db.flush()
     ev.document_id = doc.id
-    if ev.kind in ("document", "text"):
+    perceived = (ev.result or {}).get("perception_text_key")
+    if perceived or ev.kind in ("document", "text"):
         try:
             with env.db.begin_nested():
-                ingest_bytes(env.db, env.storage, env.embedder, org_id=env.org_id, data=env.storage.get(ev.file_key),
-                             filename=ev.file_name or "file", kind=p.get("knowledge_kind", "org_document"), title=doc.title,
-                             document_id=doc.id, mime=ev.mime)
+                if perceived:
+                    ingest_text(env.db, env.embedder, org_id=env.org_id, text=env.storage.get(perceived).decode("utf-8"),
+                                kind=p.get("knowledge_kind", "org_document"), title=doc.title, document_id=doc.id)
+                    doc.data = {**(doc.data or {}), "text_from": "ocr"}
+                else:
+                    ingest_bytes(env.db, env.storage, env.embedder, org_id=env.org_id, data=env.storage.get(ev.file_key),
+                                 filename=ev.file_name or "file", kind=p.get("knowledge_kind", "org_document"), title=doc.title,
+                                 document_id=doc.id, mime=ev.mime)
         except (UnsupportedFormat, ValueError) as e:
             return {"document_id": str(doc.id), "knowledge": f"не проиндексирован: {e}"}
     return {"document_id": str(doc.id)}
@@ -1231,7 +1242,7 @@ def review(env: Env, a: AIAction, *, approve: bool, user: User, reason: str | No
         if reason and reason.strip():
             spec = BY_NAME.get(a.specialist)
             for scope in [a.specialist] + ([spec.agent] if spec and spec.agent else []):
-                env.db.add(OrgMemory(organization_id=env.org_id, kind="feedback", scope=scope,
+                env.db.add(OrgMemory(organization_id=env.org_id, kind="feedback", scope=scope, object_id=a.object_id,
                                      content=f"{ACTION_TITLES.get(a.kind, a.kind)} «{a.title[:200]}» отклонено: "
                                              f"{reason.strip()[:500]}", source=f"ai_action:{a.id}"))
     a.reviewed_by_id, a.reviewed_at, a.reason = user.id, dt.datetime.now(dt.UTC), reason

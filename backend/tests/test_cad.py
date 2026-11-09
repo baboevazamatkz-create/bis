@@ -191,7 +191,11 @@ def test_mcp_tools_run_in_one_com_thread_with_retry():
 
 def test_mcp_errors_reach_model_and_lost_document_reconnects():
     import pytest
-    from mcp.server.mcpserver.exceptions import ToolError
+
+    try:
+        from mcp.server.mcpserver.exceptions import ToolError
+    except ImportError:
+        from mcp.server.fastmcp.exceptions import ToolError
 
     from bis.cad import bridge, mcp_server
 

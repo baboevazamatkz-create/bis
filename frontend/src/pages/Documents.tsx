@@ -2,26 +2,30 @@ import { useEffect, useState } from "react";
 import { api, download, upload, STATUS_LABELS, type DocumentRow } from "../api";
 import { Hint } from "../components";
 
-export default function Documents() {
+export default function Documents({ workspace = "platform", collection = "records", allowedKinds, title = "Документы", hideUpload = false }: {
+  workspace?: "platform" | "executive"; collection?: "records" | "sources"; allowedKinds?: string[]; title?: string; hideUpload?: boolean;
+}) {
   const [kinds, setKinds] = useState<Record<string, string>>({});
   const [docs, setDocs] = useState<DocumentRow[]>([]);
   const [kind, setKind] = useState("");
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const [file, setFile] = useState<File | null>(null);
-  const [uploadKind, setUploadKind] = useState("incoming_letter");
+  const [uploadKind, setUploadKind] = useState(allowedKinds?.[0] ?? "incoming_letter");
   const [uploadTitle, setUploadTitle] = useState("");
 
   const load = () => {
     const q = new URLSearchParams();
+    q.set("workspace", workspace);
+    q.set("collection", collection);
     if (kind) q.set("kind", kind);
     if (status) q.set("status", status);
-    api<DocumentRow[]>(`/documents?${q}`).then(setDocs).catch((e) => setError(e.message));
+    api<DocumentRow[]>(`/documents?${q}`).then((rows) => setDocs(allowedKinds ? rows.filter((d) => allowedKinds.includes(d.kind)) : rows)).catch((e) => setError(e.message));
   };
   useEffect(() => {
     api<Record<string, string>>("/documents/kinds").then(setKinds);
   }, []);
-  useEffect(load, [kind, status]);
+  useEffect(load, [kind, status, workspace, collection, allowedKinds]);
 
   const [rejecting, setRejecting] = useState<string | null>(null);
   const [reason, setReason] = useState("");
@@ -61,7 +65,7 @@ export default function Documents() {
 
   return (
     <>
-      <h1>Документы</h1>
+      <h1>{title}</h1>
       {error && <div className="alert error">{error}</div>}
       <div className="panel">
         <div className="row">
@@ -69,7 +73,7 @@ export default function Documents() {
             <label>Вид</label>
             <select value={kind} onChange={(e) => setKind(e.target.value)}>
               <option value="">Все</option>
-              {Object.entries(kinds).map(([k, v]) => (
+              {Object.entries(kinds).filter(([k]) => !allowedKinds || allowedKinds.includes(k)).map(([k, v]) => (
                 <option key={k} value={k}>
                   {v}
                 </option>
@@ -157,7 +161,7 @@ export default function Documents() {
           </tbody>
         </table>
       </div>
-      <div className="panel">
+      {!hideUpload && <div className="panel">
         <h2>Регистрация входящего документа <Hint>Файл попадёт в реестр и в базу знаний организации — агенты смогут на него ссылаться.</Hint></h2>
         <div className="row">
           <div className="field">
@@ -165,7 +169,7 @@ export default function Documents() {
           </div>
           <div className="field">
             <select value={uploadKind} onChange={(e) => setUploadKind(e.target.value)}>
-              {["incoming_letter", "contract", "order", "other"].map((k) => (
+              {(allowedKinds ?? ["incoming_letter", "contract", "order", "other"]).map((k) => (
                 <option key={k} value={k}>
                   {kinds[k] ?? k}
                 </option>
@@ -181,7 +185,7 @@ export default function Documents() {
             </button>
           </div>
         </div>
-      </div>
+      </div>}
     </>
   );
 }

@@ -374,6 +374,11 @@ def archive_import(file: UploadFile = File(...), object_id: uuid.UUID | None = F
     from bis.rag.embeddings import get_embedder
     from bis.services.archive import import_file
 
+    scope = db.info.get("source_context")
+    if scope and scope.strict:
+        if object_id and scope.object_id and object_id != scope.object_id:
+            raise HTTPException(409, "Объект загрузки отличается от активного проекта")
+        object_id = object_id or scope.object_id
     if object_id:
         _owned(db, user, ConstructionObject, object_id, "Объект")
     data = file.file.read()

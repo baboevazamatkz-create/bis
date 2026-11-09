@@ -78,6 +78,9 @@ def ingest_bytes(
 
 
 def index_pages(db: Session, embedder: Embedder, source: KnowledgeSource, pages: list[Page]) -> int:
+    from bis.services.project_facts import invalidate_document
+
+    invalidate_document(db, source.document_id)
     db.execute(delete(KnowledgeChunk).where(KnowledgeChunk.source_id == source.id))
     if source.kind in NORMATIVE_KINDS:
         chunks = NormativeChunker().chunk(pages, source.designation)

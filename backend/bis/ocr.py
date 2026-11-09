@@ -16,7 +16,6 @@ import httpx
 from bis.config import get_settings
 
 YANDEX_OCR = "https://ocr.api.cloud.yandex.net/ocr/v1/recognizeText"
-MAX_PAGES = 300  # длинный скан: первые 200 и последние 100 страниц (реквизиты сторон — в конце)
 
 
 class OCRError(Exception):
@@ -33,8 +32,6 @@ def _pdf_pages(data: bytes) -> list[bytes]:
 
     reader = PdfReader(io.BytesIO(data))
     pages = list(reader.pages)
-    if len(pages) > MAX_PAGES:
-        pages = pages[:200] + pages[-100:]
     out = []
     for page in pages:
         w = PdfWriter()

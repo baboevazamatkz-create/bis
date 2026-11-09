@@ -30,6 +30,9 @@ from bis.models.works import (
 )
 
 __all__ = [
+    "ProjectReading",
+    "FactSnapshot", "ProjectFact", "FactConflict", "FactDecision", "BrainInvestigation",
+    "LibraryConnection", "LibraryFile", "LibraryVersion",
     "DocumentLink",
     "AIAction",
     "IntakeEvent",
@@ -61,3 +64,7 @@ __all__ = [
     "Person",
     "User",
 ]
+
+from bis.models.facts import BrainInvestigation, FactConflict, FactDecision, FactSnapshot, ProjectFact
+from bis.models.libraries import LibraryConnection, LibraryFile, LibraryVersion
+from bis.models.project_reading import ProjectReading

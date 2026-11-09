@@ -1,164 +1,120 @@
-import { useEffect, useState } from "react";
-import { api, DEMO, setToken, type User } from "./api";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { api, DEMO, setToken, setOrganizationScope, activeProject, setActiveProject, type User } from "./api";
 import { previewFor } from "./demo/mock";
+import Icon from "./components/Icon";
 import Login from "./pages/Login";
-import Feed from "./pages/Feed";
-import Brain from "./pages/Brain";
-import Specialists from "./pages/Specialists";
-import ArchiveImport from "./pages/ArchiveImport";
-import Chat from "./pages/Chat";
-import Control from "./pages/Control";
-import Contracts from "./pages/Contracts";
-import Works from "./pages/Works";
-import Schemes from "./pages/Schemes";
-import ProjectDocs from "./pages/ProjectDocs";
-import Knowledge from "./pages/Knowledge";
-import Documents from "./pages/Documents";
-import AosrForm from "./pages/AosrForm";
-import Registry, { REGISTRIES } from "./pages/Registry";
-import Settings from "./pages/Settings";
-import { Hint } from "./components";
-
-const ROLE_TITLES: Record<string, string> = {
-  admin: "Администратор", manager: "Руководитель", pto: "ПТО", foreman: "Прораб", supply: "Снабжение",
-  lawyer: "Юрист", secretary: "Секретарь", viewer: "Наблюдатель",
-};
-
-const REGISTRY_GROUPS: [string, string[]][] = [
-  ["Реестры", ["objects", "counterparties", "contracts", "persons", "appointments", "tasks", "obligations"]],
-  ["Учёт работ и материалов", ["estimate", "schedule", "volumes", "materials", "norms", "receipts", "usage"]],
-];
+import ExecutiveWorkspace from "./modules/executive/ExecutiveWorkspace";
+import { ID_NAV, PLATFORM_NAV, parseRoute } from "./modules/navigation";
+const PlatformWorkspace = lazy(() => import("./modules/platform/PlatformWorkspace"));
 
 export default function App() {
+  const [mobile, setMobile] = useState(() => matchMedia("(max-width: 960px)").matches);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [theme, setTheme] = useState(() => { try { return localStorage.getItem("bis:theme") ?? "light"; } catch { return "light"; } });
+  const nav = useRef<HTMLElement>(null);
+  const menuButton = useRef<HTMLButtonElement>(null);
   const [user, setUser] = useState<User | null>(null);
+  const [project, setProject] = useState("");
+  const [orgName, setOrgName] = useState("");
+  const [objects, setObjects] = useState<{ id: string; name: string; code: string }[]>([]);
   const [loading, setLoading] = useState(true);
+  const [route, setRoute] = useState(() => parseRoute(window.location.hash));
   const [preview, setPreview] = useState<{ type: string; content: string; title: string } | null | undefined>(undefined);
-  const [page, setPage] = useState("feed");
-  const [unread, setUnread] = useState(0);
-  const [pendingAI, setPendingAI] = useState(0);
-  const [dataOpen, setDataOpen] = useState(() => {
-    try { return localStorage.getItem("bis_nav_data") === "1"; } catch { return false; }
-  });
-  const toggleData = () => {
-    setDataOpen((v) => {
-      try { localStorage.setItem("bis_nav_data", v ? "0" : "1"); } catch { /* необязательно */ }
-      return !v;
-    });
-  };
-
   useEffect(() => {
     const onLogout = () => setUser(null);
-    window.addEventListener("bis:logout", onLogout);
+    const onRoute = () => setRoute(parseRoute(window.location.hash));
     const onPreview = (e: Event) => setPreview(previewFor((e as CustomEvent<string>).detail));
+    window.addEventListener("bis:logout", onLogout);
+    window.addEventListener("hashchange", onRoute);
     window.addEventListener("bis:preview", onPreview);
-    // без сохранённого входа тоже спрашиваем: на своём компьютере BIS пускает без пароля (BIS_AUTO_LOGIN)
-    api<{ user: User }>("/auth/me")
-      .then((r) => setUser(r.user))
-      .catch(() => setToken(null))
-      .finally(() => setLoading(false));
+    api<{ user: User }>("/auth/me").then((r) => setUser(r.user)).catch(() => setToken(null)).finally(() => setLoading(false));
     return () => {
       window.removeEventListener("bis:logout", onLogout);
+      window.removeEventListener("hashchange", onRoute);
       window.removeEventListener("bis:preview", onPreview);
     };
   }, []);
-
   useEffect(() => {
     if (!user) return;
-    const poll = () => {
-      api<{ notifications_unread: number }>("/control/summary").then((s) => setUnread(s.notifications_unread)).catch(() => {});
-      api<{ pending: number }>("/ai/feed?limit=1").then((r) => setPendingAI(r.pending)).catch(() => {});
-    };
-    poll();
-    const t = setInterval(poll, 60000);
-    return () => clearInterval(t);
-  }, [user, page]);
-
+    setOrganizationScope(user.organization_id);
+    setPreview(undefined);
+    setProject(activeProject());
+    void api<{ name: string }>("/org").then((o) => setOrgName(o.name)).catch(() => {});
+    void api<typeof objects>("/objects").then((rows) => { setObjects(rows); if (rows.length === 1 && !activeProject()) setActiveProject(rows[0].id); }).catch(() => {});
+    const changed = () => { setProject(activeProject()); setPreview(undefined); };
+    window.addEventListener("bis:project", changed);
+    return () => window.removeEventListener("bis:project", changed);
+  }, [user?.organization_id]);
+  useEffect(() => {
+    document.title = route.workspace === "id" ? "BIS · Исполнительная документация" : "BIS · Платформа";
+  }, [route.workspace]);
+  useEffect(() => {
+    const query = matchMedia("(max-width: 960px)");
+    const change = () => { setMobile(query.matches); setMenuOpen(false); };
+    query.addEventListener("change", change);
+    return () => query.removeEventListener("change", change);
+  }, []);
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    try { localStorage.setItem("bis:theme", theme); } catch { /* optional */ }
+  }, [theme]);
+  useEffect(() => { setMenuOpen(false); }, [route.page, route.workspace, project]);
+  useEffect(() => {
+    if (!mobile || !menuOpen) return;
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    nav.current?.querySelector<HTMLButtonElement>("button")?.focus();
+    const escape = (e: KeyboardEvent) => { if (e.key === "Escape") { setMenuOpen(false); menuButton.current?.focus(); } };
+    window.addEventListener("keydown", escape);
+    return () => { document.body.style.overflow = previous; window.removeEventListener("keydown", escape); };
+  }, [mobile, menuOpen]);
   if (loading) return <div className="login muted">Загрузка…</div>;
   if (!user && DEMO) return <div className="login muted">Демо-данные не загружены</div>;
   if (!user) return <Login onLogin={setUser} />;
-
-  const nav = (id: string, label: string, badge?: number) => (
-    <button key={id} className={`nav-item ${page === id ? "active" : ""}`} onClick={() => setPage(id)}>
-      {label}
-      {!!badge && <span className="nav-badge">{badge}</span>}
-    </button>
-  );
-
-  let content;
-  switch (page) {
-    case "feed": content = <Feed onPending={setPendingAI} />; break;
-    case "specialists": content = <Specialists user={user} />; break;
-    case "archive": content = <ArchiveImport />; break;
-    case "chat": content = <Chat />; break;
-    case "brain": content = <Brain />; break;
-    case "control": content = <Control />; break;
-    case "contracts": content = <Contracts />; break;
-    case "works": content = <Works />; break;
-    case "schemes": content = <Schemes />; break;
-    case "project": content = <ProjectDocs />; break;
-    case "knowledge": content = <Knowledge user={user} />; break;
-    case "documents": content = <Documents />; break;
-    case "aosr": content = <AosrForm onCreated={() => setPage("documents")} />; break;
-    case "settings": content = <Settings />; break;
-    default: content = <Registry key={page} kind={page.split(":")[1]} />;
-  }
-
+  setOrganizationScope(user.organization_id);
+  const groups = route.workspace === "id" ? ID_NAV : PLATFORM_NAV;
   return (
-    <div className="layout">
-      <nav className="sidebar">
-        <div className="brand">
-          BIS<small>строительная ИИ-платформа</small>
-        </div>
-        <div className="nav-block">
-          {nav("feed", "Лента ИИ", pendingAI)}
-          {nav("chat", "Ассистент")}
-          {nav("brain", "Эрудит")}
-          {nav("control", "Контроль", unread)}
-        </div>
-        <div className="nav-block">
-          <div className="nav-group">Документы</div>
-          {nav("documents", "Документы")}
-          {nav("schemes", "Исполнительные схемы")}
-          {nav("contracts", "Договоры")}
-          {nav("project", "Проект")}
-          {nav("works", "Работы и закрытие")}
-        </div>
-        <div className="nav-block">
-          <button className="nav-group nav-toggle" onClick={toggleData} aria-expanded={dataOpen}>
-            {dataOpen ? "▾" : "▸"} Данные
-          </button>
-          {dataOpen && (
-            <>
-              {nav("knowledge", "База знаний")}
-              {nav("aosr", "АОСР вручную")}
-              {REGISTRY_GROUPS.map(([group, keys]) => (
-                <div key={group} className="nav-section">
-                  <div className="nav-group sub">{group}</div>
-                  {keys.map((k) => nav(`registry:${k}`, REGISTRIES[k].title))}
-                </div>
-              ))}
-            </>
-          )}
-        </div>
-        <div className="nav-block nav-bottom">
-          {nav("specialists", "ИИ-специалисты")}
-          {nav("archive", "Загрузка архива")}
-          {nav("settings", "Настройки")}
-        </div>
-        <div className="sidebar-footer">
-          <span className="user-name" title={ROLE_TITLES[user.role] ?? user.role}>{user.full_name}</span>
-          <a href="#" onClick={(e) => { e.preventDefault(); setToken(null); window.location.reload(); }}>Выйти</a>
-        </div>
+    <div className={`layout workspace-${route.workspace}`}>
+      <a className="skip-link" href="#main-content" onClick={(e) => { e.preventDefault(); document.getElementById("main-content")?.focus(); }}>Перейти к содержимому</a>
+      {mobile && menuOpen && <button className="nav-backdrop" aria-label="Закрыть навигацию" onClick={() => { setMenuOpen(false); menuButton.current?.focus(); }} />}
+      <nav ref={nav} id="app-navigation" className={`sidebar ${menuOpen ? "is-open" : ""}`} hidden={mobile && !menuOpen}
+        aria-label={route.workspace === "id" ? "Блок исполнительной документации" : "Другие направления BIS"}
+        onKeyDown={(e) => {
+          if (!mobile || !menuOpen || e.key !== "Tab") return;
+          const items = Array.from(nav.current?.querySelectorAll<HTMLElement>("a[href], button, summary") ?? []).filter((el) => el.getClientRects().length > 0);
+          const first = items[0], last = items[items.length - 1];
+          if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); }
+          else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
+        }}>
+        <div className="brand"><a href={`#/${route.workspace}/overview`} aria-label="BIS — рабочий стол"><span className="brand-mark">b<span>i</span>s</span><span className="brand-caption">Construction intelligence</span></a>
+          {mobile && <button className="icon-button" aria-label="Закрыть меню" onClick={() => { setMenuOpen(false); menuButton.current?.focus(); }}><Icon name="close" /></button>}</div>
+        <div className="workspace-label"><span className="workspace-dot" />{route.workspace === "id" ? "Исполнительная документация" : "Платформа"}</div>
+        <div className="nav-scroll">{groups.map((group, i) => {
+          const secondary = route.workspace === "id" && i === 3;
+          const links = group.items.map(([id, title]) => <a key={id} href={`#/${route.workspace}/${id}`} onClick={() => { setMenuOpen(false); if (mobile) requestAnimationFrame(() => document.getElementById("main-content")?.focus()); }} className={`nav-item ${route.page === id ? "active" : ""}`} aria-current={route.page === id ? "page" : undefined}><Icon name={id} /><span>{id === "overview" ? "Обзор" : title}</span>{route.page === id && <span className="nav-active-dot" />}</a>);
+          return secondary ? <details key={i} className="nav-block nav-reference" open={group.items.some(([id]) => id === route.page) || undefined}><summary><Icon name="registry" />Справочники<Icon name="chevron" size={14} /></summary>{links}</details> :
+            <div className={`nav-block ${!group.title ? "nav-bottom" : ""}`} key={i}>{group.title && <div className="nav-group">{i === 0 && route.workspace === "id" ? "Рабочее пространство" : group.title}</div>}{links}</div>;
+        })}</div>
+        <div className="sidebar-footer"><div className="user-avatar">{user.full_name.split(" ").slice(0, 2).map((s) => s[0]).join("")}</div><div className="user-info"><span className="user-name">{user.full_name}</span><small>{orgName || "Текущая организация"}</small></div>
+          <button className="icon-button" aria-label="Выйти из аккаунта" title="Выйти" onClick={() => { setToken(null); window.location.reload(); }}><Icon name="logout" size={16} /></button></div>
       </nav>
       <main className="main">
-        {DEMO && (
-          <div className="demo-banner">
-            Демо-версия: данные вымышленные
-            <Hint wide>Изменения живут до перезагрузки страницы. Сообщения, фото и текстовые файлы в «Ленте ИИ» разбирает ИИ вживую
-              (в демо — Claude, на сервере — YandexGPT); голос — распознавание браузера.</Hint>
+        <header className="app-header">
+          <div className="header-location">{mobile && <button ref={menuButton} className="icon-button" aria-label="Открыть меню" aria-expanded={menuOpen} aria-controls="app-navigation" onClick={() => setMenuOpen(true)}><Icon name="menu" size={22} /></button>}
+            <span className="header-workspace">{route.workspace === "id" ? "Рабочее пространство" : "Платформа"}</span><span className="header-divider">/</span><span className="header-page">{groups.flatMap((g) => g.items).find(([id]) => id === route.page)?.[1] ?? "Обзор"}</span></div>
+          <div className="header-tools"><div className="project-switcher"><Icon name="project" size={17} /><label className="sr-only" htmlFor="active-project">Активный проект</label>
+            <select id="active-project" value={project} onChange={(e) => setActiveProject(e.target.value)} title={objects.find((o) => o.id === project)?.name ?? "Выбрать проект"}>
+              <option value="">Выбрать проект</option>{objects.map((o) => <option key={o.id} value={o.id}>{o.code ? o.code + " · " : ""}{o.name}</option>)}
+            </select><Icon name="down" size={13} /></div>
+            <button className="icon-button theme-toggle" aria-label={theme === "dark" ? "Светлая тема" : "Тёмная тема"} title={theme === "dark" ? "Светлая тема" : "Тёмная тема"} onClick={() => setTheme(theme === "dark" ? "light" : "dark")}><Icon name={theme === "dark" ? "sun" : "moon"} size={18} /></button>
           </div>
-        )}
-        {content}
+        </header>
+        <div id="main-content" tabIndex={-1} className={`page-content ${route.page === "chat" ? "page-chat" : ""}`}>
+        {DEMO && <div className="demo-banner">Демо-версия: данные вымышленные</div>}
+        <Suspense fallback={<p className="muted">Загрузка рабочего пространства…</p>}>
+          {route.workspace === "id" ? <ExecutiveWorkspace key={`id:${user.organization_id}:${project}`} page={route.page} user={user} /> : <PlatformWorkspace key={`platform:${user.organization_id}:${project}`} page={route.page} user={user} />}
+        </Suspense>
+        </div>
       </main>
       {preview !== undefined && (
         <div className="modal-backdrop" onClick={() => setPreview(undefined)}>

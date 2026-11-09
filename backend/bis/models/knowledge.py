@@ -36,7 +36,7 @@ class KnowledgeSource(IdMixin, Base):
     file_name: Mapped[str | None] = mapped_column(String(500))
     mime: Mapped[str | None] = mapped_column(String(200))
     document_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("documents.id", ondelete="SET NULL")
+        UUID(as_uuid=True), ForeignKey("documents.id", ondelete="SET NULL"), index=True
     )
     chunk_count: Mapped[int] = mapped_column(Integer, default=0)
     meta: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)

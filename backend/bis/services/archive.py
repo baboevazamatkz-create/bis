@@ -34,6 +34,9 @@ ARCHIVE_RULES: list[tuple[str, str]] = [
     ("ks3", r"\bкс-?3\b|справк\w+\s+о\s+стоимости\s+выполненных"),
     ("order", r"^\s*приказ\b|\bприказ\s*№"),
     ("work_journal", r"общ\w+\s+журнал\s+работ|журнал\s+(?:бетонных|сварочных|выполнения)\s+работ"),
+    ("certificate", r"^\s*(?:сертификат\b|паспорт\s+(?:качества|на\s)|деклараци[яи]\s+о\s+соответствии)"),
+    ("test_protocol", r"^\s*протокол\s+(?:№|испытан|измерен|проверки)"),
+    ("project_doc", r"^\s*(?:рабочая\s+документация|проектная\s+документация|рд\s*(?:№|[-_\d]))"),
 ]
 KIND = {"aosr": "aosr", "aook": "aook", "scheme": "scheme", "ks2": "ks2", "ks3": "ks3", "order": "order",
         "work_journal": "work_journal", "contract": "contract", "letter": "incoming_letter", "project_doc": "project_doc",
@@ -95,7 +98,14 @@ def _raw_pages(data: bytes, name: str, mime: str | None) -> tuple[list[Page], st
     if parsed.meta.get("needs_ocr") or not parsed.text.strip():
         scanned = _ocr_pages(data, mime or "application/pdf")
         if any(t.strip() for t in scanned):
-            return [Page(i + 1, t) for i, t in enumerate(scanned)], "ocr"
+            # Keep native text when OCR fails to read an otherwise readable page.
+            size = max(len(parsed.pages), len(scanned))
+            pages = []
+            for i in range(size):
+                native = parsed.pages[i].text if i < len(parsed.pages) else ""
+                recognized = scanned[i] if i < len(scanned) else ""
+                pages.append(Page(i + 1, native if len(native.strip()) >= 50 else recognized or native))
+            return pages, "ocr"
     return parsed.pages, "parsed"
 
 
@@ -226,7 +236,10 @@ def doc_date(text: str, dtype: str) -> dt.date | None:
     patterns = []
     if dtype in ("aosr", "aook"):
         patterns.append(r"окончани\w*(?:\s+работ\w*)?[^0-9]{0,30}" + _DMY)
-    patterns += [r"\bот\s+" + _DMY, r"\bот\s+" + _LONG, r"(?:дата|составлен\w*)[^0-9]{0,20}" + _DMY, _LONG, _DMY]
+    patterns += [r"\bот\s+" + _DMY, r"\bот\s+" + _LONG, r"(?:дата\s+(?:выдачи|регистрации)|выдан\w*|составлен\w*)[^0-9]{0,20}" + _DMY]
+    # An expiry date is not the issue date. Bare dates in journals are work entries.
+    if dtype not in ("certificate", "work_journal", "test_protocol"):
+        patterns += [r"\bдата[^0-9]{0,20}" + _DMY, _LONG, _DMY]
     for pattern in patterns:
         for m in re.finditer(pattern, head if pattern not in (_LONG, _DMY) else text[:600], re.IGNORECASE):
             got = _date(*m.groups()[-3:])
@@ -257,6 +270,8 @@ def import_file(db: Session, storage: Storage, gateway, embedder, org_id: uuid.U
         title = f"{TITLES[dtype]}: {title}"
     doc = save_document(db, storage, org_id=org_id, kind=kind, title=title[:900],
                         data={"sha256": digest, "archive": True, "detected_type": dtype, "detected_by": by, "text_from": how,
+                              "reading": {"segments": len(pages), "with_text": sum(bool(p.text.strip()) for p in pages),
+                                          "empty_pages": [p.number for p in pages if p.number and not p.text.strip()]},
                               "folder": folder[:300]},
                         file_bytes=data, file_name=Path(name).name, created_by=actor, object_id=object_id,
                         mime=mime or "application/octet-stream")
@@ -269,7 +284,7 @@ def import_file(db: Session, storage: Storage, gateway, embedder, org_id: uuid.U
     if text.strip():
         from bis.brain.card import build_card
 
-        card = build_card(gateway, text, dtype, name)  # «Эрудит»: карточка — шапка для поиска, номер, дата, ссылки
+        card = build_card(gateway, text, dtype, name)  # «Синапс»: карточка — шапка для поиска, номер, дата, ссылки
         result["card"] = card.title
     if text.strip():
         from bis.rag.ingest import ingest_pages

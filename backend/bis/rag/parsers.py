@@ -55,10 +55,11 @@ def parse_pdf(data: bytes) -> ParsedDocument:
 
     reader = PdfReader(io.BytesIO(data))
     pages = [Page(i + 1, (p.extract_text() or "")) for i, p in enumerate(reader.pages)]
-    chars = sum(len(p.text.strip()) for p in pages)
     meta: dict[str, Any] = {"pages": len(pages)}
-    if pages and chars / len(pages) < 50:
-        meta["needs_ocr"] = True  # скан без текстового слоя
+    missing = [p.number for p in pages if len(p.text.strip()) < 50]
+    if missing:
+        meta["needs_ocr"] = True  # includes mixed PDFs with scanned appendices
+        meta["ocr_pages"] = missing
     title = None
     if reader.metadata and reader.metadata.title:
         title = str(reader.metadata.title)

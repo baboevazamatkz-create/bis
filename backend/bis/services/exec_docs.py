@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from bis.documents.aook import AOOKData, render_aook, validate_aook
 from bis.documents.forms_xlsx import SheetBuilder
+from bis.documents.templates import render_with_org_template
 from bis.models import ConstructionObject, Document, EstimateItem, Organization, WorkVolume
 from bis.services.documents import next_number, save_document
 from bis.services.storage import Storage
@@ -33,10 +34,13 @@ def create_aook(db: Session, storage: Storage, *, org_id: uuid.UUID, data: AOOKD
     if not data.number:
         data.number = str(next_number(db, org_id, f"aook:{object_id or 'none'}"))
     data.date = data.date or dt.date.today()
+    from bis.services.library_access import bind_context
+
+    bind_context(db, org_id, object_id)
     issues = [i.model_dump() for i in validate_aook(data)]
     title = f"АООК № {data.number}: {data.works[:150]}"
     return save_document(db, storage, org_id=org_id, kind="aook", title=title, data=data.model_dump(mode="json"),
-                         file_bytes=render_aook(data), file_name=f"АООК_{data.number}.docx", created_by=created_by,
+                         file_bytes=render_with_org_template(db, storage, org_id, "aook", data) or render_aook(data), file_name=f"АООК_{data.number}.docx", created_by=created_by,
                          number=data.number, doc_date=data.date, object_id=object_id, issues=issues)
 
 
@@ -90,8 +94,16 @@ def export_registry(db: Session, storage: Storage, org_id: uuid.UUID, object_id:
         s.line(("⚠ " if issue["level"] == "warning" else "✖ ") + issue["message"], size=9)
     s.signatures([("Ответственный за ведение ИД", "")])
     seq = next_number(db, org_id, f"id_registry:{object_id}")
+    content = s.to_bytes()
+    from bis.services.library_access import bind_context
+
+    if bind_context(db, org_id, object_id).strict:
+        from bis.services.library_forms import render
+
+        content = render(db, storage, org_id, "id_registry", {"number": str(seq), "object_name": obj.name,
+            "date": dt.date.today(), "rows": [[r["number"], r["kind_title"], r["date"], r["title"], r["status"]] for r in reg["documents"]]})
     return save_document(db, storage, org_id=org_id, kind="id_registry", title=f"Реестр ИД № {seq} ({obj.code or obj.name[:40]})",
-                         data={"documents": len(reg["documents"]), "issues": reg["issues"]}, file_bytes=s.to_bytes(),
+                         data={"documents": len(reg["documents"]), "issues": reg["issues"]}, file_bytes=content,
                          file_name=f"Реестр_ИД_{seq}.xlsx", created_by=actor, number=str(seq), doc_date=dt.date.today(),
                          object_id=object_id, issues=reg["issues"], mime=XLSX_MIME)
 
@@ -126,8 +138,16 @@ def export_work_journal(db: Session, storage: Storage, org_id: uuid.UUID, object
         s.data([i, e["date"].strftime("%d.%m.%Y"), e["work"], e["location"] or "", f"{e['quantity']:g} {e['unit']}",
                 e["performer"], e["act"] or ("подтверждено ПТО" if e["status"] != "reported" else "не подтверждено")])
     s.signatures([("Ответственный за ведение журнала", "")])
+    content = s.to_bytes()
+    from bis.services.library_access import bind_context
+
+    if bind_context(db, org_id, object_id).strict:
+        from bis.services.library_forms import render
+
+        content = render(db, storage, org_id, "work_journal", {"object_name": obj.name, "date": end,
+            "rows": [[e["date"], e["work"], e["location"], e["quantity"], e["unit"], e["performer"], e["act"]] for e in entries]})
     return save_document(db, storage, org_id=org_id, kind="work_journal",
                          title=f"Журнал выполнения работ {obj.code or obj.name[:40]} за {start:%d.%m}–{end:%d.%m.%Y}",
-                         data={"entries": len(entries)}, file_bytes=s.to_bytes(),
+                         data={"entries": len(entries)}, file_bytes=content,
                          file_name=f"Журнал_работ_{start:%Y-%m}.xlsx", created_by=actor, doc_date=end,
                          object_id=object_id, mime=XLSX_MIME)

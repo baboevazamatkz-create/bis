@@ -1,5 +1,6 @@
 // Общие компоненты и хуки интерфейса.
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import Icon from "./components/Icon";
 import { api, DEMO, type Issue } from "./api";
 
 export interface Option {
@@ -259,9 +260,10 @@ export function VoiceButton({ onText, className = "btn", label }: { onText: (tex
   return (
     <span className="voice">
       <button type="button" className={`${className} voice-btn ${v.state}`} disabled={v.state === "busy"}
+              aria-label={v.state === "rec" ? "Остановить запись" : "Сказать голосом"}
               title={v.state === "rec" ? "Слушаю — остановлюсь сам после паузы (или нажмите)" : "Сказать голосом"}
               style={{ "--lvl": v.level } as CSSProperties} onClick={v.toggle}>
-        {v.state === "rec" ? <><span className="voice-dot" />Слушаю…</> : v.state === "busy" ? "Распознаю…" : <>🎙{label ? ` ${label}` : ""}</>}
+        {v.state === "rec" ? <><span className="voice-dot" />Слушаю…</> : v.state === "busy" ? "Распознаю…" : <><Icon name="mic" size={17} />{label ? ` ${label}` : ""}</>}
       </button>
       {v.err && <span className="small text-bad">{v.err}</span>}
     </span>

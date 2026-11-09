@@ -1,4 +1,4 @@
-"""Построение «Эрудита»: карточка и связи документа при загрузке; фоновый досчёт для уже загруженного архива."""
+"""Построение «Синапса»: карточка и связи документа при загрузке; фоновый досчёт для уже загруженного архива."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import logging
 import uuid
 from typing import Any
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from bis.brain import links
@@ -21,13 +21,10 @@ KIND_TO_TYPE = {"incoming_letter": "letter", "supply_doc": "upd", "photo": "site
 
 
 def document_text(db: Session, doc: Document, tail: bool = False) -> str:
-    """Текст документа из базы знаний: начало (80 фрагментов), а с tail — и конец (реквизиты, подписи)."""
-    q = (select(KnowledgeChunk.content).join(KnowledgeSource, KnowledgeSource.id == KnowledgeChunk.source_id)
-         .where(KnowledgeSource.document_id == doc.id))
-    parts = db.scalars(q.order_by(KnowledgeChunk.ord).limit(80)).all()
-    if tail and len(parts) == 80:
-        parts += list(reversed(db.scalars(q.order_by(KnowledgeChunk.ord.desc()).limit(20)).all()))
-    return "\n".join(parts)
+    """Complete indexed text; tail is retained for compatibility with existing callers."""
+    from bis.services.document_text import document_text as read_text
+
+    return read_text(db, doc)
 
 
 def apply_card(db: Session, embedder, doc: Document, card: Card, *, reembed: bool = True) -> None:
@@ -79,8 +76,38 @@ def build_missing(db: Session, gateway, embedder, org_id: uuid.UUID, limit: int 
             done += 1
         except Exception as e:  # noqa: BLE001 — один документ не останавливает остальные
             failed += 1
-            log.warning("Эрудит: карточка документа %s не построена: %s", doc.id, e)
+            log.warning("Синапс: карточка документа %s не построена: %s", doc.id, e)
     return {"cards": done, "failed": failed, "left": len(missing(db, org_id, 1000))}
+
+
+def index_missing(db: Session, gateway, embedder, storage, org_id: uuid.UUID, limit: int = 20) -> dict[str, Any]:
+    """Recover files that were saved but never became searchable (e.g. OCR/indexing failed)."""
+    from bis.rag.ingest import ingest_pages
+    from bis.services.archive import KNOWLEDGE, _pages
+
+    indexed = select(KnowledgeSource.document_id).where(KnowledgeSource.organization_id == org_id,
+        KnowledgeSource.document_id.is_not(None), KnowledgeSource.chunk_count > 0)
+    docs = db.scalars(select(Document).where(Document.organization_id == org_id,
+        Document.file_key.is_not(None), Document.id.notin_(indexed)).order_by(Document.created_at).limit(limit)).all()
+    done = 0
+    for doc in docs:
+        try:
+            with db.begin_nested():
+                pages, how = _pages(storage.get(doc.file_key), doc.file_name or "file", doc.mime)
+                pages = [p for p in pages if p.text.strip()]
+                if not pages:
+                    doc.data = {**(doc.data or {}), "reading_error": "Нет извлечённого текста; требуется OCR/зрение"}
+                    continue
+                dtype = (doc.data or {}).get("detected_type") or doc.kind
+                ingest_pages(db, embedder, org_id=org_id, pages=pages, title=doc.title,
+                             kind=KNOWLEDGE.get(dtype, "org_document"), document_id=doc.id)
+                doc.data = {**(doc.data or {}), "text_from": how, "reading_error": None}
+                build_document(db, gateway, embedder, doc, "\n".join(p.text for p in pages))
+            done += 1
+        except Exception as e:  # noqa: BLE001
+            log.warning("Синапс: файл %s не проиндексирован: %s", doc.id, e)
+            doc.data = {**(doc.data or {}), "reading_error": str(e)[:300]}
+    return {"indexed": done}
 
 
 # --- дочитать сканы: раньше распознавание обрывалось на 20-й странице --------------------------------
@@ -90,7 +117,8 @@ def unread_scans(db: Session, org_id: uuid.UUID, limit: int = 5) -> list[Documen
     """Сканы PDF, у которых могли быть прочитаны не все страницы (ещё не сверены с числом страниц файла)."""
     return list(db.scalars(select(Document).where(
         Document.organization_id == org_id, Document.file_key.is_not(None), Document.file_name.ilike("%.pdf"),
-        Document.data["text_from"].astext == "ocr", Document.data["pages_checked"].is_(None))
+        or_(Document.data["text_from"].astext.in_(["ocr", "parsed"]), Document.data["text_from"].astext.is_(None)),
+        or_(Document.data["pages_checked"].is_(None), Document.data["pages_checked"].astext == "-1"))
         .order_by(Document.created_at).limit(limit)))
 
 
@@ -106,12 +134,14 @@ def reread_scan(db: Session, gateway, embedder, storage, doc: Document) -> int:
 
     data = storage.get(doc.file_key)
     total = len(PdfReader(io.BytesIO(data)).pages)
-    read = db.scalar(select(func.max(KnowledgeChunk.page)).join(KnowledgeSource, KnowledgeSource.id == KnowledgeChunk.source_id)
-                     .where(KnowledgeSource.document_id == doc.id)) or 0
-    # без номеров страниц (старая загрузка) прочитано было не больше 20 страниц
-    need = total > 20 if read == 0 else total > read
+    read = set(db.scalars(select(KnowledgeChunk.page).join(KnowledgeSource, KnowledgeSource.id == KnowledgeChunk.source_id)
+                         .where(KnowledgeSource.document_id == doc.id,
+                                KnowledgeSource.meta["vision"].astext.is_distinct_from("true"))).all())
+    need = bool(set(range(1, total + 1)) - read)
     if need:
         texts = ocr.recognize_pages(data, "application/pdf")
+        if len(texts) != total:
+            raise ocr.OCRError(f"OCR вернул {len(texts)} страниц из {total}; исходный индекс сохранён")
         from bis.rag.columns import split_columns
 
         pages = [Page(i + 1, split_columns(t)) for i, t in enumerate(texts) if t.strip()]
@@ -129,7 +159,11 @@ def reread_scan(db: Session, gateway, embedder, storage, doc: Document) -> int:
 
             invalidate_vectors()
             build_document(db, gateway, embedder, doc, text="\n".join(p.text for p in pages))
-    doc.data = {**(doc.data or {}), "pages_checked": total}
+    page_numbers = list(db.scalars(select(KnowledgeChunk.page).join(KnowledgeSource).where(
+        KnowledgeSource.document_id == doc.id, KnowledgeSource.organization_id == doc.organization_id)).all())
+    doc.data = {**(doc.data or {}), "pages_checked": total,
+                "reading": {"segments": total, "with_text": len({p for p in page_numbers if p is not None}),
+                            "empty_pages": [i for i in range(1, total + 1) if i not in page_numbers]}}
     return total
 
 
@@ -145,7 +179,7 @@ def reread_missing(db: Session, gateway, embedder, storage, org_id: uuid.UUID, l
                 reread_scan(db, gateway, embedder, storage, doc)
             done += 1
         except Exception as e:  # noqa: BLE001
-            log.warning("Эрудит: скан %s не перечитан: %s", doc.id, e)
+            log.warning("Синапс: скан %s не перечитан: %s", doc.id, e)
             doc.data = {**(doc.data or {}), "pages_checked": -1}
     return {"reread": done, "reread_left": len(unread_scans(db, org_id, 1000))}
 
@@ -160,7 +194,8 @@ def vision_missing(db: Session, org_id: uuid.UUID, limit: int = 5) -> list[Docum
         Document.organization_id == org_id, Document.file_key.is_not(None),
         or_(Document.kind.in_(VISION_KINDS), Document.data["card"]["kind"].astext.in_(["scheme", "project_doc", "survey"]),
             Document.data["text_from"].astext == "none"),  # без текста (чертёж, плохой скан) — прочитать можно только глазами
-        or_(Document.data["card"]["vision"].is_(None), Document.data["card"]["vision"].astext == "null"),
+        or_(Document.data["card"]["vision"].is_(None), Document.data["card"]["vision"].astext == "null",
+            Document.data["card"]["vision"]["complete"].astext.is_distinct_from("true")),
         or_(Document.file_name.ilike("%.pdf"), Document.file_name.ilike("%.jpg"), Document.file_name.ilike("%.jpeg"),
             Document.file_name.ilike("%.png")))
         .order_by(Document.created_at).limit(limit)))
@@ -185,7 +220,7 @@ def see_document(db: Session, gateway, embedder, storage, doc: Document) -> dict
         doc.data = {**(doc.data or {}), "card": card.model_dump(mode="json")}
         return card.vision
     if not sheets:
-        card.vision = {"sheets": [], "note": "модель не прочитала листы"}
+        card.vision = {"sheets": [], "complete": False, "note": "модель не прочитала листы"}
     else:
         first = sheets[0].title_block
         card.rd_code = card.rd_code or first.code
@@ -198,7 +233,10 @@ def see_document(db: Session, gateway, embedder, storage, doc: Document) -> dict
         card.levels = _uniq([*card.levels, *(lv for s in sheets for lv in s.levels)], 12)
         if not card.summary or card.by == "rules":
             card.summary = sheets[0].description[:300]
-        card.vision = {"sheets": [s.model_dump(mode="json") for s in sheets], "pages": len(images)}
+        read_pages = [s.page_number or i + 1 for i, s in enumerate(sheets)]
+        card.vision = {"sheets": [s.model_dump(mode="json") for s in sheets], "pages": len(images),
+                       "read_pages": read_pages, "complete": len(sheets) == len(images),
+                       "missing_pages": [i for i in range(1, len(images) + 1) if i not in read_pages]}
         card.title = card.label()
         for src in db.scalars(select(KnowledgeSource).where(KnowledgeSource.document_id == doc.id)):
             if (src.meta or {}).get("vision"):
@@ -206,7 +244,8 @@ def see_document(db: Session, gateway, embedder, storage, doc: Document) -> dict
         db.flush()
         src = ingest_pages(db, embedder, org_id=doc.organization_id, kind="project_doc",
                            title=f"{doc.title} — описание листов", document_id=doc.id, context=card.title,
-                           pages=[Page(i + 1, vision.sheet_text(i + 1, s)) for i, s in enumerate(sheets)])
+                           pages=[Page(s.page_number or i + 1, vision.sheet_text(s.page_number or i + 1, s))
+                                  for i, s in enumerate(sheets)])
         src.meta = {**(src.meta or {}), "vision": True}
         from bis.rag.search import invalidate_vectors
 
@@ -249,27 +288,38 @@ def coverage(db: Session, org_id: uuid.UUID) -> dict[str, Any]:
         DocumentLink.organization_id == org_id, DocumentLink.to_document_id.is_not(None))) or 0
     pages = db.scalar(select(func.count()).select_from(KnowledgeChunk).where(
         KnowledgeChunk.organization_id == org_id, KnowledgeChunk.page.is_not(None))) or 0
+    indexed_ids = select(KnowledgeSource.document_id).where(KnowledgeSource.organization_id == org_id,
+        KnowledgeSource.document_id.is_not(None), KnowledgeSource.chunk_count > 0)
+    indexed = db.scalar(select(func.count()).select_from(Document).where(
+        Document.organization_id == org_id, Document.id.in_(indexed_ids))) or 0
     from bis.brain import vision as vis
     from bis.llm.gateway import get_gateway
 
     return {"documents": total, "cards": cards, "cards_by_model": model, "vision": vision, "links": links_total,
+            "vision_complete": db.scalar(select(func.count()).select_from(Document).where(
+                Document.organization_id == org_id, Document.data["card"]["vision"]["complete"].astext == "true")) or 0,
+            "model_cards_incomplete": db.scalar(select(func.count()).select_from(Document).where(
+                Document.organization_id == org_id, Document.data["card"]["model_read_complete"].astext == "false")) or 0,
+            "indexed_documents": indexed, "unindexed_documents": total - indexed,
+            "reading_failures": db.scalar(select(func.count()).select_from(Document).where(
+                Document.organization_id == org_id, Document.data["pages_checked"].astext == "-1")) or 0,
             "links_found": links_found, "chunks_with_page": pages, "pending": len(missing(db, org_id, 1000)),
             "vision_waiting": len(vision_missing(db, org_id, 1000)), "vision_available": vis.available(get_gateway()),
             "vision_status": vis.status(get_gateway())}
 
 
-@job("brain", "Эрудит: карточки и связи документов", every_minutes=10)
+@job("brain", "Синапс: карточки и связи документов", every_minutes=10)
 def brain_job(db: Session, org: Organization, today: dt.date) -> dict[str, Any]:
     from bis.llm.gateway import get_gateway
     from bis.rag.embeddings import get_embedder
     from bis.services.storage import get_storage
 
     gateway, embedder = get_gateway(), get_embedder()
-    out: dict[str, Any] = {"cards": 0}
+    out: dict[str, Any] = {"cards": 0, **index_missing(db, gateway, embedder, get_storage(), org.id)}
     if unread_scans(db, org.id, 1):
         out |= reread_missing(db, gateway, embedder, get_storage(), org.id, limit=5)
     if missing(db, org.id, 1):
-        out = build_missing(db, gateway, embedder, org.id, limit=40)
+        out |= build_missing(db, gateway, embedder, org.id, limit=40)
     if vision_missing(db, org.id, 1):
         out |= see_missing(db, gateway, embedder, get_storage(), org.id, limit=5)
     from bis.brain.parties import link_all

@@ -5,6 +5,7 @@ from datetime import date
 from typing import Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
@@ -74,6 +75,9 @@ def upload(
     db: Session = Depends(get_db),
     user: User = Depends(require("knowledge:write")),
 ):
+    policy = db.info.get("source_context")
+    if policy and policy.strict:
+        raise HTTPException(409, "В строгом режиме подключайте исходные файлы через раздел Библиотеки")
     if scope == "global" and not user.is_platform_admin:
         raise HTTPException(403, "Загрузка в общую библиотеку доступна администратору платформы")
     data = file.file.read()
@@ -122,6 +126,8 @@ def update_source(source_id: uuid.UUID, body: SourceUpdate, db: Session = Depend
 def delete_source(source_id: uuid.UUID, db: Session = Depends(get_db),
                   user: User = Depends(require("knowledge:write"))):
     src = _owned(db, user, source_id)
+    if (src.meta or {}).get("library_version_id"):
+        raise HTTPException(409, "Источник управляется папкой. Отключите подключение или измените файл в папке")
     if src.file_key:
         get_storage().delete(src.file_key)
     db.delete(src)
@@ -143,9 +149,22 @@ def source_chunks(source_id: uuid.UUID, limit: int = 50, offset: int = 0, db: Se
 
 
 @router.get("/search")
-def search(q: str, scope: Literal["norms", "organization", "all"] = "all", k: int = 8,
+def search(q: str, scope: Literal["norms", "organization", "project", "all"] = "all", k: int = 8,
            db: Session = Depends(get_db), user: User = Depends(require("knowledge:read"))):
     from bis.agents.builtin_tools import SCOPE_KINDS
 
-    hits = hybrid_search(db, get_embedder(), q, org_id=user.organization_id, kinds=SCOPE_KINDS[scope], k=min(k, 30))
+    policy = db.info.get("source_context")
+    level = {"norms": "knowledge", "organization": "organization", "project": "project"}.get(scope) if policy and policy.strict else None
+    hits = hybrid_search(db, get_embedder(), q, org_id=user.organization_id, kinds=SCOPE_KINDS[scope], library_level=level, k=min(k, 30))
     return {"query": q, "results": [h.to_dict() for h in hits]}
+
+
+@router.get("/sources/{source_id}/file")
+def source_file(source_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(require("knowledge:read"))):
+    src = db.scalar(select(KnowledgeSource).where(KnowledgeSource.id == source_id))
+    if src is None or src.organization_id not in (None, user.organization_id) or not src.file_key:
+        raise HTTPException(404, "Источник недоступен")
+    from urllib.parse import quote
+
+    return Response(get_storage().get(src.file_key), media_type=src.mime or "application/octet-stream",
+        headers={"Content-Disposition": "attachment; filename*=UTF-8''" + quote(src.file_name or "source")})

@@ -52,30 +52,38 @@ def _contract_id(text: str, prev: dict[str, Any]) -> str | None:
     for c in contracts:
         if c.get("number") and c["number"].lower() in text.lower():
             return c["id"]
-    general = [c for c in contracts if c.get("kind") == "general"]
-    return (general or contracts or [{}])[0].get("id")
+    if len(contracts) == 1:
+        return contracts[0]["id"]
+    archive = (prev.get("find_contracts") or {}).get("archive_contracts") or []
+    if not contracts and len(archive) == 1:
+        return archive[0]["document_id"]
+    return None
 
 
-def _object(prev: dict[str, Any]) -> str | None:
-    return _first_id(prev, "find_objects", "objects")
+def _object(prev: dict[str, Any], text: str = "") -> str | None:
+    objects = (prev.get("find_objects") or {}).get("objects") or []
+    matched = [o for o in objects if (o.get("code") and o["code"].lower() in text.lower())
+               or (o.get("name") and o["name"].lower() in text.lower())]
+    selected = matched or objects
+    return selected[0]["id"] if len(selected) == 1 else None
 
 
 INTENTS: list[tuple[str, list[tuple[str, Args]]]] = [
     (r"план.?факт|отстава|\bгпр\b|график", [
         ("find_objects", lambda t, p: {}),
-        ("plan_fact", lambda t, p: {"object_id": _object(p)} if _object(p) else None)]),
+        ("plan_fact", lambda t, p: {"object_id": _object(p, t)} if _object(p, t) else None)]),
     (r"перерасход|м-?29|списани|расход", [
         ("find_objects", lambda t, p: {}),
-        ("m29_report", lambda t, p: {"object_id": _object(p), **_period(t)} if _object(p) else None)]),
+        ("m29_report", lambda t, p: {"object_id": _object(p, t), **_period(t)} if _object(p, t) else None)]),
     (r"остат|баланс|материал", [
         ("find_objects", lambda t, p: {}),
-        ("material_balance", lambda t, p: {"object_id": _object(p)} if _object(p) else None)]),
+        ("material_balance", lambda t, p: {"object_id": _object(p, t)} if _object(p, t) else None)]),
     (r"кс-?2|кс-?3|закрыт|закрыва", [
         ("find_contracts", lambda t, p: {}),
         ("closing_check", lambda t, p: {"contract_id": _contract_id(t, p), **_period(t)} if _contract_id(t, p) else None)]),
     (r"комплектност|проектн\w* документ", [
         ("find_objects", lambda t, p: {}),
-        ("pd_completeness", lambda t, p: {"object_id": _object(p)} if _object(p) else None)]),
+        ("pd_completeness", lambda t, p: {"object_id": _object(p, t)} if _object(p, t) else None)]),
     (r"просроч|горит|сроки|что срочно", [
         ("list_obligations", lambda t, p: {"overdue_only": True}),
         ("list_tasks?", lambda t, p: {"overdue_only": True})]),
@@ -121,6 +129,13 @@ class OfflineProvider:
                 continue
             args = args_fn(text, prev)
             if args is None:
+                contracts = (prev.get("find_contracts") or {}).get("contracts") or []
+                objects = (prev.get("find_objects") or {}).get("objects") or []
+                candidates = contracts if "contract" in tool or tool == "closing_check" else objects
+                if len(candidates) > 1:
+                    labels = [f"№ {c['number']}" if c.get("number") else c.get("name", "") for c in candidates]
+                    return self._reply(NO_MODEL + "\n\nНашёл несколько вариантов: " + "; ".join(labels)
+                                       + ". Какой использовать?")
                 break
             call = ToolCall(id=f"off_{uuid.uuid4().hex[:8]}", name=tool, arguments=args)
             return LLMResponse(message=Message(role="assistant", tool_calls=[call]), stop_reason="tool_calls",

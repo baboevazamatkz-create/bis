@@ -1,4 +1,4 @@
-"""Зрение «Эрудита»: схемы, чертежи, фото документов — что изображено на листе.
+"""Зрение «Синапса»: схемы, чертежи, фото документов — что изображено на листе.
 
 Лист (страница PDF или картинка) → модель зрения: вид листа, штамп (шифр, лист, наименование, изм.), конструкции,
 оси, отметки, отклонения (для исполнительных схем), примечания. Результат — в карточку и в поиск («Описание листа»).
@@ -15,7 +15,6 @@ from pydantic import BaseModel, Field
 
 log = logging.getLogger(__name__)
 VISION_KINDS = {"scheme", "project_doc", "survey", "site_photo", "photo"}
-MAX_SHEETS = 8
 
 
 class TitleBlock(BaseModel):
@@ -36,6 +35,7 @@ class Deviation(BaseModel):
 
 
 class Sheet(BaseModel):
+    page_number: int | None = None
     sheet_type: str = Field(description="исполнительная схема | план | разрез | узел | фасад | спецификация | "
                                         "схема армирования | документ (скан текста) | фото | другое")
     description: str = Field(description="Что изображено, 2–4 предложения: конструкция, оси, главное содержание")
@@ -79,7 +79,7 @@ def status(gateway) -> dict[str, object]:
     return {"available": ok, "reason": None if ok else (_DOWN["reason"] or "модель зрения не настроена")}
 
 
-def sheet_images(data: bytes, mime: str | None, name: str, limit: int = MAX_SHEETS) -> list[dict[str, str]]:
+def sheet_images(data: bytes, mime: str | None, name: str, limit: int | None = None) -> list[dict[str, str]]:
     """Листы как картинки PNG/JPEG для модели: страницы PDF (рендер 1600 px по длинной стороне) или само изображение."""
     mime = (mime or "").lower()
     low = name.lower()
@@ -88,7 +88,7 @@ def sheet_images(data: bytes, mime: str | None, name: str, limit: int = MAX_SHEE
 
         pdf = pdfium.PdfDocument(data)
         out = []
-        for i in range(min(len(pdf), limit)):
+        for i in range(len(pdf) if limit is None else min(len(pdf), limit)):
             page = pdf[i]
             w, h = page.get_size()
             scale = 1600 / max(w, h)
@@ -108,9 +108,10 @@ def read_sheets(gateway, images: list[dict[str, str]]) -> list[Sheet]:
     from bis.llm.extract import extract
 
     out: list[Sheet] = []
-    for img in images:
+    for i, img in enumerate(images, 1):
         res = extract(gateway, Sheet, "", images=[img], task="vision", instructions=PROMPT)
         if res.data is not None and res.provider not in (None, "offline"):
+            res.data.page_number = i
             out.append(res.data)
             continue
         errors = " ".join(res.errors)

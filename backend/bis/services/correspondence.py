@@ -184,9 +184,12 @@ def process_incoming(db: Session, storage: Storage, gateway: LLMGateway | None, 
                      subject_hint: str | None = None) -> IncomingAnalysis:
     org = db.get(Organization, doc.organization_id)
     if text is None:
-        parsed = parse_file(storage.get(doc.file_key), doc.file_name or "letter.txt", doc.mime)
-        text = parsed.text
-        email = parsed.meta.get("email") or {}
+        from bis.services.document_text import document_text
+
+        text = document_text(db, doc, storage)
+        email = {}
+        if (doc.file_name or "").lower().endswith(".eml"):
+            email = parse_file(storage.get(doc.file_key), doc.file_name, doc.mime).meta.get("email") or {}
         sender_hint = sender_hint or email.get("From")
         subject_hint = subject_hint or email.get("Subject")
     received = (doc.created_at.date() if doc.created_at else None) or dt.date.today()

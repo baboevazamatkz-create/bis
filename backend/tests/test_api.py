@@ -142,7 +142,7 @@ def test_chat_pto_agent_creates_aosr_with_scripted_llm(client, auth):
     data = client.post("/api/chat", headers=auth, json={"message": "Сделай АОСР на армирование плиты Пм1"}).json()
     assert data["agent"] == "pto"
     assert data["documents"] and data["documents"][0]["kind"] == "aosr"
-    assert [t["tool"] for t in data["trace"]] == ["find_objects", "create_aosr_draft"]
+    assert [t["tool"] for t in data["trace"] if t.get("phase") != "retrieval"] == ["find_objects", "create_aosr_draft"]
     # системный промпт содержит организацию и правила
     system = llm.calls[0]["messages"][0].content
     assert "ООО «СтройДемо»" in system
@@ -166,7 +166,8 @@ def test_viewer_agent_cannot_create_documents(client, auth):
     set_gateway(LLMGateway(entries={"local": ProviderEntry(llm, "confidential")}))
     data = client.post("/api/chat", headers=h, json={"message": "Подготовь письмо заказчику", "agent": "secretary"}).json()
     assert data["documents"] == []
-    assert data["trace"][0]["error"] is True
+    calls = [t for t in data["trace"] if t.get("phase") != "retrieval"]
+    assert calls[0]["tool"] == "create_letter_draft" and calls[0]["error"] is True
 
 
 def test_tools_and_agents_listing(client, auth):

@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { api, download, fetchBlob, openFile, streamChat, type ChatReply, type Citation, type DocRef } from "../api";
+import Icon from "../components/Icon";
+import { PTO_SUGGESTIONS } from "../modules/executive/config";
 
 interface Msg {
   role: "user" | "assistant";
@@ -33,8 +35,8 @@ function Citations({ items }: { items: Citation[] }) {
         <details key={c.chunk_id}>
           <summary>
             [{i + 1}] {c.citation}
-            {c.document_id && (
-              <button className="link small" onClick={(e) => { e.preventDefault(); void openFile(`/documents/${c.document_id}/file`, c.title, c.page); }}>
+            {(c.fact_snapshot_id || c.document_id || c.source_id) && (
+              <button className="link small" onClick={(e) => { e.preventDefault(); void openFile(c.fact_snapshot_id ? `/brain/facts/snapshots/${c.fact_snapshot_id}/file${c.object_id ? `?object_id=${c.object_id}` : ""}` : c.document_id ? `/documents/${c.document_id}/file` : `/knowledge/sources/${c.source_id}/file`, c.title, c.page); }}>
                 {c.page ? `открыть стр. ${c.page}` : "открыть"}
               </button>
             )}
@@ -87,9 +89,11 @@ function Rich({ text }: { text: string }) {
   return <>{out}</>;
 }
 
-export default function Chat() {
+export default function Chat({ workspace = "platform" }: { workspace?: "platform" | "executive" }) {
+  const [showHistory, setShowHistory] = useState(false);
+  const executive = workspace === "executive";
   const [agents, setAgents] = useState<Agent[]>([]);
-  const [agent, setAgent] = useState("");
+  const [agent, setAgent] = useState(executive ? "pto" : "");
   const [sessions, setSessions] = useState<{ id: string; title: string }[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Msg[]>([]);
@@ -103,10 +107,10 @@ export default function Chat() {
   const [recording, setRecording] = useState(false);
   const recorder = useRef<MediaRecorder | null>(null);
 
-  const loadSessions = () => api<{ id: string; title: string }[]>("/chat/sessions").then(setSessions).catch(() => {});
+  const loadSessions = () => api<{ id: string; title: string }[]>(`/chat/sessions?workspace=${workspace}`).then(setSessions).catch(() => {});
 
   useEffect(() => {
-    api<Agent[]>("/agents").then(setAgents).catch(() => {});
+    api<Agent[]>("/agents").then((list) => setAgents(executive ? list.filter((a) => ["pto", "cad", "norms", "assistant"].includes(a.name)) : list)).catch(() => {});
     api<{ stt: boolean; tts: boolean }>("/voice/status").then(setVoice).catch(() => {});
     loadSessions();
   }, []);
@@ -161,7 +165,7 @@ export default function Chat() {
 
   async function openSession(id: string) {
     setSessionId(id);
-    setMessages(await api<Msg[]>(`/chat/sessions/${id}`));
+    setMessages(await api<Msg[]>(`/chat/sessions/${id}?workspace=${workspace}`));
   }
 
   async function send(message: string) {
@@ -172,7 +176,7 @@ export default function Chat() {
     setBusy(true);
     setSteps([]);
     try {
-      const r = await streamChat<ChatReply>({ message, session_id: sessionId, agent: agent || null }, (e) => {
+      const r = await streamChat<ChatReply>({ message, session_id: sessionId, agent: agent || null, workspace }, (e) => {
         if (e.type === "route" && e.title) setSteps((s) => [...s, `Отвечает: ${e.title}`]);
         if (e.type === "step" && e.label) setSteps((s) => [...s, e.label!]);
       });
@@ -191,30 +195,36 @@ export default function Chat() {
   const agentTitle = (name?: string | null) => agents.find((a) => a.name === name)?.title ?? name;
 
   return (
-    <div className="chat">
-      <div className="panel chat-sessions">
+    <div className={`chat ${showHistory ? "history-open" : ""}`}>
+      <div className="chat-sessions"><div className="chat-history-heading">ДИАЛОГИ</div>
         <button
-          className="btn primary"
-          style={{ width: "100%", marginBottom: 10 }}
+          className="btn new-chat"
+          disabled={busy}
+          style={{ width: "100%", marginBottom: 16 }}
           onClick={() => {
             setSessionId(null);
             setMessages([]);
+            setError("");
+            setShowHistory(false);
           }}
         >
-          Новый диалог
+          <Icon name="plus" size={16} /> Новый диалог
         </button>
+        {sessions.length === 0 && <p className="history-empty">Здесь будут ваши<br />диалоги с Синапсом.</p>}
         {sessions.map((s) => (
-          <button key={s.id} className={`btn small ${s.id === sessionId ? "primary" : ""}`} onClick={() => openSession(s.id)}>
+          <button key={s.id} className={`session-item ${s.id === sessionId ? "selected" : ""}`} disabled={busy} title={s.title} onClick={() => { void openSession(s.id); setShowHistory(false); }}>
             {s.title}
           </button>
         ))}
       </div>
       <div className="chat-main">
-        <div className="row" style={{ marginBottom: 8 }}>
-          <div className="field" style={{ maxWidth: 320 }}>
-            <label>Агент</label>
-            <select value={agent} onChange={(e) => setAgent(e.target.value)}>
-              <option value="">Автоматически (супервизор)</option>
+        <div className="chat-toolbar">
+          <div className="chat-identity"><span className="synapse-avatar"><Icon name="spark" size={18} /></span><div><strong>Синапс</strong><span>Помощник {executive ? "инженера ПТО" : "по проекту"}</span></div></div>
+          <button className="btn small chat-history-toggle" aria-expanded={showHistory} onClick={() => setShowHistory(!showHistory)}><Icon name="chat" size={15} />{showHistory ? "Закрыть историю" : "История"}</button>
+          <div className="field agent-picker">
+            <label className="sr-only" htmlFor="chat-agent">Специалист</label>
+            <select id="chat-agent" aria-label="Специалист" value={agent} onChange={(e) => setAgent(e.target.value)}>
+              {!executive && <option value="">Автоматически (супервизор)</option>}
               {agents.map((a) => (
                 <option key={a.name} value={a.name} title={a.description}>
                   {a.title}
@@ -232,16 +242,17 @@ export default function Chat() {
         </div>
         <div className="messages">
           {messages.length === 0 && (
-            <div className="panel">
-              <h2>Чем помочь?</h2>
+            <div className="chat-welcome">
+              <div className="welcome-symbol"><Icon name="spark" size={30} /></div><span className="welcome-eyebrow">ВАШ ПРОЕКТ. ВЕСЬ КОНТЕКСТ.</span>
+              <h2>С чего начнём?</h2>
               <p className="muted">
-                Вопросы по нормам с цитатами, черновики АОСР и писем, поиск по договорам и документам. Документы создаются
-                черновиками — утверждает человек.
+                {executive ? "Помогу собрать акт, найти документ или проверить комплект. Начните с вопроса или выберите задачу."
+                  : "Найду основания в документах, подготовлю черновик или помогу разобраться в проекте."}
               </p>
               <div className="suggestions">
-                {SUGGESTIONS.map((s) => (
-                  <button key={s} className="btn small" onClick={() => send(s)}>
-                    {s}
+                {(executive ? PTO_SUGGESTIONS : SUGGESTIONS).slice(0, 4).map((s, index) => (
+                  <button key={s} className="suggestion-card" onClick={() => send(s)}><Icon name={["check", "documents", "project", "sources"][index]} size={19} />
+                    <span>{s}</span><Icon name="arrow" size={16} />
                   </button>
                 ))}
               </div>
@@ -254,11 +265,8 @@ export default function Chat() {
                 <>
                   <Docs items={m.meta?.documents ?? []} />
                   <Citations items={m.meta?.citations ?? []} />
-                  <div className="meta">
-                    {agentTitle(m.agent)}
-                    {m.meta?.routed_by ? ` · ${m.meta.routed_by}` : ""}
-                    {m.meta?.provider ? ` · ${m.meta.provider}` : ""}
-                    {m.meta?.trace?.length ? ` · инструменты: ${m.meta.trace.map((t) => t.tool).join(", ")}` : ""}
+                  <div className="meta">{agentTitle(m.agent) || "Синапс"}
+                    {(m.meta?.provider || !!m.meta?.trace?.length) && <details className="chat-tech"><summary>Детали ответа</summary><p>{m.meta?.provider}{m.meta?.routed_by ? ` · ${m.meta.routed_by}` : ""}</p>{m.meta?.trace?.map((t, n) => <span key={n}>{t.tool}{t.error ? " · ошибка" : ""}<br /></span>)}</details>}
                   </div>
                 </>
               )}
@@ -276,13 +284,15 @@ export default function Chat() {
           <div ref={bottom} />
         </div>
         {error && <div className="alert error">{error}</div>}
-        <div className="composer">
+        <div className="chat-compose-area"><div className="composer">
           <textarea
+            aria-label="Сообщение Синапсу"
+            rows={2}
             value={text}
-            placeholder="Сообщение… (Enter — отправить, Shift+Enter — новая строка)"
+            placeholder="Спросите о проекте или опишите выполненную работу…"
             onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
+              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault();
                 send(text);
               }
@@ -290,13 +300,13 @@ export default function Chat() {
           />
           {voice.stt && (
             <button className={`btn ${recording ? "recording" : ""}`} title="Голосовая команда" onClick={toggleRecording} disabled={busy}>
-              {recording ? "■ Стоп" : "🎤"}
+              {recording ? "Стоп" : <Icon name="mic" />}
             </button>
           )}
-          <button className="btn primary" disabled={busy || !text.trim()} onClick={() => send(text)}>
-            Отправить
+          <button className="btn primary" aria-label="Отправить сообщение" disabled={busy || !text.trim()} onClick={() => send(text)}>
+            <span>Отправить</span><Icon name="arrow" size={18} />
           </button>
-        </div>
+        </div><div className="composer-caption"><span>Основания — в ваших документах. Решение — за вами.</span><span className="composer-keyboard">Enter ↵</span></div></div>
       </div>
     </div>
   );

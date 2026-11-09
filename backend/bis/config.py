@@ -75,6 +75,10 @@ class Settings(BaseSettings):
     storage_dir: Path = Path("./data/files")
     cors_origins: list[str] = ["http://localhost:5173", "http://localhost:8080"]
 
+    # Only these server directories may be connected by administrators. Originals are read-only.
+    library_roots: list[Path] = []
+    library_pdf_font: Path = Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
+
     # Эмбеддинги
     embedding_provider: Literal["hash", "openai_compat", "yandex"] = "hash"  # yandex — смысловые эмбеддинги AI Studio
     embedding_url: str | None = None

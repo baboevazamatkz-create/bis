@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import uuid
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -53,7 +54,31 @@ class ContractArgs(BaseModel):
 @tool("get_contract_details", "Карточка договора: стороны, суммы, сроки, результаты анализа, обязательства.",
       scopes=("registry:read",))
 def get_contract_details(ctx: AgentContext, args: ContractArgs) -> dict:
-    c = ctx.db.get(Contract, contract_ref(ctx, args.contract_id))
+    from bis.agents.resolve import AmbiguousReference
+
+    try:
+        c = ctx.db.get(Contract, contract_ref(ctx, args.contract_id))
+    except AmbiguousReference:
+        raise
+    except LookupError:
+        from bis.agents.builtin_tools import resolve_document
+
+        if args.contract_id:
+            doc = resolve_document(ctx, args.contract_id)
+            if doc.kind != "contract":
+                raise LookupError("Найденный документ не является договором") from None
+        else:
+            docs = ctx.db.scalars(select(Document).where(Document.organization_id == ctx.org_id,
+                                                          Document.kind == "contract")).all()
+            if not docs:
+                raise LookupError("Договор не найден ни в реестре, ни в архиве") from None
+            if len(docs) > 1:
+                raise AmbiguousReference("В архиве несколько договоров — выберите: " + "; ".join(d.title for d in docs),
+                                         [{"id": str(d.id), "title": d.title} for d in docs]) from None
+            doc = docs[0]
+        return get_document.handler(ctx, GetDocumentArgs(document_id=str(doc.id), query="стороны сумма сроки реквизиты")) | {
+            "archive_only": True, "document_id": str(doc.id),
+            "hint": "Договор найден в архиве; отдельной записи в реестре нет. Отвечай по тексту, не проси загрузить его снова."}
     if c is None or c.organization_id != ctx.org_id:
         raise LookupError("Договор не найден")
     cp = ctx.db.get(Counterparty, c.counterparty_id) if c.counterparty_id else None
@@ -265,44 +290,79 @@ def _owned_document(ctx: AgentContext, document_id: str):
 
 
 class GetDocumentArgs(BaseModel):
-    document_id: str
+    document_id: str | None = Field(None, description="id/номер документа; можно не указывать для выбранного в диалоге")
     query: str | None = Field(None, description="Что ищете в документе: «реквизиты заказчика», «срок оплаты», "
                               "«неустойка» — вернутся нужные места из всего документа, а не только начало")
+    offset: int = Field(0, ge=0, description="Позиция для последовательного чтения; следующий offset — в next_offset")
+    limit_chars: int = Field(7000, ge=500, le=9000)
 
 
 @tool("get_document", "Текст документа: с query — места из всего документа, где об этом сказано (с номерами страниц), "
-      "плюс первая и последняя страницы; без query — начало и конец документа. Для договоров реквизиты сторон обычно "
-      "в конце.", scopes=("documents:read",))
+      "плюс начало и конец; offset/limit_chars позволяют дочитать весь документ. Поле complete показывает, весь ли "
+      "доступный текст возвращён. Для договоров реквизиты сторон обычно в конце.", scopes=("documents:read",))
 def get_document(ctx: AgentContext, args: GetDocumentArgs) -> dict:
     from bis.agents.builtin_tools import share_document
-    from bis.models import KnowledgeChunk, KnowledgeSource
-    from bis.rag.parsers import UnsupportedFormat, parse_file
     from bis.rag.search import hybrid_search
+    from bis.services.document_text import document_chunks, document_text
 
-    doc = _owned_document(ctx, args.document_id)
-    chunks = ctx.db.execute(select(KnowledgeChunk.content, KnowledgeChunk.page, KnowledgeChunk.id)
-                            .join(KnowledgeSource, KnowledgeSource.id == KnowledgeChunk.source_id)
-                            .where(KnowledgeSource.document_id == doc.id).order_by(KnowledgeChunk.ord)).all()
-    full = "\n".join(c[0] for c in chunks)
-    if not full.strip() and doc.file_key:
-        try:
-            full = parse_file(ctx.storage.get(doc.file_key), doc.file_name or "file", doc.mime).text
-        except UnsupportedFormat:
-            full = ""
+    ref = args.document_id or ctx.focus.get("document")
+    if not ref:
+        from bis.agents.resolve import AmbiguousReference
+
+        docs = ctx.db.scalars(select(Document).where(Document.organization_id == ctx.org_id)
+                              .order_by(Document.created_at.desc()).limit(31)).all()
+        if len(docs) != 1:
+            raise AmbiguousReference("Выберите документ из найденных" if docs else "Документов в архиве нет",
+                                     [{"id": str(d.id), "title": d.title} for d in docs])
+        ref = str(docs[0].id)
+    doc = _owned_document(ctx, ref)
+    ctx.focus["document"] = str(doc.id)
+    if doc.kind == "contract":
+        contracts = ctx.db.scalars(select(Contract).where(Contract.organization_id == ctx.org_id,
+                                                          Contract.document_id == doc.id)).all()
+        if len(contracts) == 1:
+            ctx.focus["contract"] = str(contracts[0].id)
+    chunks = document_chunks(ctx.db, doc)
+    full = "\n".join(c.content for c in chunks) or document_text(ctx.db, doc, ctx.storage)
     out: dict = {"id": str(doc.id), "kind": doc.kind, "title": doc.title, "number": doc.number, "date": doc.date,
-                 "status": doc.status, "analysis": (doc.data or {}).get("analysis"),
-                 "card": (doc.data or {}).get("card"), "length": len(full)}
-    if len(full) <= 14000:
-        out["text"] = full or None
+                 "status": doc.status, "length": len(full), "offset": args.offset,
+                 "complete": args.offset == 0 and len(full) <= args.limit_chars,
+                 "indexed": bool(chunks), "extraction": (doc.data or {}).get("text_from"),
+                 "reading": (doc.data or {}).get("reading"), "reading_error": (doc.data or {}).get("reading_error")}
+    end = min(args.offset + args.limit_chars, len(full))
+    out["next_offset"] = end if end < len(full) else None
+    if len(full) <= args.limit_chars or args.offset:
+        out["text"] = full[args.offset:end] or None
+        pos = 0
+        out["sources"] = []
+        for h in chunks:
+            if pos < end and pos + len(h.content) > args.offset:
+                out["sources"].append({"n": ctx.add_citation(h.to_dict()), "page": h.page})
+            pos += len(h.content) + 1
     else:
-        out["beginning"] = full[:4000]
-        out["ending"] = full[-6000:]  # реквизиты, подписи, приложения — в конце
-        if args.query:
-            sources = ctx.db.scalars(select(KnowledgeSource.id).where(KnowledgeSource.document_id == doc.id)).all()
+        out["beginning"] = full[:1200]
+        out["ending"] = full[-1800:]
+        out["found"] = []
+        if not args.query:
+            out["text"] = full[:args.limit_chars]
+        else:
+            out["next_offset"] = 0  # excerpts are not the first sequential window
+            sources = list({uuid.UUID(h.source_id) for h in chunks})
             hits = hybrid_search(ctx.db, ctx.embedder, args.query, org_id=ctx.org_id, include_global=False,
                                  source_ids=list(sources), k=6) if sources else []
-            out["found"] = [{"n": ctx.add_citation(h.to_dict()), "page": h.page, "text": h.content[:1500]} for h in hits]
-        out["note"] = "Документ длинный: показаны начало, конец и найденные места; уточните query, если нужного нет"
+            remaining = args.limit_chars - 3000
+            for h in hits:
+                if remaining <= 0:
+                    break
+                text = h.content[:min(1500, remaining)]
+                out["found"].append({"n": ctx.add_citation(h.to_dict()), "page": h.page, "text": text})
+                remaining -= len(text)
+        out["sources"] = [{"n": ctx.add_citation(h.to_dict()), "page": h.page}
+                          for h in ([chunks[0], chunks[-1]] if chunks else [])]
+        out["note"] = "Показаны выдержки, а не весь текст. Для полного чтения используй offset и next_offset."
+    if not full.strip():
+        out["complete"] = False
+        out["note"] = "Текст не извлечён. Это не означает отсутствия сведений в файле; проверь OCR/зрение."
     share_document(ctx, doc)
     return out
 
@@ -330,6 +390,11 @@ class DelegateArgs(BaseModel):
 
 @tool("delegate_to_agent", "Передать часть задачи профильному агенту и получить результат (для составных задач).")
 def delegate_to_agent(ctx: AgentContext, args: DelegateArgs) -> dict:
+    if ctx.workspace == "executive":
+        from bis.modules.executive import AGENTS
+
+        if args.agent not in AGENTS:
+            raise ValueError("Этот специалист относится к другому блоку. Здесь доступны ПТО, CAD и нормоконтроль.")
     if ctx.depth >= 1:
         raise ValueError("Повторное делегирование запрещено — выполни задачу сам")
     if not ctx.agents or args.agent not in ctx.agents:
@@ -339,11 +404,14 @@ def delegate_to_agent(ctx: AgentContext, args: DelegateArgs) -> dict:
     if sub.name == caller:
         raise ValueError("Нельзя делегировать самому себе")
     ctx.depth += 1
+    ambiguous = ctx.ambiguous
+    ctx.ambiguous = False
     try:
-        result = sub.run(ctx, ctx.tool_registry, [], args.task)
+        result = sub.run(ctx, ctx.tool_registry, ctx.conversation, args.task)
     finally:
         ctx.depth -= 1
         ctx.agent_name = caller
+        ctx.ambiguous = ambiguous or ctx.ambiguous
     return {"agent": sub.name, "title": sub.title, "answer": result.text,
             "documents": [d for d in result.documents]}
 

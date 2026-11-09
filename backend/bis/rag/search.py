@@ -42,6 +42,8 @@ class SearchHit:
     score: float = 0.0
     n: int = 0
     document_id: str | None = None
+    library_version_id: str | None = None
+    library_level: str | None = None
 
     @property
     def citation(self) -> str:
@@ -74,7 +76,7 @@ def build_tsquery(query: str) -> str | None:
 
 
 def _base_filter(stmt: Select, org_id: uuid.UUID | None, kinds: list[str] | None, include_global: bool,
-                 only_active: bool, source_ids: list[uuid.UUID] | None) -> Select:
+                 only_active: bool, source_ids: list[uuid.UUID] | None, library_level: str | None = None) -> Select:
     stmt = stmt.join(KnowledgeSource, KnowledgeSource.id == KnowledgeChunk.source_id)
     scope = []
     if org_id is not None:
@@ -86,8 +88,16 @@ def _base_filter(stmt: Select, org_id: uuid.UUID | None, kinds: list[str] | None
         stmt = stmt.where(KnowledgeSource.kind.in_(kinds))
     if only_active:
         stmt = stmt.where(KnowledgeSource.status.notin_(["cancelled", "replaced"]))
-    if source_ids:
+    if source_ids is not None:
         stmt = stmt.where(KnowledgeSource.id.in_(source_ids))
+    if library_level:
+        from bis.models import Document
+
+        documents = select(Document.id).where(
+            Document.object_id.is_not(None) if library_level == "project" else
+            (Document.object_id.is_(None) & (func.jsonb_extract_path_text(Document.data, "library_scope") == "organization")))
+        stmt = stmt.where(or_(func.jsonb_extract_path_text(KnowledgeSource.meta, "level") == library_level,
+            KnowledgeSource.document_id.in_(documents) if library_level != "knowledge" else false()))
     return stmt
 
 
@@ -105,6 +115,8 @@ def _hit(chunk: KnowledgeChunk, src: KnowledgeSource) -> SearchHit:
         page=chunk.page,
         status=src.status,
         document_id=str(src.document_id) if src.document_id else None,
+        library_version_id=(src.meta or {}).get("library_version_id"),
+        library_level=(src.meta or {}).get("level"),
     )
 
 
@@ -124,7 +136,7 @@ def _vectors(db: Session, flt: dict, dim: int):
     — один короткий запрос (число фрагментов и время последнего)."""
     import numpy as np
 
-    key = tuple((k, tuple(v) if isinstance(v, list) else v) for k, v in sorted(flt.items())) + (dim,)
+    key = (db.info.get("source_context"),) + tuple((k, tuple(v) if isinstance(v, list) else v) for k, v in sorted(flt.items())) + (dim,)
     base = _base_filter(select(func.count(KnowledgeChunk.id), func.max(KnowledgeSource.created_at)), **flt) \
         .where(KnowledgeChunk.embedding.is_not(None))
     version = tuple(db.execute(base).one())
@@ -171,13 +183,14 @@ def hybrid_search(
     include_global: bool = True,
     only_active: bool = False,
     source_ids: list[uuid.UUID] | None = None,
+    library_level: str | None = None,
     k: int = 8,
 ) -> list[SearchHit]:
     query = query.strip()
     if not query:
         return []
     pool = max(k * 4, 20)
-    flt = dict(org_id=org_id, kinds=kinds, include_global=include_global, only_active=only_active, source_ids=source_ids)
+    flt = dict(org_id=org_id, kinds=kinds, include_global=include_global, only_active=only_active, source_ids=source_ids, library_level=library_level)
     ranked: list[list[tuple[KnowledgeChunk, KnowledgeSource]]] = []
     weights: list[float] = []
 

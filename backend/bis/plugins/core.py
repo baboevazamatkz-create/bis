@@ -20,13 +20,20 @@ class CorePlugin(Plugin):
     def tools(self) -> list[Tool]:
         from bis.agents.builtin_tools import BUILTIN_TOOLS
         from bis.agents.tools_control import CONTROL_TOOLS
+        from bis.agents.tools_facts import FACT_TOOLS
         from bis.agents.tools_id import ID_TOOLS
         from bis.agents.tools_pd import PD_TOOLS
+        from bis.agents.tools_project_reading import PROJECT_READING_TOOLS
         from bis.agents.tools_works import WORKS_TOOLS
 
-        return [*BUILTIN_TOOLS, *CONTROL_TOOLS, *WORKS_TOOLS, *PD_TOOLS, *ID_TOOLS]
+        return [*BUILTIN_TOOLS, *CONTROL_TOOLS, *WORKS_TOOLS, *PD_TOOLS, *ID_TOOLS, *FACT_TOOLS, *PROJECT_READING_TOOLS]
 
     def agents(self) -> list[Agent]:
+        from dataclasses import replace
+
         from bis.agents.builtin_agents import BUILTIN_AGENTS
 
-        return list(BUILTIN_AGENTS)
+        # Every specialist can inspect related records and sources; write tools stay specialized.
+        return [replace(a, tools=list(dict.fromkeys([*a.tools, "*read", "delegate_to_agent",
+                *(["prepare_executive_package"] if a.name == "pto" else [])])))
+                for a in BUILTIN_AGENTS]

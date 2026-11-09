@@ -80,7 +80,9 @@ def list_memory(db: Session = Depends(get_db), user: User = Depends(require("reg
 
 @router.post("/memory", response_model=MemoryOut, status_code=201)
 def add_memory(body: MemoryIn, db: Session = Depends(get_db), user: User = Depends(require("settings:write"))):
-    row = OrgMemory(organization_id=user.organization_id, source=f"user:{user.id}", **body.model_dump())
+    scope = db.info.get("source_context")
+    row = OrgMemory(organization_id=user.organization_id, source=f"user:{user.id}",
+        object_id=scope.object_id if scope and scope.strict else None, **body.model_dump())
     db.add(row)
     db.commit()
     return row

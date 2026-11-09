@@ -1,0 +1,22 @@
+# Use with docker-compose.yml. BIS_LIBRARY_HOST_DIR must exist on the host.
+services:
+  api:
+    environment:
+      BIS_LIBRARY_ROOTS: '["/libraries"]'
+    volumes:
+      - type: bind
+        source: ${BIS_LIBRARY_HOST_DIR:?Set BIS_LIBRARY_HOST_DIR to your library parent folder}
+        target: /libraries
+        read_only: true
+        bind:
+          create_host_path: false
+  worker:
+    environment:
+      BIS_LIBRARY_ROOTS: '["/libraries"]'
+    volumes:
+      - type: bind
+        source: ${BIS_LIBRARY_HOST_DIR:?Set BIS_LIBRARY_HOST_DIR to your library parent folder}
+        target: /libraries
+        read_only: true
+        bind:
+          create_host_path: false

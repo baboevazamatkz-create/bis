@@ -6,7 +6,7 @@ import uuid
 from collections.abc import Callable
 
 import jwt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -32,7 +32,7 @@ def auto_login_user(db: Session) -> User | None:
 
 
 def current_user(
-    creds: HTTPAuthorizationCredentials | None = Depends(bearer), db: Session = Depends(get_db)
+    request: Request, creds: HTTPAuthorizationCredentials | None = Depends(bearer), db: Session = Depends(get_db)
 ) -> User:
     user = None
     if creds is not None:
@@ -41,9 +41,11 @@ def current_user(
         except (jwt.PyJWTError, KeyError, ValueError):
             user = None
     if user is not None and user.is_active:
+        _source_context(db, user, request)
         return user
     # старый или чужой токен в браузере не должен возвращать форму входа, пока вход отключён
     if auto := auto_login_user(db):
+        _source_context(db, auto, request)
         return auto
     if creds is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Требуется авторизация")
@@ -63,7 +65,22 @@ def agent_context(db: Session, user: User) -> AgentContext:
     from bis.plugins.sdk import get_registry
 
     reg = get_registry()
-    return AgentContext(
+    from bis.services.library_access import bind_context
+
+    scope = db.info.get("source_context") or bind_context(db, user.organization_id)
+    ctx = AgentContext(
         db=db, org_id=user.organization_id, user=user, gateway=get_gateway(), embedder=get_embedder(),
         storage=get_storage(), agents=reg.agents, tool_registry=reg.tools,
     )
+    if scope.object_id:
+        ctx.focus["object"] = str(scope.object_id)
+    return ctx
+
+
+def _source_context(db, user, request):
+    from bis.services.library_access import bind_context
+
+    try:
+        bind_context(db, user.organization_id, request.headers.get("X-BIS-Project"))
+    except (ValueError, LookupError) as exc:
+        raise HTTPException(400, "Некорректный или недоступный проект") from exc

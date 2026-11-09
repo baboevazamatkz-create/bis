@@ -3,6 +3,7 @@
 // Снимок встраивается в страницу как window.__BIS_SNAPSHOT__.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { ID_KINDS, SOURCE_KINDS } from "../modules/executive/config";
 type Any = any;
 
 interface Snapshot {
@@ -36,7 +37,7 @@ class DemoError extends Error {
 }
 
 let state: Snapshot | null = null;
-const sessions: Record<string, { id: string; title: string; created_at: string; messages: Any[] }> = {};
+const sessions: Record<string, { id: string; title: string; created_at: string; messages: Any[]; workspace: string }> = {};
 let ks2Done = false;
 const added = new Set<string>();
 
@@ -169,7 +170,8 @@ function chat(body: Any): Any {
     }
   }
   const sessionId = body.session_id || uid();
-  if (!sessions[sessionId]) sessions[sessionId] = { id: sessionId, title: text.slice(0, 80), created_at: now(), messages: [] };
+  if (!sessions[sessionId]) sessions[sessionId] = { id: sessionId, title: text.slice(0, 80), created_at: now(), messages: [], workspace: body.workspace ?? "platform" };
+  if (sessions[sessionId].workspace !== (body.workspace ?? "platform")) throw new DemoError(404, "Диалог относится к другому блоку");
   const out = { ...reply, session_id: sessionId, agent_title: TITLES[reply.agent] ?? reply.agent,
     routed_by: body.agent ? "выбран пользователем" : "по ключевым словам", provider: "offline", model: "offline" };
   sessions[sessionId].messages.push({ role: "user", content: text, created_at: now() },
@@ -261,8 +263,8 @@ function route_(path: string, method: string, body: Any): Any {
     throw new DemoError(400, UPLOAD_OFF);
   }
   if (p === "/chat" && method === "POST") return chat(body);
-  if (p === "/chat/sessions") return Object.values(sessions).reverse().map(({ id, title, created_at }) => ({ id, title, created_at }));
-  if (parts[0] === "chat" && parts[1] === "sessions") return sessions[parts[2]]?.messages ?? [];
+  if (p === "/chat/sessions") return Object.values(sessions).filter((s) => s.workspace === (q.get("workspace") ?? "platform")).reverse().map(({ id, title, created_at }) => ({ id, title, created_at }));
+  if (parts[0] === "chat" && parts[1] === "sessions") return sessions[parts[2]]?.workspace === (q.get("workspace") ?? "platform") ? sessions[parts[2]].messages : [];
   if (p === "/control/summary") return summary();
   if (p === "/notifications") return s.notifications.slice(0, Number(q.get("limit") ?? 50));
   if (p === "/notifications/read-all") { s.notifications.forEach((n) => (n.is_read = true)); return undefined; }
@@ -280,7 +282,8 @@ function route_(path: string, method: string, body: Any): Any {
 
   // документы
   if (p === "/documents" && method === "GET") {
-    return s.documents.filter((d) => (!q.get("kind") || d.kind === q.get("kind")) && (!q.get("status") || d.status === q.get("status"))
+    const allowed = q.get("workspace") === "executive" ? q.get("collection") === "sources" ? SOURCE_KINDS : ID_KINDS : null;
+    return s.documents.filter((d) => (!allowed || allowed.includes(d.kind)) && (!q.get("kind") || d.kind === q.get("kind")) && (!q.get("status") || d.status === q.get("status"))
       && (!q.get("object_id") || d.object_id === q.get("object_id")));
   }
   if (p === "/documents/aosr/check") return a.aosr_check;

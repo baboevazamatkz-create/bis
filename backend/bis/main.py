@@ -21,7 +21,11 @@ from bis.api import (
     chat,
     control,
     documents,
+    executive,
+    facts,
     knowledge,
+    libraries,
+    projects,
     registry,
     telegram,
     voice,
@@ -61,10 +65,14 @@ def create_app() -> FastAPI:
     api = APIRouter(prefix="/api")
     api.include_router(admin.router)
     api.include_router(brain.router)
+    api.include_router(facts.router)
+    api.include_router(projects.router)
     api.include_router(auth.router)
     api.include_router(chat.router)
     api.include_router(knowledge.router)
+    api.include_router(libraries.router)
     api.include_router(documents.router)
+    api.include_router(executive.router)
     api.include_router(documents.templates_router)
     api.include_router(control.router)
     api.include_router(works.router)

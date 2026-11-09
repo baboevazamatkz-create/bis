@@ -5,6 +5,19 @@ import { mockApi, mockBlob } from "./demo/mock";
 export const DEMO = import.meta.env.VITE_DEMO === "1";
 
 const TOKEN_KEY = "bis_token";
+let organizationScope = "";
+export function setOrganizationScope(id: string) { organizationScope = id; }
+export function activeProject(): string {
+  try { return localStorage.getItem(`bis:project:${organizationScope}`) ?? ""; } catch { return ""; }
+}
+export function setActiveProject(id: string) {
+  try { if (id) localStorage.setItem(`bis:project:${organizationScope}`, id); else localStorage.removeItem(`bis:project:${organizationScope}`); } catch { /* optional */ }
+  window.dispatchEvent(new Event("bis:project"));
+}
+function projectHeader(headers: Headers) {
+  const project = activeProject();
+  if (project) headers.set("X-BIS-Project", project);
+}
 
 export function getToken(): string | null {
   try {
@@ -41,6 +54,7 @@ function detail(data: unknown): string {
 export async function api<T = unknown>(path: string, options: RequestInit & { json?: unknown } = {}): Promise<T> {
   if (DEMO) return mockApi<T>(path, options.method ?? "GET", options.json ?? options.body);
   const headers = new Headers(options.headers);
+  if (!path.startsWith("/auth")) projectHeader(headers);
   const token = getToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
   let body = options.body;
@@ -65,6 +79,7 @@ export interface StreamEvent { type: "step" | "route" | "done" | "error"; label?
 export async function streamChat<T>(body: unknown, onEvent: (e: StreamEvent) => void): Promise<T> {
   if (DEMO) return api<T>("/chat", { method: "POST", json: body });
   const headers = new Headers({ "Content-Type": "application/json", Accept: "text/event-stream" });
+  projectHeader(headers);
   const token = getToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
   const res = await fetch("/api/chat/stream", { method: "POST", headers, body: JSON.stringify(body) });
@@ -99,6 +114,7 @@ export async function upload<T = unknown>(path: string, form: FormData): Promise
 export async function fetchBlob(path: string, init: RequestInit = {}): Promise<Blob> {
   if (DEMO) return mockBlob(path);
   const headers = new Headers(init.headers);
+  projectHeader(headers);
   const token = getToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
   const res = await fetch(`/api${path}`, { ...init, headers });
@@ -158,6 +174,9 @@ export interface User {
 }
 
 export interface Citation {
+  fact_snapshot_id?: string;
+  object_id?: string;
+  source_id?: string;
   chunk_id: string;
   citation: string;
   title: string;

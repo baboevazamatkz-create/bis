@@ -111,6 +111,13 @@ def save_document(
     issues: list[dict[str, Any]] | None = None,
     mime: str = DOCX_MIME,
 ) -> Document:
+    used_form = db.info.pop("used_library_form", None)
+    if used_form:
+        from pathlib import Path
+
+        data = {**data, "library_form": used_form}
+        file_name = Path(file_name).stem + Path(used_form["file_name"]).suffix
+        mime = used_form["mime"] or mime
     key = storage.put(file_bytes, file_name, prefix=f"documents/{org_id}")
     doc = Document(
         organization_id=org_id, kind=kind, title=title, number=number, date=doc_date, status="draft",
@@ -134,6 +141,9 @@ def create_aosr(
         data.number = str(next_number(db, org_id, key))
     data.date = data.date or date.today()
     issues = [i.model_dump() for i in validate_aosr(data)]
+    from bis.services.library_access import bind_context
+
+    bind_context(db, org_id, object_id)
     file_bytes = render_with_org_template(db, storage, org_id, "aosr", data) or render_aosr(data)
     title = f"АОСР № {data.number}: {data.works[:150]}"
     return save_document(
@@ -168,6 +178,11 @@ def approve_document(db: Session, doc: Document, user: User) -> Document:
     blocking = [i for i in doc.issues or [] if i.get("level") == "error"]
     if blocking:
         raise ValueError("Есть ошибки заполнения: " + "; ".join(i["message"] for i in blocking[:5]))
+    if (doc.data or {}).get("executive_run_id") or (doc.data or {}).get("library_form"):
+        from bis.services.executive_pipeline import validate_sources
+        from bis.services.storage import get_storage
+
+        validate_sources(db, get_storage(), doc)
     doc.status = "approved"
     doc.approved_by_id = user.id
     doc.approved_at = datetime.now(UTC)
@@ -193,7 +208,7 @@ def reject_document(db: Session, doc: Document, user: User, reason: str) -> Docu
     # Обучение на замечаниях: причина отклонения становится правилом для агента, создавшего черновик.
     if doc.created_by and doc.created_by.startswith("agent:") and reason.strip():
         db.add(OrgMemory(
-            organization_id=doc.organization_id, kind="feedback", scope=doc.created_by.split(":", 1)[1],
+            organization_id=doc.organization_id, kind="feedback", scope=doc.created_by.split(":", 1)[1], object_id=doc.object_id,
             content=f"Замечание к документу «{doc.title}»: {reason.strip()}", source=f"document:{doc.id}",
         ))
     return doc

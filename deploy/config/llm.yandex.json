@@ -93,6 +93,20 @@
       "yandex-vision",
       "local-vision",
       "offline"
+    ],
+    "executive_report": [
+      "yandexgpt-lite",
+      "offline"
+    ],
+    "executive_document": [
+      "yandexgpt",
+      "yandexgpt-lite",
+      "offline"
+    ],
+    "project_reading": [
+      "yandexgpt",
+      "yandexgpt-lite",
+      "offline"
     ]
   }
 }

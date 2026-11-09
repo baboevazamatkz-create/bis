@@ -270,7 +270,7 @@ class ClosingArgs(BaseModel):
 def _closing_target(ctx: AgentContext, args: ClosingArgs) -> tuple[Contract, dt.date, dt.date, list[str]]:
     """Договор и период: что не задано — подставляем сами и сообщаем об этом."""
     assumed = []
-    if args.contract_id:
+    if args.contract_id or ctx.focus.get("contract"):
         c = contract_row(ctx, args.contract_id)
     else:
         open_by_contract = dict(ctx.db.execute(
@@ -282,7 +282,10 @@ def _closing_target(ctx: AgentContext, args: ClosingArgs) -> tuple[Contract, dt.
                                    .order_by(Contract.created_at.desc())).all()
         if not contracts:
             raise LookupError("В базе нет договоров — загрузите договор и смету")
-        c = max(contracts, key=lambda k: (open_by_contract.get(k.id, 0), k.kind in ("general", "subcontract")))
+        active = [k for k in contracts if k.status == "active"] or contracts
+        with_volumes = [k for k in active if open_by_contract.get(k.id, 0)]
+        # Multiple equally applicable contracts need concrete choices, not an arbitrary latest row.
+        c = with_volumes[0] if len(with_volumes) == 1 else contract_row(ctx, None)
         assumed.append(f"договор № {c.number}" + (" (единственный)" if len(contracts) == 1 else " (с незакрытыми объёмами)"))
     end = args.period_end or dt.date.today()
     start = args.period_start

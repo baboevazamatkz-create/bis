@@ -32,6 +32,9 @@ class ExtractResult(Generic[T]):
     provider: str | None = None
     used_fallback: bool = False
     errors: list[str] = field(default_factory=list)
+    complete: bool = False
+    windows_total: int = 0
+    windows_read: int = 0
 
 
 def _schema_text(schema: type[BaseModel]) -> str:
@@ -65,7 +68,7 @@ def normalize_answer(data: Any, schema: type[BaseModel]) -> Any:
 
     def fix(v: Any) -> Any:
         if isinstance(v, dict):
-            return {k: fix(x) for k, x in v.items()}
+            return {k: x if k == "quote" and isinstance(x, str) else fix(x) for k, x in v.items()}
         if isinstance(v, list):
             return [fix(x) for x in v]
         if isinstance(v, str) and (m := _RU_DATE.match(v.strip())):
@@ -139,12 +142,22 @@ def extract(
     """images — изображения для модели зрения (скан, фото документа или площадки)."""
     result: ExtractResult[T] = ExtractResult(data=None)
     if gateway is not None:
+        result.complete = True
         parts: list[T] = []
-        for i, window in enumerate(split_windows(text, window_chars) or [""]):
+        windows = split_windows(text, window_chars) or [""]
+        result.windows_total = len(windows)
+        for i, window in enumerate(windows):
             part = _extract_window(gateway, schema, window, instructions, task, sensitivity, retries, result,
                                    images if i == 0 else None)
+            if (part is None or is_empty(part)) and fallback is not None:
+                part = fallback(window)
+                result.used_fallback = True
             if part is not None:
                 parts.append(part)
+                result.windows_read += 1
+            else:
+                result.complete = False
+                result.errors.append(f"Не обработано окно {i + 1} из {len(windows)}")
         if parts:
             result.data = parts[0] if len(parts) == 1 else merge_models(schema, parts)
             if not (fallback is not None and is_empty(result.data)):
@@ -158,6 +171,9 @@ def extract(
     if fallback is not None:
         result.data = fallback(text)
         result.used_fallback = True
+        result.complete = True
+        result.windows_total = result.windows_total or 1
+        result.windows_read = result.windows_total
     return result
 
 

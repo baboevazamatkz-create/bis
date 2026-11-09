@@ -79,6 +79,10 @@ class JournalArgs(BaseModel):
 def work_journal_tool(ctx: AgentContext, args: JournalArgs) -> dict:
     obj = _object(ctx, args.object_id)
     if args.create_document:
+        from bis.security import has_scope
+
+        if not has_scope(ctx.user.role, "documents:write"):
+            raise PermissionError("Для выгрузки журнала нужны права documents:write")
         doc = idsvc.export_work_journal(ctx.db, ctx.storage, ctx.org_id, obj.id, args.period_start, args.period_end,
                                         actor=f"agent:{ctx.agent_name}")
         ref = _doc_ref(doc)
@@ -106,3 +110,43 @@ def check_id_archive_tool(ctx: AgentContext, args: ArchiveCheckArgs) -> dict:
 
 
 ID_TOOLS = [create_aook_draft, id_registry_tool, work_journal_tool, check_id_archive_tool]
+
+
+class ExecutivePackageArgs(BaseModel):
+    text: str = Field(min_length=3, description="Дословное сообщение пользователя о выполненной работе; не дополняй выдуманными данными")
+    object_id: str | None = Field(None, description=OBJ_HINT)
+
+
+@tool("prepare_executive_package", "Собрать комплект ИД по сообщению о выполненной работе: РД, журнал, даты, "
+      "фактические материалы, сертификаты/паспорта, схема, протоколы, черновик акта и конкретные пробелы. "
+      "Не требует сметы или количества. Не списывает материалы.", scopes=("documents:write",))
+def prepare_executive_package(ctx: AgentContext, args: ExecutivePackageArgs) -> dict:
+    import datetime as dt
+    import uuid
+
+    from bis.agents.builtin_tools import share_document
+    from bis.models import Document
+    from bis.services import executive_pipeline as pipeline
+
+    originals = [m.content for m in ctx.conversation if m.role == "user"]
+    if originals and not any(pipeline.norm(args.text) in pipeline.norm(t) for t in originals):
+        raise ValueError("Передай исходное сообщение пользователя дословно; дополнительные факты должны иметь источник")
+    object_id = obj_row(ctx, args.object_id).id if args.object_id else None
+    request_id = uuid.uuid5(uuid.NAMESPACE_URL, f"bis:executive:{ctx.org_id}:{object_id}:{dt.date.today()}:{pipeline.norm(args.text)}")
+    event, fresh = pipeline.create_run(ctx, pipeline.RunInput(text=args.text, object_id=object_id, request_id=request_id))
+    if fresh:
+        def progress(current):
+            if ctx.progress and current.result.get("steps"):
+                ctx.progress({"type": "tool", "label": current.result["steps"][-1]["details"]})
+
+        pipeline.process_run(ctx, event, progress=progress)
+    for item in event.result.get("documents", []):
+        share_document(ctx, ctx.db.get(Document, uuid.UUID(item["id"])))
+        ctx.focus["document"] = item["id"]
+    if event.object_id:
+        ctx.focus["object"] = str(event.object_id)
+    result = pipeline.run_view(event)
+    return {k: result.get(k) for k in ("id", "status", "gaps", "documents", "attachments", "plan")}
+
+
+ID_TOOLS.append(prepare_executive_package)

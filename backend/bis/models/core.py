@@ -266,6 +266,8 @@ class OrgMemory(IdMixin, TimestampMixin, TenantMixin, Base):
 
     __tablename__ = "org_memory"
 
+    object_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("construction_objects.id", ondelete="CASCADE"), index=True)
+
     kind: Mapped[str] = mapped_column(String(30), default="rule")  # rule | style | fact | example
     scope: Mapped[str] = mapped_column(String(50), default="*")  # имя агента или *
     content: Mapped[str] = mapped_column(Text)
@@ -275,6 +277,8 @@ class OrgMemory(IdMixin, TimestampMixin, TenantMixin, Base):
 
 class ChatSession(IdMixin, TimestampMixin, TenantMixin, Base):
     __tablename__ = "chat_sessions"
+
+    object_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("construction_objects.id", ondelete="CASCADE"), index=True)
 
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
     title: Mapped[str] = mapped_column(String(500), default="Новый диалог")

@@ -105,7 +105,7 @@ def seed_demo(db: Session, storage: Storage, embedder: Embedder) -> Organization
     db.add(Contract(organization_id=org.id, kind="subcontract", number="СП-07/2026", date=date(2026, 3, 10),
                     subject="Монолитные работы, корпус 1", object_id=obj.id, counterparty_id=sub.id,
                     amount=120_000_000, vat_rate=20, start_date=date(2026, 3, 15), end_date=date(2026, 12, 31)))
-    db.add(OrgMemory(organization_id=org.id, kind="style", scope="secretary",
+    db.add(OrgMemory(organization_id=org.id, kind="style", scope="secretary", object_id=obj.id,
                      content="В письмах заказчику указывать номер договора генподряда ГП-01/2026, если письмо по корпусу 1.",
                      source="demo"))
 

@@ -17,7 +17,7 @@ def _alembic_upgrade() -> None:
 
 
 # команды, которым база не нужна (или которые сами её поднимают)
-NO_DB = {"local", "cad-mcp", "cad-check", "llm-check", "doctor", "serve"}
+NO_DB = {"local", "cad-mcp", "cad-check", "llm-check", "doctor", "serve", "executive-fixtures"}
 
 
 def _local_home() -> Path | None:
@@ -50,6 +50,8 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("migrate", help="Применить миграции БД")
     sub.add_parser("seed-demo", help="Создать демо-организацию и данные")
+    p = sub.add_parser('executive-fixtures', help='Создать синтетический архив ПТО без изменения базы')
+    p.add_argument('--output', type=Path, required=True)
 
     p = sub.add_parser("create-org", help="Создать организацию и администратора")
     p.add_argument("--name", required=True)
@@ -58,6 +60,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--admin-password", required=True)
     p.add_argument("--admin-name", default="Администратор")
     p.add_argument("--platform-admin", action="store_true")
+
+    p = sub.add_parser("grant-platform-admin", help="Разрешить существующему администратору управление общей библиотекой")
+    p.add_argument("--email", required=True)
 
     p = sub.add_parser("ingest", help="Загрузить файлы в базу знаний")
     p.add_argument("paths", nargs="+", type=Path)
@@ -102,6 +107,12 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     _auto_local(args.cmd)
+
+    if args.cmd == 'executive-fixtures':
+        from bis.demo.executive_fixtures import generate
+
+        print(generate(args.output))
+        return 0
 
     if args.cmd == "migrate":
         _alembic_upgrade()
@@ -292,6 +303,17 @@ def main(argv: list[str] | None = None) -> int:
                                              platform_admin=args.platform_admin)
             db.commit()
             print(f"Создана организация {org.name} ({org.id}), администратор {admin.email}")
+        elif args.cmd == "grant-platform-admin":
+            from bis.models import User
+            from bis.services.audit import audit
+
+            user = db.scalar(select(User).where(User.email == args.email.lower(), User.is_active.is_(True), User.role == "admin"))
+            if user is None:
+                raise SystemExit("Активный администратор с таким email не найден")
+            user.is_platform_admin = True
+            audit(db, user.organization_id, actor_type="system", actor="cli", action="user.grant_platform_admin", entity_id=user.id)
+            db.commit()
+            print(f"Управление общей библиотекой разрешено: {user.email}")
         elif args.cmd == "eval":
             import json as _json
 

@@ -19,7 +19,6 @@ from sqlalchemy.orm import Session
 from bis.llm.extract import ExtractResult, extract, find_dates
 from bis.llm.gateway import LLMGateway
 from bis.models import Contract, ContractObligation, Counterparty, Document, Organization
-from bis.rag.parsers import parse_file
 from bis.services.audit import audit
 from bis.services.storage import Storage
 
@@ -231,7 +230,9 @@ def contract_text(db: Session, storage: Storage, contract: Contract) -> str:
     doc = db.get(Document, contract.document_id)
     if doc is None or not doc.file_key:
         raise ValueError("Файл договора не найден")
-    return parse_file(storage.get(doc.file_key), doc.file_name or "contract.pdf", doc.mime).text
+    from bis.services.document_text import document_text
+
+    return document_text(db, doc, storage)
 
 
 def analyze_contract(db: Session, storage: Storage, gateway: LLMGateway | None, contract: Contract,

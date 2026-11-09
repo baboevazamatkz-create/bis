@@ -56,9 +56,9 @@ class ActCheck:
 
 
 def _text(db: Session, doc: Document) -> str:
-    parts = db.scalars(select(KnowledgeChunk.content).join(KnowledgeSource, KnowledgeSource.id == KnowledgeChunk.source_id)
-                       .where(KnowledgeSource.document_id == doc.id).order_by(KnowledgeChunk.ord).limit(60)).all()
-    return "\n".join(parts)
+    from bis.services.document_text import document_text
+
+    return document_text(db, doc)
 
 
 def references(text: str) -> list[Ref]:
@@ -74,24 +74,32 @@ def references(text: str) -> list[Ref]:
     return out
 
 
-def _find(db: Session, org_id: uuid.UUID, ref: Ref, exclude: uuid.UUID) -> Document | None:
+def _find(db: Session, org_id: uuid.UUID, ref: Ref, exclude: uuid.UUID,
+          object_id: uuid.UUID | None = None) -> Document | None:
     """Документ архива с этим номером: в номере или названии («Сертификат 4512», «Протокол_56»), иначе — в тексте."""
     num = ref.number
     exact = re.compile(rf"(?<![\w]){re.escape(num)}(?![\w])", re.IGNORECASE)
-    candidates = db.scalars(select(Document).where(
+    stmt = select(Document).where(
         Document.organization_id == org_id, Document.id != exclude,
-        or_(Document.number.ilike(f"%{num}%"), Document.title.ilike(f"%{num}%"))).limit(50)).all()
+        or_(Document.number.ilike(f"%{num}%"), Document.title.ilike(f"%{num}%")))
+    if object_id:
+        stmt = stmt.where(or_(Document.object_id == object_id, Document.object_id.is_(None)))
+    candidates = db.scalars(stmt).all()
     hits = [d for d in candidates if exact.search(f"{d.number or ''} {d.title.replace('_', ' ')}")]
     if hits:
-        return sorted(hits, key=lambda d: (d.kind not in TARGET_KINDS[ref.kind], d.kind in ("aosr", "aook")))[0]
+        preferred = [d for d in hits if d.kind in TARGET_KINDS[ref.kind]]
+        hits = preferred or [d for d in hits if d.kind not in ("aosr", "aook")]
+        return hits[0] if len(hits) == 1 else None
     # номер в тексте документа другого вида: «Сертификат соответствия № 4512», «Протокол № 56»
-    row = db.execute(select(Document).join(KnowledgeSource, KnowledgeSource.document_id == Document.id)
+    stmt = select(Document).join(KnowledgeSource, KnowledgeSource.document_id == Document.id) \
                      .join(KnowledgeChunk, KnowledgeChunk.source_id == KnowledgeSource.id)
-                     .where(Document.organization_id == org_id, Document.id != exclude,
+    stmt = stmt.where(Document.organization_id == org_id, Document.id != exclude,
                             Document.kind.notin_(["aosr", "aook"]),
                             or_(KnowledgeChunk.content.ilike(f"%№ {num}%"), KnowledgeChunk.content.ilike(f"%№{num}%")))
-                     .limit(1)).first()
-    return row[0] if row else None
+    if object_id:
+        stmt = stmt.where(or_(Document.object_id == object_id, Document.object_id.is_(None)))
+    candidates = list(db.scalars(stmt).unique())
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def check_act(db: Session, doc: Document) -> ActCheck:
@@ -107,7 +115,7 @@ def check_act(db: Session, doc: Document) -> ActCheck:
         return act
     act.refs = references(text)
     for ref in act.refs:
-        found = _find(db, doc.organization_id, ref, doc.id)
+        found = _find(db, doc.organization_id, ref, doc.id, object_id=doc.object_id)
         if found is not None:
             ref.found, ref.document_id, ref.document_title = True, str(found.id), found.title
     if not any(r.kind == "quality" for r in act.refs) and re.search(r"материал|арматур|бетон|смес|издели", text, re.I):

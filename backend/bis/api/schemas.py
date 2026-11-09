@@ -194,6 +194,7 @@ class MemoryIn(BaseModel):
 
 
 class MemoryOut(ORM):
+    object_id: uuid.UUID | None = None
     id: uuid.UUID
     kind: str
     scope: str

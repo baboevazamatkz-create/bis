@@ -11,14 +11,14 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import or_, select
 
 from bis.agents.base import AgentContext, tool
-from bis.agents.resolve import OBJ_HINT, contract_ref, object_ref
+from bis.agents.resolve import OBJ_HINT, AmbiguousReference, contract_ref, object_ref
 from bis.documents import AOSRData, LetterData
 from bis.documents.aosr import REPRESENTATIVE_ROLES
 from bis.models import ConstructionObject, Contract, Counterparty, Document, KnowledgeSource, Organization
 from bis.rag.search import hybrid_search
 from bis.services import documents as docsvc
 
-SCOPE_KINDS = {"norms": ["norm"], "organization": ["org_document", "letter", "contract", "project_doc"], "all": None}
+SCOPE_KINDS = {"norms": ["norm"], "organization": ["org_document", "letter", "contract", "project_doc"], "project": ["org_document", "letter", "contract", "project_doc"], "all": None}
 
 
 def _uuid(value: str, what: str) -> uuid.UUID:
@@ -38,20 +38,23 @@ def _doc_ref(doc: Document) -> dict:
 
 class SearchArgs(BaseModel):
     query: str = Field(description="Поисковый запрос своими словами или ссылка «СП 70.13330.2012 п. 5.16»")
-    scope: Literal["norms", "organization", "all"] = Field("all", description="norms — нормативы; organization — документы компании")
+    scope: Literal["norms", "organization", "project", "all"] = Field("all", description="norms — нормативы; organization — документы компании")
     k: int = Field(6, ge=1, le=15)
 
 
 @tool("search_knowledge", "Поиск по базе знаний: нормативы (СП, ГОСТ, СНиП) и документы организации. "
       "Возвращает фрагменты с номером [n] для ссылок.", scopes=("knowledge:read",))
 def search_knowledge(ctx: AgentContext, args: SearchArgs) -> dict:
-    hits = hybrid_search(ctx.db, ctx.embedder, args.query, org_id=ctx.org_id, kinds=SCOPE_KINDS[args.scope], k=args.k)
+    policy = ctx.db.info.get("source_context")
+    level = {"norms": "knowledge", "organization": "organization", "project": "project"}.get(args.scope) if policy and policy.strict else None
+    hits = hybrid_search(ctx.db, ctx.embedder, args.query, org_id=ctx.org_id, kinds=SCOPE_KINDS[args.scope], library_level=level,
+                         include_global=args.scope != "organization", k=args.k)
     results = []
     for h in hits:
         d = h.to_dict()
         n = ctx.add_citation(d)
         results.append({"n": n, "citation": h.citation, "status": h.status, "section": h.section_path,
-                        "content": h.content[:1500]})
+                        "document_id": h.document_id, "page": h.page, "content": h.content[:3000]})
     return {"results": results}
 
 
@@ -65,6 +68,9 @@ _STOP = {"найди", "покажи", "открой", "какие", "какой
 
 def share_document(ctx: AgentContext, doc: Document) -> dict:
     """Документ показывается пользователю карточкой под ответом (открыть/скачать)."""
+    from bis.services.library_access import assert_document
+
+    assert_document(ctx.db, doc)
     ref = _doc_ref(doc)
     if all(d.get("id") != ref["id"] for d in ctx.documents):
         ctx.documents.append(ref)
@@ -81,6 +87,7 @@ def _first_chunk(ctx: AgentContext, doc: Document) -> dict | None:
 
 
 class FindDocumentsArgs(BaseModel):
+    workspace: Literal["platform", "executive"] = "platform"
     query: str | None = Field(None, description="Что ищем своими словами: «АОСР на армирование плиты», "
                               "«письмо заказчика про исполнительную документацию», «сертификат на арматуру», номер")
     kind: str | None = Field(None, description="aosr, aook, scheme, contract, incoming_letter, letter, ks2, ks3, order, "
@@ -105,6 +112,10 @@ class FindDocumentsArgs(BaseModel):
 def find_documents(ctx: AgentContext, args: FindDocumentsArgs) -> dict:
     def allowed(stmt):
         stmt = stmt.where(Document.organization_id == ctx.org_id)
+        if ctx.workspace == "executive" or args.workspace == "executive":
+            from bis.modules.executive import DOCUMENT_KINDS, SOURCE_KINDS
+
+            stmt = stmt.where(Document.kind.in_((*DOCUMENT_KINDS, *SOURCE_KINDS)))
         if args.kind:
             # при поиске конкретного письма модель путает входящее и исходящее; список «входящих» — строго
             letters = args.query and args.kind in ("letter", "incoming_letter")
@@ -120,13 +131,19 @@ def find_documents(ctx: AgentContext, args: FindDocumentsArgs) -> dict:
 
     ranked: dict[uuid.UUID, dict] = {}
     if args.query and args.query.strip():
+        number = re.search(r"№\s*([\w./-]+)", args.query)
+        exact = number[1] if number else args.query.strip() if re.fullmatch(r"[\d./-]+", args.query.strip()) else None
+        if exact:
+            for d in ctx.db.scalars(allowed(select(Document)).where(or_(
+                    Document.number == exact, Document.data["card"]["number"].astext == exact))).all():
+                ranked[d.id] = {"doc": d, "score": 5.0, "excerpt": None, "n": None}
         words = [w for w in _WORD.findall(args.query.lower()) if w not in _STOP]
-        # 0. по карточке «Эрудита»: марки (B25, А500С), оси, конструкции (Фм1), номера ссылок, шифр РД
+        # 0. по карточке «Синапса»: марки (B25, А500С), оси, конструкции (Фм1), номера ссылок, шифр РД
         tokens = [t for t in re.findall(r"[A-Za-zА-Яа-яЁё]*\d[\w.\-/]*|[А-ЯA-Z]{2,4}\d?", args.query) if len(t) >= 2]
         if tokens:
             for d in ctx.db.scalars(allowed(select(Document)).where(
                     *(Document.data["card_text"].astext.ilike(f"%{t}%") for t in tokens[:4])).limit(50)).all():
-                ranked[d.id] = {"doc": d, "score": 1.5, "excerpt": None, "n": None}
+                ranked.setdefault(d.id, {"doc": d, "score": 1.5, "excerpt": None, "n": None})
         # 1. по названию и номеру: чем больше слов запроса в названии, тем выше
         if words:
             stems = [w[:max(4, len(w) - 2)] for w in words]
@@ -137,7 +154,7 @@ def find_documents(ctx: AgentContext, args: FindDocumentsArgs) -> dict:
                 low = f"{d.title} {d.number or ''}".lower()
                 share = sum(1 for t in stems if t in low) / len(stems)
                 if share >= 0.5 or len(stems) == 1:
-                    ranked[d.id] = {"doc": d, "score": 1.0 + share, "excerpt": None, "n": None}
+                    ranked.setdefault(d.id, {"doc": d, "score": 1.0 + share, "excerpt": None, "n": None})
         # 2. по смыслу текста (в т.ч. распознанных сканов)
         hits = hybrid_search(ctx.db, ctx.embedder, args.query, org_id=ctx.org_id, kinds=ORG_KINDS, include_global=False,
                              k=min(args.limit * 3, 30))
@@ -190,15 +207,19 @@ def resolve_document(ctx: AgentContext, ref: str) -> Document:
     try:
         doc = ctx.db.get(Document, uuid.UUID(str(ref)))
     except ValueError:
-        num = re.sub(r"^\s*№\s*", "", str(ref)).strip()
+        num = re.sub(r"^\s*(?:(?:договор|письмо|акт|АОСР|АООК|сертификат|протокол)\s*)?№?\s*", "", str(ref), flags=re.I).strip()
         docs = ctx.db.scalars(select(Document).where(Document.organization_id == ctx.org_id, or_(
-            Document.number == num, Document.data["card"]["number"].astext == num)).limit(6)).all()
+            Document.number == num, Document.data["card"]["number"].astext == num,
+            Document.title.ilike(str(ref).strip()))).limit(6)).all()
         if len(docs) > 1:
-            raise LookupError("С этим номером несколько документов — уточните: " + "; ".join(
-                f"{d.title} (id {d.id})" for d in docs)) from None
+            raise AmbiguousReference("С этим номером несколько документов — выберите: " + "; ".join(
+                d.title for d in docs), [_doc_ref(d) for d in docs]) from None
         doc = docs[0] if docs else None
     if doc is None or doc.organization_id != ctx.org_id:
         raise LookupError("Документ не найден — найдите его find_documents")
+    from bis.services.library_access import assert_document
+
+    assert_document(ctx.db, doc)
     return doc
 
 
@@ -206,7 +227,7 @@ class CardArgs(BaseModel):
     document_id: str
 
 
-@tool("document_card", "Карточка документа из «Эрудита»: вид, №, дата, стороны, РД (шифр, листы, изм.), конструкции, "
+@tool("document_card", "Карточка документа из «Синапса»: вид, №, дата, стороны, РД (шифр, листы, изм.), конструкции, "
       "материалы и марки, оси, отметки, нормы, суть — и связи: на какие документы ссылается (найдены ли в архиве) "
       "и какие документы ссылаются на него.", scopes=("documents:read",))
 def document_card(ctx: AgentContext, args: CardArgs) -> dict:
@@ -293,8 +314,17 @@ def find_contracts(ctx: AgentContext, args: FindContractArgs) -> dict:
         cp = ctx.db.get(Counterparty, c.counterparty_id) if c.counterparty_id else None
         out.append({"id": str(c.id), "kind": c.kind, "number": c.number, "date": c.date, "subject": c.subject,
                     "counterparty": cp.name if cp else None, "amount": c.amount, "start_date": c.start_date,
-                    "end_date": c.end_date, "status": c.status})
-    return {"contracts": out}
+                    "end_date": c.end_date, "status": c.status,
+                    "document_id": str(c.document_id) if c.document_id else None})
+    docs = select(Document).where(Document.organization_id == ctx.org_id, Document.kind == "contract")
+    if args.object_id:
+        docs = docs.where(Document.object_id == object_ref(ctx, args.object_id))
+    if args.query:
+        docs = docs.where(or_(Document.title.ilike(f"%{args.query}%"), Document.number.ilike(f"%{args.query}%")))
+    archive = [{"document_id": str(d.id), "title": d.title, "number": d.number, "date": d.date}
+               for d in ctx.db.scalars(docs.order_by(Document.created_at.desc()).limit(args.limit))]
+    return {"contracts": out, "archive_contracts": archive,
+            "hint": "Файлы договоров доступны через get_document(document_id), даже если реестр договоров пуст."}
 
 
 class ObjectArgs(BaseModel):
@@ -340,6 +370,14 @@ def list_documents(ctx: AgentContext, args: ListDocumentsArgs) -> dict:
 
 class EmptyArgs(BaseModel):
     pass
+
+
+@tool("data_coverage", "Проверить охват архива: сколько документов проиндексировано, сколько ждут чтения, OCR, "
+      "карточек или зрения. Отличает отсутствие данных от сбоя обработки.", scopes=("documents:read",))
+def data_coverage(ctx: AgentContext, args: EmptyArgs) -> dict:
+    from bis.brain.build import coverage
+
+    return coverage(ctx.db, ctx.org_id)
 
 
 @tool("get_organization_info", "Реквизиты своей организации и подписант по умолчанию.", scopes=("registry:read",))
@@ -433,6 +471,7 @@ BUILTIN_TOOLS = [
     get_object_participants,
     list_documents,
     get_organization_info,
+    data_coverage,
     create_aosr_draft,
     create_letter_draft,
 ]

@@ -20,10 +20,10 @@ const TYPE_RU: Record<string, string> = {
 };
 const TEXT_RU: Record<string, string> = { parsed: "текст", ocr: "распознан скан", dxf: "надписи чертежа", none: "без текста" };
 
-export default function ArchiveImport() {
+export default function ArchiveImport({ executive = false }: { executive?: boolean }) {
   const objects = useObjects();
   const [objectId, setObjectId] = useState("");
-  const [contracts, setContracts] = useState(true);
+  const [contracts, setContracts] = useState(!executive);
   const [results, setResults] = useState<Result[]>([]);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [drag, setDrag] = useState(false);
@@ -84,7 +84,7 @@ export default function ArchiveImport() {
 
   return (
     <>
-      <PageHead title="Загрузка архива" hint={<>Исполнительная документация (АОСР, АООК, схемы), договоры, письма, приказы, проект, КС-2/КС-3, сертификаты — целыми
+      <PageHead title={executive ? "Загрузить документы для ИД" : "Загрузка архива"} hint={executive ? <>Загрузите РД, акты, исполнительные схемы, сертификаты, паспорта качества, протоколы испытаний и приказы. Синапс прочитает документы, определит их виды и найдёт связи. Повторные файлы пропускаются.</> : <>Исполнительная документация (АОСР, АООК, схемы), договоры, письма, приказы, проект, КС-2/КС-3, сертификаты — целыми
         папками. ИИ определит тип каждого файла, разложит в реестр объекта и добавит в базу знаний: по ним работает умный поиск,
         а ИИ-специалисты берут их как образцы. Договоры встанут на контроль; письма из архива регистрируются без поручений.
         Повторно загруженные файлы пропускаются.</>} />
@@ -99,9 +99,9 @@ export default function ArchiveImport() {
               {objects.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
             </select>
           </div>
-          <div className="field" style={{ flex: "0 0 auto" }}>
+          {!executive && <div className="field" style={{ flex: "0 0 auto" }}>
             <label><input type="checkbox" style={{ width: "auto" }} checked={contracts} onChange={(e) => setContracts(e.target.checked)} /> Договоры — разобрать на обязательства и поставить на контроль</label>
-          </div>
+          </div>}
         </div>
         <input ref={files} type="file" multiple hidden onChange={(e) => e.target.files && void run(Array.from(e.target.files))} />
         {/* @ts-expect-error — выбор папки целиком (Chrome, Edge) */}

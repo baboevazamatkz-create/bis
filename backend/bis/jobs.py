@@ -116,6 +116,9 @@ def run_job(db_factory: Callable[[], Session], name: str, today: date | None = N
     status = "ok"
     with db_factory() as db:
         for org in db.scalars(select(Organization)).all():
+            db.info.pop("source_context", None)
+            db.info.pop("library_form_id", None)
+            db.info.pop("used_library_form", None)
             try:
                 details[str(org.id)] = j.func(db, org, today)
                 db.commit()
@@ -158,6 +161,10 @@ def load_all_jobs() -> dict[str, Job]:
     import bis.brain.build  # noqa: F401
     import bis.connectors.mailbox  # noqa: F401
     import bis.services.digest  # noqa: F401
+    import bis.services.executive_jobs  # noqa: F401
+    import bis.services.fact_jobs  # noqa: F401
+    import bis.services.library_jobs  # noqa: F401
+    import bis.services.project_reading_jobs  # noqa: F401
     import bis.services.works  # noqa: F401
 
     return JOBS

@@ -8,7 +8,6 @@ from bis.agents.base import AgentContext, tool
 from bis.agents.builtin_tools import _doc_ref, _uuid
 from bis.agents.resolve import CONTRACT_HINT, OBJ_HINT, contract_row, obj_row
 from bis.models import Document
-from bis.rag.parsers import parse_file
 from bis.services import project_docs as pd
 from bis.services.documents import save_document
 
@@ -36,12 +35,25 @@ class DocArgs(BaseModel):
 
 
 def spec_for_document(ctx: AgentContext, doc: Document) -> tuple[pd.Specification, bool]:
+    if doc.kind == 'project_doc' and doc.object_id:
+        from bis.services.project_reading import read
+
+        reading = read(ctx, doc.id, budget=8)
+        rows = [item for page in reading.payload['pages'] for item in page['items'] if item['kind'] == 'specification' and item['quantity'] is not None]
+        spec = pd.Specification(items=[pd.SpecItem(position=r['position'], name=r['name'], mark=r['mark'],
+            unit=r['unit'], quantity=float(r['quantity'])) for r in rows])
+        fallback = any(page['method'] == 'rules' for page in reading.payload['pages'])
+        doc.data = {**doc.data, 'specification': spec.model_dump(), 'specification_fallback': fallback,
+                    'specification_coverage': reading.payload['coverage'], 'specification_reading_id': str(reading.id)}
+        return spec, fallback
     cached = (doc.data or {}).get("specification")
     if cached:
         return pd.Specification.model_validate(cached), bool((doc.data or {}).get("specification_fallback"))
     if not doc.file_key:
         raise ValueError("У документа нет файла")
-    text = parse_file(ctx.storage.get(doc.file_key), doc.file_name or "file", doc.mime).text
+    from bis.services.document_text import document_text
+
+    text = document_text(ctx.db, doc, ctx.storage)
     spec, fallback = pd.extract_specification(ctx.gateway, text)
     doc.data = {**(doc.data or {}), "specification": spec.model_dump(), "specification_fallback": fallback}
     return spec, fallback
@@ -53,7 +65,8 @@ def extract_specification(ctx: AgentContext, args: DocArgs) -> dict:
     doc = _owned(ctx, Document, args.document_id, "документ")
     spec, fallback = spec_for_document(ctx, doc)
     return {"items": [i.model_dump() for i in spec.items[:300]], "count": len(spec.items),
-            "method": "правила" if fallback else "модель"}
+            "method": "правила" if fallback else "модель", 'coverage': (doc.data or {}).get('specification_coverage'),
+            'reading_id': (doc.data or {}).get('specification_reading_id'), 'truncated': len(spec.items) > 300}
 
 
 class CompareArgs(BaseModel):

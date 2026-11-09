@@ -3,6 +3,7 @@ import { api, upload, STATUS_LABELS, type Citation, type Source, type User } fro
 import { ConfirmButton, VoiceButton } from "../components";
 
 export default function Knowledge({ user }: { user: User }) {
+  const [strict, setStrict] = useState(false);
   const [kinds, setKinds] = useState<Record<string, string>>({});
   const [sources, setSources] = useState<Source[]>([]);
   const [file, setFile] = useState<File | null>(null);
@@ -18,6 +19,7 @@ export default function Knowledge({ user }: { user: User }) {
 
   const load = () => api<Source[]>("/knowledge/sources").then(setSources);
   useEffect(() => {
+    void api<{ strict: boolean }>("/libraries").then((r) => setStrict(r.strict)).catch(() => {});
     api<Record<string, string>>("/knowledge/kinds").then(setKinds);
     load();
   }, []);
@@ -90,6 +92,7 @@ export default function Knowledge({ user }: { user: User }) {
               <option value="all">Везде</option>
               <option value="norms">Нормативы</option>
               <option value="organization">Документы компании</option>
+              <option value="project">Активный проект</option>
             </select>
           </div>
           <div className="field" style={{ flex: "0 0 auto" }}>
@@ -114,7 +117,7 @@ export default function Knowledge({ user }: { user: User }) {
         ))}
       </div>
 
-      <div className="panel">
+      {strict ? <div className="note">Источники загружаются из подключённых папок. <a href="#/id/libraries">Открыть библиотеки</a></div> : <div className="panel">
         <h2>Загрузка документов</h2>
         {msg && <div className={`alert ${msg.ok ? "ok" : "error"}`}>{msg.text}</div>}
         <div className="row">
@@ -157,7 +160,7 @@ export default function Knowledge({ user }: { user: User }) {
             </button>
           </div>
         </div>
-      </div>
+      </div>}
 
       <div className="panel">
         <h2>Источники ({sources.length})</h2>
