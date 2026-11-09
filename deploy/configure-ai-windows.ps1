@@ -64,6 +64,7 @@ if (-not (Test-Path $ConfigPath)) { [IO.File]::WriteAllText($ConfigPath, $Config
 $Settings = @{
     BIS_LLM_CONFIG_FILE = $ConfigPath.Replace('\', '/')
     YANDEX_FOLDER_ID = $Folder
+    BIS_YANDEX_FOLDER_ID = $Folder
     YANDEX_API_KEY = $Key
 }
 foreach ($Name in $Settings.Keys) {
@@ -74,18 +75,46 @@ foreach ($Name in $Settings.Keys) {
 $Key = $null
 $Settings = $null
 $SecureKey.Dispose()
+Write-Host "Saved Folder ID: $Folder"
+$Launcher = Join-Path $BisRoot 'START-BIS.cmd'
+if (Test-Path $Launcher) {
+    $LauncherText = [IO.File]::ReadAllText($Launcher)
+    $Begin = 'rem BIS_AI_ENV_BEGIN'
+    $End = 'rem BIS_AI_ENV_END'
+    $LauncherText = [regex]::Replace($LauncherText, '(?ms)^rem BIS_AI_ENV_BEGIN\r?\n.*?^rem BIS_AI_ENV_END\r?\n?', '')
+    $Clear = @($Begin)
+    foreach ($Name in @('BIS_LLM_CONFIG_FILE', 'YANDEX_FOLDER_ID', 'BIS_YANDEX_FOLDER_ID', 'YANDEX_API_KEY')) {
+        $Clear += ('set "' + $Name + '="')
+    }
+    $Clear += $End
+    $Block = ($Clear -join "`r`n") + "`r`n"
+    $LauncherText = [regex]::Replace($LauncherText, '(?im)^setlocal[^\r\n]*\r?\n', ('$0' + $Block))
+    [IO.File]::WriteAllText($Launcher, $LauncherText, [Text.Encoding]::Default)
+}
 Write-Host 'Settings saved. Checking a REAL model response (offline fallback does not pass this check)...'
 $Check = @'
+import os
 import sys
 from pathlib import Path
 from bis.local import load_env
 from bis.cli import main
-load_env(Path(sys.argv[1]) / '.env')
+root = Path(sys.argv[1]).resolve()
+os.chdir(root)
+for name in ('BIS_LLM_CONFIG_FILE', 'YANDEX_FOLDER_ID', 'BIS_YANDEX_FOLDER_ID', 'YANDEX_API_KEY'):
+    os.environ.pop(name, None)
+load_env(root / '.env')
+from bis.config import get_settings
+settings = get_settings()
+print('Effective config:', settings.llm_config_file)
+for provider in settings.llm_providers():
+    if provider.kind != 'offline':
+        print('Effective model:', provider.name, provider.model)
 raise SystemExit(main(['llm-check']))
 '@
 & $Python -c $Check $BisRoot
 if ($LASTEXITCODE -ne 0) {
-    throw 'Model check failed. Settings are saved. Read the error above: check API key, Folder ID, permissions and billing.'
+    Write-Host 'Copy the complete provider HTTP error ABOVE the hint arrow; do not share your API key.' -ForegroundColor Yellow
+    throw 'Model check failed. Settings are saved. Check the effective model and the complete provider HTTP error above.'
 }
 Write-Host 'YandexGPT responded successfully. Stop and restart BIS-Pilot to apply the settings.' -ForegroundColor Green
 Write-Host 'This connects the text model. OCR, voice and visual drawing understanding require separate setup and checks.'
