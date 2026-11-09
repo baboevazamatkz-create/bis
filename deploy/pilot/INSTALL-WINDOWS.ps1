@@ -83,7 +83,7 @@ BIS_PUBLIC_URL=http://localhost:$Port
 BIS_CORS_ORIGINS=["http://localhost:$Port"]
 BIS_WEB_DIR=$WebPath
 BIS_LIBRARY_ROOTS=["$LibraryJson"]
-BIS_AUTO_LOGIN=false
+BIS_AUTO_LOGIN=true
 BIS_VECTOR_ENABLED=false
 BIS_EMBEDDING_PROVIDER=hash
 "@
@@ -126,7 +126,7 @@ $Shortcut.TargetPath = $Launcher
 $Shortcut.WorkingDirectory = $BisRoot
 $Shortcut.Save()
 Write-Host "Ready: http://localhost:$Port" -ForegroundColor Green
-Write-Host 'Pilot login: admin@demo.bis / demo12345'
+Write-Host 'Local pilot opens automatically without a login form.'
 Write-Host "Settings: $EnvFile"
 Write-Host "Documents: $Library"
 Write-Host 'No AI credentials are included. Without a configured model, the app uses rules/offline mode.'

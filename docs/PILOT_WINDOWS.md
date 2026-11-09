@@ -10,6 +10,24 @@ irm https://raw.githubusercontent.com/baboevazamatkz-create/bis/pto-pilot-202611
 Для работы интернет нужен также при загрузке Python и зависимостей.
 Ручная установка из того же архива описана ниже.
 
+Для уже установленного пилота можно включить вход без пароля отдельной командой
+и затем перезапустить BIS-Pilot:
+
+```powershell
+irm https://raw.githubusercontent.com/baboevazamatkz-create/bis/codex/pilot-readiness/deploy/enable-pilot-autologin.ps1 | iex
+```
+
+Подключение текстовой модели Яндекса к установленному пилоту:
+
+```powershell
+irm https://raw.githubusercontent.com/baboevazamatkz-create/bis/codex/pilot-readiness/deploy/configure-ai-windows.ps1 | iex
+```
+
+Помощник запросит Folder ID и скрытый ввод API-ключа, сохранит их локально и проверит
+реальный ответ YandexGPT без офлайн-подмены. Нужны активный платёжный аккаунт и доступ
+`ai.languageModels.user`. Вопросы разных текстовых агентов идут через общий маршрут `default`.
+Зрение, OCR и голос этим помощником не подключаются: их необходимо настраивать и проверять отдельно.
+
 Этот архив содержит исходный код указанного в RELEASE.json коммита
 и заранее собранный интерфейс. Старый установщик install-windows.ps1 скачивает прежнюю ветку.
 Это отдельная тестовая установка: существующий BIS и его данные автоматически не переносятся.
