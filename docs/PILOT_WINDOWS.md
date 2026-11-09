@@ -6,7 +6,7 @@
 irm https://raw.githubusercontent.com/baboevazamatkz-create/bis/pto-pilot-20261110/deploy/install-pilot.ps1 | iex
 ```
 
-Скрипт скачивает выпуск из GitHub Releases, проверяет SHA-256 и запускает установку.
+Скрипт скачивает архив закреплённого коммита из GitHub, проверяет SHA-256 и запускает установку.
 Для работы интернет нужен также при загрузке Python и зависимостей.
 Ручная установка из того же архива описана ниже.
 
