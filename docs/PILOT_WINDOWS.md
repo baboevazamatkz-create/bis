@@ -12,7 +12,7 @@ irm https://raw.githubusercontent.com/baboevazamatkz-create/bis/codex/pilot-read
 Быстрая установка в PowerShell, без скачивания вложений из чата:
 
 ```powershell
-irm https://raw.githubusercontent.com/baboevazamatkz-create/bis/pto-pilot-20261110/deploy/install-pilot.ps1 | iex
+irm https://raw.githubusercontent.com/baboevazamatkz-create/bis/codex/pilot-readiness/deploy/install-pilot.ps1 | iex
 ```
 
 Скрипт скачивает архив закреплённого коммита из GitHub, проверяет SHA-256 и запускает установку.
@@ -66,7 +66,9 @@ irm https://raw.githubusercontent.com/baboevazamatkz-create/bis/codex/pilot-read
 
 5. Откроется http://localhost:8081. Если браузер открылся раньше сервера, обновите страницу
    после сообщения `BIS работает` в окне запуска.
-6. Вход: `admin@demo.bis`, пароль `demo12345`. Это тестовая организация с демонстрационными данными.
+6. Локальный пилот открывается автоматически под тестовым администратором, без формы входа.
+   Его учётная запись: `admin@demo.bis`, пароль `demo12345` (для последующего включения авторизации).
+   Это тестовая организация с демонстрационными данными.
    Создайте отдельный реальный объект для проверки собственных документов.
 
 Обычный запуск: ярлык **BIS-Pilot** на рабочем столе либо `C:\BIS-Pilot\START-BIS.cmd`.

@@ -3,11 +3,17 @@
 **Windows: установить текущий пилот ПТО одной командой PowerShell:**
 
 ```powershell
-irm https://raw.githubusercontent.com/baboevazamatkz-create/bis/pto-pilot-20261110/deploy/install-pilot.ps1 | iex
+irm https://raw.githubusercontent.com/baboevazamatkz-create/bis/codex/pilot-readiness/deploy/install-pilot.ps1 | iex
 ```
 
 Устанавливает Python при необходимости и отдельный BIS-Pilot на http://localhost:8081.
-Вход: `admin@demo.bis` / `demo12345`. [Первый запуск, папки документов и подключение ИИ](docs/PILOT_WINDOWS.md).
+Вход в локальном пилоте автоматический. [Первый запуск, папки документов и подключение ИИ](docs/PILOT_WINDOWS.md).
+
+Уже установленный BIS-Pilot обновляется вместе с интерфейсом (сначала остановить через Ctrl+C):
+
+```powershell
+irm https://raw.githubusercontent.com/baboevazamatkz-create/bis/codex/pilot-readiness/deploy/update-pilot-windows.ps1 | iex
+```
 
 Настройка ядра «Синапса»: [реестр фактов, противоречия и проверка перед ответом](docs/PROJECT_FACTS.md).
 

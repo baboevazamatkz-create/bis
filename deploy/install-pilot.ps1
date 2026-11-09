@@ -1,10 +1,10 @@
 # Windows 10/11 x64: download the published source and prebuilt interface.
-# irm https://raw.githubusercontent.com/baboevazamatkz-create/bis/pto-pilot-20261110/deploy/install-pilot.ps1 | iex
+# irm https://raw.githubusercontent.com/baboevazamatkz-create/bis/codex/pilot-readiness/deploy/install-pilot.ps1 | iex
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-$SourceCommit = '7c961ecd2b6d72e413180f36d5b77071b6477de2'
-$Expected = 'cf75a1da7cf715e8293925aa76975a6524f058c1db8e366224fdd7908a3fa307'
+$SourceCommit = '101f9ac65228203a000b8e481e6ef3e237a36e48'
+$Expected = '5a800d5fa6aca2a711985362acbd3c64d972a26c8a3e5d2612851bfaa8b8bcc5'
 $SourceUrl = "https://github.com/baboevazamatkz-create/bis/archive/$SourceCommit.zip"
 $TempDir = Join-Path ([IO.Path]::GetTempPath()) ('bis-pilot-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $TempDir | Out-Null
