@@ -150,3 +150,20 @@ BIS_STT_PROVIDER=yandex
 Если запуск не удался: сохраните текст ошибки из окна. Журналы находятся в
 `C:\BIS-Pilot\logs\bis.log` и `C:\BIS-Pilot\data\postgres.log`.
 Не удаляйте папку `data` ради повторной установки.
+
+## Исправление HTTP-ошибки «No response returned»
+
+Если в стеке есть `bis/main.py`, `slow_log`, `BaseHTTPMiddleware` и `No response returned`,
+обновите обработчик журнала запросов. Исправление использует ASGI напрямую, сохраняет потоковую
+передачу и не превращает закрытие соединения до начала ответа в эту ошибку. Настоящие ошибки
+обработчиков по-прежнему передаются серверу и записываются в журнал.
+
+Остановите BIS через Ctrl+C. Для установки из закреплённой версии на стандартном пути:
+
+```powershell
+& C:\BIS-Pilot\venv\Scripts\python.exe -m pip install --no-deps --force-reinstall 'https://github.com/baboevazamatkz-create/bis/archive/refs/tags/pto-http-fix-20261110.zip#subdirectory=backend'
+```
+
+Если пилот находится в другом каталоге, замените путь к `python.exe` на его `venv\Scripts\python.exe`.
+Команда заменяет пакет backend, сохраняя установленные зависимости, `.env`, документы и базу.
+После успешной установки запустите ярлык BIS-Pilot заново и обновите страницу браузера.

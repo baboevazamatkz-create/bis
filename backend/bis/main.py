@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import logging
-import time
 from pathlib import Path
 
 from fastapi import APIRouter, FastAPI, Request
@@ -32,8 +30,7 @@ from bis.api import (
     works,
 )
 from bis.config import get_settings
-
-log = logging.getLogger("bis.http")
+from bis.middleware import RequestLogMiddleware
 
 
 def create_app() -> FastAPI:
@@ -46,21 +43,7 @@ def create_app() -> FastAPI:
                        allow_methods=["*"], allow_headers=["*"])
     app.add_middleware(GZipMiddleware, minimum_size=2048)  # предпросмотры схем (SVG) и большие списки — в 5–8 раз меньше
 
-    @app.middleware("http")
-    async def slow_log(request: Request, call_next):
-        """Медленные и упавшие запросы — в журнал (видно в `bis doctor`)."""
-        t = time.perf_counter()
-        try:
-            response = await call_next(request)
-        except Exception:
-            log.exception("Ошибка запроса %s %s", request.method, request.url.path)
-            raise
-        took = time.perf_counter() - t
-        if response.status_code >= 500:
-            log.error("%s %s → %s за %.1f с", request.method, request.url.path, response.status_code, took)
-        elif took > 8:
-            log.warning("медленно: %s %s — %.1f с", request.method, request.url.path, took)
-        return response
+    app.add_middleware(RequestLogMiddleware)
 
     api = APIRouter(prefix="/api")
     api.include_router(admin.router)
