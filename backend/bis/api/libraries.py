@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import datetime as dt
+import os
+import shutil
 import uuid
 from pathlib import Path
 from typing import Literal
 from urllib.parse import quote
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy import or_, select
@@ -46,11 +48,15 @@ class Assignment(BaseModel):
     object_id: uuid.UUID | None = None
 
 
+def can_manage_knowledge(user):
+    return user.is_platform_admin or (bool(os.environ.get('BIS_LOCAL_DIR')) and user.role == 'admin')
+
+
 def owned(db, user, connection_id, *, write=False, content=False):
     c = db.get(LibraryConnection, connection_id)
     if c is None or c.organization_id not in (None, user.organization_id):
         raise HTTPException(404, 'Подключение не найдено')
-    if write and c.level == 'knowledge' and not user.is_platform_admin:
+    if write and c.level == 'knowledge' and not can_manage_knowledge(user):
         raise HTTPException(403, 'Общую библиотеку настраивает администратор платформы')
     scope = db.info.get('source_context')
     if content and scope and scope.strict and c.level == 'project' and c.object_id != scope.object_id:
@@ -82,7 +88,7 @@ def connections(db: Session = Depends(get_db), user: User = Depends(require('kno
 
     return {'strict': bool((org.settings or {}).get('libraries_strict')), 'connections': [out(c) for c in rows],
             'allowed_roots': [str(p) for p in get_settings().library_roots] if user.role == 'admin' else [],
-            'form_fields': forms.FIELDS, 'platform_admin': user.is_platform_admin}
+            'form_fields': forms.FIELDS, 'platform_admin': can_manage_knowledge(user)}
 
 
 @router.put('/policy')
@@ -97,7 +103,7 @@ def policy(body: PolicyIn, db: Session = Depends(get_db), user: User = Depends(r
 @router.post('', status_code=201)
 def connect(body: ConnectionIn, tasks: BackgroundTasks, db: Session = Depends(get_db),
             user: User = Depends(require('settings:write'))):
-    if body.level == 'knowledge' and not user.is_platform_admin:
+    if body.level == 'knowledge' and not can_manage_knowledge(user):
         raise HTTPException(403, 'Общую библиотеку подключает администратор платформы')
     if (body.level == 'project') != bool(body.object_id):
         raise HTTPException(400, 'Только библиотека проекта должна иметь объект')
@@ -105,6 +111,7 @@ def connect(body: ConnectionIn, tasks: BackgroundTasks, db: Session = Depends(ge
         obj = db.get(ConstructionObject, body.object_id)
         if obj is None or obj.organization_id != user.organization_id:
             raise HTTPException(404, 'Объект не найден')
+    body.path = body.path.strip().strip('"')
     try:
         path = sync.checked_path(body.path)
     except PermissionError:
@@ -112,7 +119,7 @@ def connect(body: ConnectionIn, tasks: BackgroundTasks, db: Session = Depends(ge
         import os
 
         if not os.environ.get('BIS_LOCAL_DIR') or user.role != 'admin':
-            raise
+            raise HTTPException(403, 'Папка вне разрешённых каталогов сервера') from None
         from bis.config import get_settings
         from bis.services.local_config import save
 
@@ -121,6 +128,8 @@ def connect(body: ConnectionIn, tasks: BackgroundTasks, db: Session = Depends(ge
             raise HTTPException(400, 'Папка не найдена на компьютере с BIS') from None
         roots = [str(p) for p in get_settings().library_roots]
         save({'BIS_LIBRARY_ROOTS': json.dumps([*roots, str(path)], ensure_ascii=False)})
+    if not path.is_dir():
+        raise HTTPException(400, 'Папка не найдена на компьютере с BIS')
     c = LibraryConnection(name=body.name, path=str(path), level=body.level, object_id=body.object_id,
                           organization_id=None if body.level == 'knowledge' else user.organization_id)
     db.add(c)
@@ -130,6 +139,62 @@ def connect(body: ConnectionIn, tasks: BackgroundTasks, db: Session = Depends(ge
     db.commit()
     tasks.add_task(sync.execute, c.id)
     return out(c)
+
+
+
+
+@router.post('/upload', status_code=201)
+def upload_library(tasks: BackgroundTasks, files: list[UploadFile] = File(...),
+                   level: Literal['knowledge', 'organization', 'project'] = Form(...),
+                   object_id: uuid.UUID | None = Form(None), db: Session = Depends(get_db),
+                   user: User = Depends(require('settings:write'))):
+    from bis.config import get_settings
+
+    if level == 'knowledge' and not can_manage_knowledge(user):
+        raise HTTPException(403, 'Общую библиотеку подключает администратор платформы')
+    if (level == 'project') != bool(object_id):
+        raise HTTPException(400, 'Выберите объект для базы проекта')
+    if object_id:
+        obj = db.get(ConstructionObject, object_id)
+        if obj is None or obj.organization_id != user.organization_id:
+            raise HTTPException(404, 'Объект не найден')
+    roots = get_settings().library_roots
+    if not roots:
+        raise HTTPException(400, 'Не настроена папка хранения библиотек BIS_LIBRARY_ROOTS')
+    if len(files) > 1000:
+        raise HTTPException(400, 'Загружайте не более 1000 файлов за один раз')
+    target = Path(roots[0]).resolve() / 'uploads' / str(user.organization_id) / str(uuid.uuid4())
+    total = 0
+    names = set()
+    try:
+        for file in files:
+            name = (file.filename or '').replace('\\', '/')
+            parts = name.split('/')
+            if any(p in ('', '.', '..') or ':' in p for p in parts):
+                raise HTTPException(400, 'Недопустимое имя файла')
+            if Path(name).suffix.lower() not in sync.SUPPORTED:
+                raise HTTPException(400, f'Формат файла не поддерживается: {name}')
+            if name.casefold() in names:
+                raise HTTPException(400, f'Повторное имя файла: {name}')
+            names.add(name.casefold())
+            dest = target.joinpath(*parts)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            size = 0
+            with dest.open('xb') as output:
+                while chunk := file.file.read(1024 * 1024):
+                    size += len(chunk)
+                    total += len(chunk)
+                    if size > sync.MAX_FILE or total > 500 * 1024 * 1024:
+                        raise HTTPException(413, 'Лимит: 100 МБ на файл, 500 МБ на загрузку')
+                    output.write(chunk)
+        return connect(ConnectionIn(name=files[0].filename.split('/')[0] if len(files) == 1 else f'Загрузка · {len(files)} файлов',
+                       path=str(target), level=level, object_id=object_id), tasks, db, user)
+    except Exception:
+        shutil.rmtree(target, ignore_errors=True)
+        raise
+    finally:
+        for file in files:
+            file.file.close()
 
 
 @router.post('/{connection_id}/sync', status_code=202)

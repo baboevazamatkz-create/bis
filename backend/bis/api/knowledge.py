@@ -11,6 +11,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from bis.api.deps import require
+from bis.api.libraries import can_manage_knowledge
 from bis.db import get_db
 from bis.models import KnowledgeChunk, KnowledgeSource, User
 from bis.rag.embeddings import get_embedder, get_query_embedder
@@ -54,7 +55,7 @@ def _owned(db: Session, user: User, source_id: uuid.UUID) -> KnowledgeSource:
     src = db.get(KnowledgeSource, source_id)
     if src is None or (src.organization_id not in (None, user.organization_id)):
         raise HTTPException(404, "Источник не найден")
-    if src.organization_id is None and not user.is_platform_admin:
+    if src.organization_id is None and not can_manage_knowledge(user):
         raise HTTPException(403, "Общую нормативную библиотеку изменяет администратор платформы")
     return src
 
@@ -78,7 +79,7 @@ def upload(
     policy = db.info.get("source_context")
     if policy and policy.strict:
         raise HTTPException(409, "В строгом режиме подключайте исходные файлы через раздел Библиотеки")
-    if scope == "global" and not user.is_platform_admin:
+    if scope == "global" and not can_manage_knowledge(user):
         raise HTTPException(403, "Загрузка в общую библиотеку доступна администратору платформы")
     data = file.file.read()
     if len(data) > MAX_UPLOAD:

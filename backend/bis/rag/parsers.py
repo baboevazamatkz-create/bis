@@ -224,6 +224,10 @@ def parse_file(data: bytes, filename: str, mime: str | None = None) -> ParsedDoc
     ext = Path(filename).suffix.lower()
     if ext == ".pdf" or mime == "application/pdf":
         return parse_pdf(data)
+    if ext in (".doc", ".rtf"):
+        from bis.rag.legacy_word import read_word
+
+        return ParsedDocument(pages=[Page(None, read_word(data))], meta={"format": "legacy_word"})
     if ext == ".docx":
         return parse_docx(data)
     if ext in (".xlsx", ".xlsm"):

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { activeProject, api, fetchBlob, type User } from '../../api';
 import { ConfirmButton, PageHead } from '../../components';
 
@@ -14,6 +14,8 @@ const LABELS = { knowledge: 'База знаний', project: 'База прое
 const STATES: Record<string,string> = { ready: 'Текст доступен', partial: 'Есть ошибки чтения', pending: 'Подключена, ожидает чтения', reading: 'Читаю документы…', error: 'Ошибка', empty: 'Очищена', removed: 'Удалён из папки' };
 
 export default function DatabaseHub({ user }: { user: User }) {
+  const filePicker = useRef<HTMLInputElement | null>(null);
+  const folderPicker = useRef<HTMLInputElement | null>(null);
   const [level, setLevel] = useState<Level>('project');
   const [state, setState] = useState<State | null>(null);
   const [reading, setReading] = useState<ReadingStatus | null>(null);
@@ -50,6 +52,18 @@ export default function DatabaseHub({ user }: { user: User }) {
     setBusy(true); setError(''); setMessage('');
     try { await fn(); await load(); setMessage(success); } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
   }
+  async function uploadFiles(list: FileList | null) {
+    if (!list?.length) return;
+    const selected = Array.from(list);
+    await action(async () => {
+      const form = new FormData(); form.append('level', level);
+      if (level === 'project') form.append('object_id', activeProject()!);
+      selected.forEach((file) => form.append('files', file, file.webkitRelativePath || file.name));
+      await api('/libraries/upload', { method: 'POST', body: form, signal: AbortSignal.timeout(600_000) });
+    }, 'Файлы загружены. Началось чтение базы.');
+    if (filePicker.current) filePicker.current.value = '';
+    if (folderPicker.current) folderPicker.current.value = '';
+  }
   const connections = state?.connections.filter((c) => c.level === level && (level !== 'project' || c.object_id === activeProject())) ?? [];
   const allFiles = connections.flatMap((c) => files[c.id] ?? []);
   return <>
@@ -62,6 +76,14 @@ export default function DatabaseHub({ user }: { user: User }) {
       <div className="section-list-header row"><div><h2>{LABELS[level]}</h2><p className="small muted">{level === 'knowledge' ? 'Нормативы, стандарты, шаблоны и формы.' : level === 'project' ? 'РД, журналы, акты, схемы, сертификаты и договоры активного объекта.' : 'Реквизиты, регламенты и документы вашей организации.'}</p></div>
         {canWrite && <button className="btn primary" disabled={level === 'project' && !activeProject() || level === 'knowledge' && !state?.platform_admin} onClick={() => setConnecting(!connecting)}>Подключить базу</button>}</div>
       {level === 'project' && !activeProject() && <p className="note">Сначала выберите объект вверху страницы.</p>}
+      {canWrite && <div className="row">
+        <input hidden type="file" multiple ref={filePicker} onChange={(e) => void uploadFiles(e.target.files)} />
+        <input hidden type="file" multiple ref={(node) => { folderPicker.current = node; node?.setAttribute('webkitdirectory', ''); }} onChange={(e) => void uploadFiles(e.target.files)} />
+        <button className="btn" disabled={busy || level === 'project' && !activeProject() || level === 'knowledge' && !state?.platform_admin} onClick={() => filePicker.current?.click()}>Загрузить файлы</button>
+        <button className="btn" disabled={busy || level === 'project' && !activeProject() || level === 'knowledge' && !state?.platform_admin} onClick={() => folderPicker.current?.click()}>Загрузить папку</button>
+        {busy && <span role="status">Выполняю…</span>}
+      </div>}
+      {level === 'knowledge' && state && !state.platform_admin && <p className="note">Общая база знаний доступна для изменения администратору платформы.</p>}
       {connecting && <div className="connection-editor"><label htmlFor="database-path">Папка на компьютере с BIS</label><div className="row">
         <input id="database-path" value={path} onChange={(e) => setPath(e.target.value)} placeholder="C:\BIS-Pilot\library\project-01" />
         <button className="btn primary" disabled={busy || !path.trim()} onClick={() => void action(async () => {
@@ -118,6 +140,7 @@ export default function DatabaseHub({ user }: { user: User }) {
       <p className="small">Языковая модель: {reading?.text_configured ? 'настроена, требуется проверка доступа' : 'не подключена'} · OCR: {reading?.ocr_configured ? 'настроен' : 'не подключён'} · чтение чертежей зрением: {reading?.vision_configured ? 'настроено' : 'не подключено'} · голос: {reading?.voice.stt ? 'настроен' : 'не подключён'}</p>
       {reading?.model_error && <p className="text-bad">{reading.model_error}</p>}
       {canWrite && <div className="row"><button className="btn" disabled={busy} onClick={() => void action(async () => setCheck(await api<ModelCheck>('/ai/models/check', { method: 'POST', signal: AbortSignal.timeout(130_000) })), 'Проверка моделей завершена.')}>Проверить ИИ</button>
+        <button className="btn" disabled={busy} onClick={() => void action(async () => { const result = await api<{text: string}>('/workspace/ocr-check', { method: 'POST', signal: AbortSignal.timeout(130_000) }); if (!result.text.trim()) throw new Error('OCR не извлёк текст контрольного изображения'); }, 'OCR прочитал контрольное изображение. Можно перечитать сканы.')}>Проверить OCR</button>
         {reading?.local_setup_available && <button className="btn" onClick={() => setConfigure(!configure)}>Подключить ИИ и OCR</button>}</div>}
       {check?.providers.length === 0 && <p className="text-bad">Настроен только офлайн-режим.</p>}
       {check?.providers.map((p) => <div className="note" key={p.provider}><strong>{p.provider}: {p.ok ? 'Ответ получен' : 'Ошибка подключения'}</strong><p className="small">{p.error || p.reply}</p>{p.hint && <p className="small text-bad">{p.hint}</p>}</div>)}

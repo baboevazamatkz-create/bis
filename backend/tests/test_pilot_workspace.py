@@ -387,6 +387,7 @@ def test_all_tiff_pages_reach_ocr(monkeypatch):
 
     def handler(request):
         calls.append(json.loads(request.content))
+        assert calls[-1]["mimeType"] == "image/jpeg"
         return httpx.Response(
             200, json={"result": {"textAnnotation": {"fullText": f"Страница {len(calls)}"}}}
         )
@@ -433,3 +434,63 @@ def test_local_settings_file_beats_stale_environment_but_keeps_current_ui(tmp_pa
     assert os.environ["YANDEX_FOLDER_ID"] == "new-folder"
     assert os.environ["BIS_OCR_PROVIDER"] == "yandex"
     assert os.environ["BIS_WEB_DIR"] == "new-versioned-web"
+
+
+def test_browser_upload_reads_files_and_rejects_traversal(client, auth, db, demo, folder):
+    _, root, obj = folder
+    headers = {**auth, 'X-BIS-Project': str(obj.id)}
+    response = client.post('/api/libraries/upload', headers=headers, data={'level': 'project', 'object_id': str(obj.id)},
+        files=[('files', ('folder/contract.txt', 'Договор субподряда. Срок 17 ноября 2026'.encode(), 'text/plain'))])
+    assert response.status_code == 201, response.text
+    connection = response.json()
+    rows = client.get(f"/api/libraries/{connection['id']}/files", headers=headers).json()
+    assert len(rows) == 1 and rows[0]['state'] == 'ready'
+    bad = client.post('/api/libraries/upload', headers=headers, data={'level': 'project', 'object_id': str(obj.id)},
+        files=[('files', ('../escape.txt', b'forbidden', 'text/plain'))])
+    assert bad.status_code == 400
+    assert not (root.parent / 'escape.txt').exists()
+
+
+def test_local_admin_can_connect_knowledge_but_remote_admin_cannot(client, auth, folder, monkeypatch, db):
+    from bis.models import User
+
+    for user in db.scalars(select(User)):
+        user.is_platform_admin = False
+    db.commit()
+    _, root, _ = folder
+    payload = {'name': 'Знания', 'path': str(root), 'level': 'knowledge'}
+    monkeypatch.delenv('BIS_LOCAL_DIR', raising=False)
+    assert client.post('/api/libraries', headers=auth, json=payload).status_code == 403
+    monkeypatch.setenv('BIS_LOCAL_DIR', str(root))
+    assert client.get('/api/libraries', headers=auth).json()['platform_admin']
+    assert client.post('/api/libraries', headers=auth, json=payload).status_code == 201
+
+
+def test_rtf_disguised_as_doc_reads_russian():
+    data = br"{\rtf1\ansi\ansicpg1251 \'c4\'ee\'e3\'ee\'e2\'ee\'f0 123}"
+    assert 'Договор 123' in parse_file(data, 'договор.doc').text
+
+
+def test_doc_piece_table_preserves_unicode_and_cells():
+    import struct
+
+    from bis.rag.legacy_word import read_pieces
+
+    text = 'Договор № 123\rКабель\x07125 м\r'
+    word = bytearray(1024)
+    struct.pack_into('<HH', word, 0, 0xA5EC, 0xC1)
+    struct.pack_into('<H', word, 32, 14)
+    struct.pack_into('<H', word, 62, 22)
+    struct.pack_into('<H', word, 152, 93)
+    raw = text.encode('utf-16-le')
+    word[700:700 + len(raw)] = raw
+    plc = struct.pack('<IIHIH', 0, len(text), 0, 700, 0)
+    table = b'\x02' + struct.pack('<I', len(plc)) + plc
+    struct.pack_into('<II', word, 154 + 33 * 8, 0, len(table))
+
+    class Package:
+        def openstream(self, name):
+            assert name == '0Table'
+            return io.BytesIO(table)
+
+    assert read_pieces(word, Package()) == 'Договор № 123\nКабель | 125 м'

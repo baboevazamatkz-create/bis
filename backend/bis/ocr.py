@@ -24,7 +24,7 @@ class OCRError(Exception):
 
 def available() -> bool:
     s = get_settings()
-    return s.ocr_provider == "yandex" and bool(s.yandex()[0])
+    return s.ocr_provider == "yandex" and all(s.yandex())
 
 
 def _pdf_pages(data: bytes) -> list[bytes]:
@@ -51,11 +51,13 @@ def recognize_pages(data: bytes, mime: str | None, client: httpx.Client | None =
     """Текст по страницам (порядок сохраняется). Многостраничный PDF — по странице на запрос (синхронный API)."""
     s = get_settings()
     folder, key = s.yandex()
+    if not key:
+        raise OCRError("Не задан API-ключ Yandex Cloud для OCR")
     if not folder:
         raise OCRError("Не задан каталог Yandex Cloud (BIS_YANDEX_FOLDER_ID)")
     mime = (mime or "").lower()
     if "pdf" in mime:
-        items = [("PDF", p) for p in _pdf_pages(data)]
+        items = [("application/pdf", p) for p in _pdf_pages(data)]
     elif any(kind in mime for kind in ('tiff', 'bmp', 'gif', 'webp')):
         from PIL import Image, ImageSequence
 
@@ -64,11 +66,11 @@ def recognize_pages(data: bytes, mime: str | None, client: httpx.Client | None =
             for frame in ImageSequence.Iterator(image):
                 buf = io.BytesIO()
                 frame.convert('RGB').save(buf, format='JPEG')
-                items.append(('JPEG', buf.getvalue()))
+                items.append(('image/jpeg', buf.getvalue()))
     elif "png" in mime:
-        items = [("PNG", data)]
+        items = [("image/png", data)]
     else:
-        items = [("JPEG", data)]
+        items = [("image/jpeg", data)]
     http = client or _client()
 
     def page(item: tuple[str, bytes]) -> str:

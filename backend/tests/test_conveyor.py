@@ -355,6 +355,7 @@ def test_scan_photo_and_voice_via_yandex_services(db, demo, monkeypatch):
     monkeypatch.setattr(s, "ocr_provider", "yandex")
     monkeypatch.setattr(s, "stt_provider", "yandex")
     monkeypatch.setattr(s, "yandex_folder_id", "b1gtest")
+    monkeypatch.setenv(s.yandex_api_key_env, "fixture-ocr-key")
     monkeypatch.setattr(ocr, "recognize", lambda data, mime, client=None: UPD)
     monkeypatch.setattr(voice, "_transcribe_yandex", lambda audio, client: "залили бетон плиты Пм1 захватка 6 — 120 кубов")
     monkeypatch.setattr(voice.shutil, "which", lambda name: "/usr/bin/ffmpeg")

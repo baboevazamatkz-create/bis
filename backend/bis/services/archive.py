@@ -128,6 +128,8 @@ def _raw_pages(data: bytes, name: str, mime: str | None) -> tuple[list[Page], st
                 if not recognized:
                     pages.append(Page(None, '', getattr(recognized, 'error', None) or f'Не прочитано изображение {image}'))
         return pages or [Page(None, '', 'В DOCX нет извлечённого текста; преобразуйте скан в PDF')], 'ocr_docx'
+    if ext in ('.doc', '.rtf') and not parsed.text.strip():
+        return [Page(None, '', 'В DOC/RTF нет текстового содержимого. Для распознавания встроенных сканов сохраните документ в PDF.')], 'parsed'
     if parsed.meta.get("needs_ocr") or not parsed.text.strip():
         scanned = _ocr_pages(data, mime or "application/pdf")
         if any(t.strip() for t in scanned):

@@ -239,3 +239,24 @@ def ai_setup(body: AISetup, user: User = Depends(require('settings:write'))):
     set_gateway(None)
     return {'saved': True, 'requires_restart': False,
             'message': 'Настройки сохранены. Проверьте ответ модели; OCR и голос проверяются на файле и записи.'}
+
+
+@router.post('/ocr-check')
+def check_ocr(user: User = Depends(require('settings:write'))):
+    import io
+
+    from PIL import Image, ImageDraw
+
+    from bis import ocr
+
+    picture = Image.new('RGB', (900, 180), 'white')
+    ImageDraw.Draw(picture).text((30, 45), 'BIS OCR 12345', fill='black', font_size=60)
+    image = io.BytesIO()
+    picture.save(image, format='PNG')
+    try:
+        text = ocr.recognize(image.getvalue(), 'image/png')
+    except ocr.OCRError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    if '12345' not in text:
+        raise HTTPException(502, 'OCR не прочитал контрольные цифры 12345. Проверьте провайдера распознавания.')
+    return {'text': text}

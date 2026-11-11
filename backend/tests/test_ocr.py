@@ -30,6 +30,7 @@ def test_pdf_pages_in_parallel_in_order(monkeypatch):
 
     def handler(req: httpx.Request) -> httpx.Response:
         body = json.loads(req.content)
+        assert body["mimeType"] == "application/pdf"
         with lock:
             state["calls"] += 1
             if not state["limited"]:  # первый запрос — «слишком часто»

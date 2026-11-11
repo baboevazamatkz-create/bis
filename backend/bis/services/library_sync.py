@@ -20,11 +20,11 @@ from bis.services import archive
 from bis.services.documents import save_document
 
 MAX_FILE = 100 * 1024 * 1024
-SUPPORTED = {".pdf", ".docx", ".xlsx", ".xlsm", ".txt", ".md", ".csv", ".png", ".jpg", ".jpeg", ".tif", ".tiff"}
+SUPPORTED = {".pdf", ".doc", ".rtf", ".docx", ".xlsx", ".xlsm", ".txt", ".md", ".csv", ".png", ".jpg", ".jpeg", ".tif", ".tiff"}
 
 
 def checked_path(value):
-    path = Path(value).expanduser().resolve()
+    path = Path(value.strip().strip('"')).expanduser().resolve()
     roots = [Path(p).expanduser().resolve() for p in get_settings().library_roots]
     if not any(path == root or root in path.parents for root in roots):
         raise PermissionError("Папка вне разрешённых каталогов BIS_LIBRARY_ROOTS")
