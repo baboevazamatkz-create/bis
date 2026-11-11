@@ -394,3 +394,5 @@ td { padding-top: 14px; padding-bottom: 14px; }
 .connection-editor input { min-width: 0; flex: 1; }
 .workspace-id .nav-item span { white-space: normal; line-height: 1.45; }
 @media(max-width: 700px) { .workspace-document { flex-direction: column; gap: 12px; } .document-actions { align-self: flex-start; } .database-tabs { grid-template-columns: 1fr; } .database-tab { padding: 14px; } .task-composer textarea { flex-basis: 100%; min-width: 0; } }
+
+.workspace-feedback { position: sticky; top: 8px; z-index: 20; background: var(--surface, #fff); border-radius: 10px; box-shadow: 0 3px 16px #0001; }

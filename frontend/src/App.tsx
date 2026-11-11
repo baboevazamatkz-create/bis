@@ -11,6 +11,7 @@ export default function App() {
   const [theme, setTheme] = useState(() => { try { return localStorage.getItem("bis:theme") ?? "light"; } catch { return "light"; } });
   const nav = useRef<HTMLElement>(null);
   const menuButton = useRef<HTMLButtonElement>(null);
+  const [projectError, setProjectError] = useState("");
   const [startError, setStartError] = useState("");
   const [user, setUser] = useState<User | null>(null);
   const [project, setProject] = useState("");
@@ -19,6 +20,14 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [route, setRoute] = useState(() => parseRoute(window.location.hash));
   const [preview, setPreview] = useState<{ type: string; content: string; title: string } | null | undefined>(undefined);
+  async function loadObjects() {
+    setProjectError('');
+    try {
+      const rows = await api<typeof objects>('/objects'); setObjects(rows);
+      if (activeProject() && !rows.some((r) => r.id === activeProject())) setActiveProject('');
+      if (rows.length === 1 && !activeProject()) setActiveProject(rows[0].id);
+    } catch (e) { setProjectError((e as Error).message); }
+  }
   useEffect(() => {
     const onLogout = () => setUser(null);
     const onRoute = () => setRoute(parseRoute(window.location.hash));
@@ -39,7 +48,7 @@ export default function App() {
     setPreview(undefined);
     setProject(activeProject());
     void api<{ name: string }>("/org").then((o) => setOrgName(o.name)).catch(() => {});
-    void api<typeof objects>("/objects").then((rows) => { setObjects(rows); if (rows.length === 1 && !activeProject()) setActiveProject(rows[0].id); }).catch(() => {});
+    void loadObjects();
     const changed = () => { setProject(activeProject()); setPreview(undefined); };
     window.addEventListener("bis:project", changed);
     return () => window.removeEventListener("bis:project", changed);
@@ -111,6 +120,7 @@ export default function App() {
         <div id="main-content" tabIndex={-1} className={`page-content ${route.page === "chat" ? "page-chat" : ""}`}>
         {DEMO && <div className="demo-banner">Демо-версия: данные вымышленные</div>}
         <Suspense fallback={<p className="muted">Загрузка рабочего пространства…</p>}>
+          {projectError && <div className="alert error" role="alert">Не удалось получить проекты: {projectError} <button className="btn" onClick={() => void loadObjects()}>Повторить загрузку проектов</button></div>}
           <ExecutiveWorkspace key={`id:${user.organization_id}:${project}`} page={route.page} user={user} />
         </Suspense>
         </div>

@@ -156,7 +156,7 @@ export default function Chat({ workspace = "platform" }: { workspace?: "platform
         const form = new FormData();
         form.append("file", new Blob(chunks, { type: rec.mimeType }), "voice.webm");
         try {
-          const r = await api<{ text: string }>("/voice/transcribe", { method: "POST", body: form });
+          const r = await api<{ text: string }>("/voice/transcribe", { method: "POST", body: form, timeoutMs: 120_000 });
           if (r.text.trim()) send(r.text);
         } catch (e) {
           setError((e as Error).message);
@@ -176,8 +176,10 @@ export default function Chat({ workspace = "platform" }: { workspace?: "platform
   }, [messages, busy]);
 
   async function openSession(id: string) {
-    setSessionId(id);
-    setMessages(await api<Msg[]>(`/chat/sessions/${id}?workspace=${workspace}`));
+    try {
+      const messages = await api<Msg[]>(`/chat/sessions/${id}?workspace=${workspace}`);
+      setSessionId(id); setMessages(messages);
+    } catch (e) { setError((e as Error).message); }
   }
 
   async function send(message: string, selectedDocument?: string) {

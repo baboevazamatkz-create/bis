@@ -111,8 +111,8 @@ export function Badge({ status }: { status: string }) {
 }
 
 /** Кнопка с подтверждением на странице (без системных диалогов). */
-export function ConfirmButton({ label, confirmLabel, onConfirm, className = "btn small" }: {
-  label: string; confirmLabel: string; onConfirm: () => void; className?: string;
+export function ConfirmButton({ label, confirmLabel, onConfirm, className = "btn small", disabled = false }: {
+  label: string; confirmLabel: string; onConfirm: () => void; className?: string; disabled?: boolean;
 }) {
   const [armed, setArmed] = useState(false);
   useEffect(() => {
@@ -121,9 +121,9 @@ export function ConfirmButton({ label, confirmLabel, onConfirm, className = "btn
     return () => clearTimeout(t);
   }, [armed]);
   return armed ? (
-    <button className={`${className} danger`} onClick={() => { setArmed(false); onConfirm(); }}>{confirmLabel}</button>
+    <button disabled={disabled} className={`${className} danger`} onClick={() => { setArmed(false); onConfirm(); }}>{confirmLabel}</button>
   ) : (
-    <button className={className} onClick={() => setArmed(true)}>{label}</button>
+    <button disabled={disabled} className={className} onClick={() => setArmed(true)}>{label}</button>
   );
 }
 
@@ -236,7 +236,7 @@ export function useVoice(onText: (text: string) => void, { pauseMs = 2200, idleM
       const form = new FormData();
       form.append("file", new Blob(chunks, { type: rec.mimeType }), "voice.webm");
       try {
-        const r = await api<{ text: string }>("/voice/transcribe", { method: "POST", body: form });
+        const r = await api<{ text: string }>("/voice/transcribe", { method: "POST", body: form, timeoutMs: 120_000 });
         if (r.text.trim()) cb.current(r.text.trim());
         else setErr("Речь не распознана — повторите");
       } catch (e) {

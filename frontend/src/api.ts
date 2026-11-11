@@ -51,7 +51,32 @@ function detail(data: unknown, status?: number): string {
   return status ? `Ошибка сервера (HTTP ${status}). Подробности — в окне запуска BIS.` : "Ошибка запроса";
 }
 
-export async function api<T = unknown>(path: string, options: RequestInit & { json?: unknown } = {}): Promise<T> {
+type RequestOptions = RequestInit & { timeoutMs?: number };
+
+// Keep the deadline active through response body consumption, not just headers.
+async function request<T>(path: string, options: RequestOptions, read: (response: Response) => Promise<T>): Promise<T> {
+  const controller = new AbortController();
+  let timedOut = false;
+  const abort = () => controller.abort();
+  if (options.signal?.aborted) abort();
+  else options.signal?.addEventListener('abort', abort, { once: true });
+  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, options.timeoutMs ?? 30_000);
+  try {
+    const response = await fetch(`/api${path}`, { ...options, signal: controller.signal });
+    return await read(response);
+  } catch (e) {
+    if (controller.signal.aborted) throw new ApiError(timedOut ? 408 : 499, timedOut
+      ? 'Сервер не ответил вовремя. Для операции изменения проверьте результат перед повтором.'
+      : 'Ожидание запроса остановлено. Операция на сервере могла продолжиться.');
+    if (e instanceof TypeError) throw new ApiError(503, 'Нет связи с BIS. Проверьте окно запуска программы и повторите запрос.');
+    throw e;
+  } finally {
+    clearTimeout(timer);
+    options.signal?.removeEventListener('abort', abort);
+  }
+}
+
+export async function api<T = unknown>(path: string, options: RequestOptions & { json?: unknown } = {}): Promise<T> {
   if (DEMO) return mockApi<T>(path, options.method ?? "GET", options.json ?? options.body);
   const headers = new Headers(options.headers);
   if (!path.startsWith("/auth")) projectHeader(headers);
@@ -62,7 +87,7 @@ export async function api<T = unknown>(path: string, options: RequestInit & { js
     headers.set("Content-Type", "application/json");
     body = JSON.stringify(options.json);
   }
-  const res = await fetch(`/api${path}`, { ...options, headers, body });
+  return request(path, { ...options, headers, body }, async (res) => {
   if (res.status === 401) {
     setToken(null);
     window.dispatchEvent(new Event("bis:logout"));
@@ -73,6 +98,7 @@ export async function api<T = unknown>(path: string, options: RequestInit & { js
   if (!res.ok) throw new ApiError(res.status, detail(data, res.status));
   if (invalidJson) throw new ApiError(502, "Сервер вернул некорректный ответ. Обновите BIS и повторите запрос.");
   return data as T;
+  });
 }
 
 export interface StreamEvent { type: "step" | "route" | "done" | "error"; label?: string; title?: string; agent?: string; reply?: unknown; detail?: string }
@@ -129,19 +155,31 @@ export async function streamChat<T>(body: unknown, onEvent: (e: StreamEvent) => 
 }
 
 export async function upload<T = unknown>(path: string, form: FormData): Promise<T> {
-  return api<T>(path, { method: "POST", body: form });
+  return api<T>(path, { method: "POST", body: form, timeoutMs: 600_000 });
 }
 
-/** Файл/предпросмотр с авторизацией как Blob (для изображений и аудио). */
-export async function fetchBlob(path: string, init: RequestInit = {}): Promise<Blob> {
-  if (DEMO) return mockBlob(path);
+function responseFilename(res: Response): string | null {
+  const disposition = res.headers.get('Content-Disposition') ?? '';
+  const encoded = /filename\*=UTF-8''([^;]+)/i.exec(disposition);
+  try { if (encoded) return decodeURIComponent(encoded[1]); } catch { /* use plain filename */ }
+  return /filename="([^"\r\n]+)"/i.exec(disposition)?.[1] ?? null;
+}
+
+async function fetchFile(path: string, init: RequestOptions = {}): Promise<{ blob: Blob; filename: string | null }> {
   const headers = new Headers(init.headers);
   projectHeader(headers);
   const token = getToken();
-  if (token) headers.set("Authorization", `Bearer ${token}`);
-  const res = await fetch(`/api${path}`, { ...init, headers });
-  if (!res.ok) throw new ApiError(res.status, "Не удалось получить файл");
-  return res.blob();
+  if (token) headers.set('Authorization', `Bearer ${token}`);
+  return request(path, { timeoutMs: 90_000, ...init, headers }, async (res) => {
+    if (!res.ok) throw new ApiError(res.status, detail(await res.json().catch(() => null), res.status));
+    return { blob: await res.blob(), filename: responseFilename(res) };
+  });
+}
+
+/** Файл/предпросмотр с авторизацией как Blob (для изображений и аудио). */
+export async function fetchBlob(path: string, init: RequestOptions = {}): Promise<Blob> {
+  if (DEMO) return mockBlob(path);
+  return (await fetchFile(path, init)).blob;
 }
 
 export async function download(path: string, fallbackName = "document") {
@@ -153,17 +191,16 @@ export async function download(path: string, fallbackName = "document") {
   const token = getToken();
   const headers = new Headers(); projectHeader(headers);
   if (token) headers.set('Authorization', `Bearer ${token}`);
-  const res = await fetch(`/api${path}`, { headers });
+  return request(path, { headers, timeoutMs: 90_000 }, async (res) => {
   if (!res.ok) throw new ApiError(res.status, "Не удалось скачать файл");
-  const cd = res.headers.get("Content-Disposition") ?? "";
-  const match = /filename\*=UTF-8''([^;]+)/.exec(cd);
-  const name = match ? decodeURIComponent(match[1]) : fallbackName;
+  const name = responseFilename(res) || fallbackName;
   const url = URL.createObjectURL(await res.blob());
   const a = document.createElement("a");
   a.href = url;
   a.download = name;
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
 }
 
 /** Открыть документ: PDF, картинки и текст — в новой вкладке, остальное (Word, Excel, DWG) — скачать. */
@@ -171,14 +208,16 @@ export async function openFile(path: string, fallbackName = "document", page?: n
   if (DEMO) return download(path, fallbackName);
   const tab = window.open("", "_blank"); // окно открываем сразу по нажатию — иначе браузер его заблокирует
   try {
-    const blob = await fetchBlob(path);
+    const { blob, filename } = await fetchFile(path);
     if (tab && /^(application\/pdf|image\/|text\/)/.test(blob.type)) {
       // PDF открывается сразу на странице, где найден ответ
       tab.location.href = URL.createObjectURL(blob) + (page && blob.type === "application/pdf" ? `#page=${page}` : "");
       return;
     }
     tab?.close();
-    await download(path, fallbackName);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href = url; a.download = filename || fallbackName; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
   } catch (e) {
     tab?.close();
     throw e;

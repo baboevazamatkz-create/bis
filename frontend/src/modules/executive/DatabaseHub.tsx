@@ -23,7 +23,12 @@ export default function DatabaseHub({ user }: { user: User }) {
   const [imports, setImports] = useState<Partial<Record<Level,Imports>>>({});
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [pending, setPending] = useState<Record<string, string>>({});
+  const running = useRef(new Set<string>());
+  const busy = !!pending.database;
+  const refreshing = useRef(false);
+  const configRevision = useRef(0);
+  const mounted = useRef(true);
   const [connecting, setConnecting] = useState(false);
   const [path, setPath] = useState('');
   const [folder, setFolder] = useState('');
@@ -34,23 +39,64 @@ export default function DatabaseHub({ user }: { user: User }) {
   const [unassigned, setUnassigned] = useState<{ id: string; title: string }[]>([]);
   const [formReview, setFormReview] = useState<{ id: string; kind: string; mapping: Record<string,unknown>; format: string; previewed: boolean } | null>(null);
   const canWrite = user.role === 'admin';
-  async function load() {
-    const result = await api<State>('/libraries'); setState(result);
-    const status = await api<ReadingStatus>('/workspace/reading-status'); setReading(status);
-    setFolder((old) => old || status.folder_id || '');
-    const groups = await Promise.all(result.connections.filter((c) => c.level !== 'project' || c.object_id === activeProject()).map(async (c) =>
-      [c.id, await api<FileRow[]>(`/libraries/${c.id}/files`)] as const));
-    setFiles(Object.fromEntries(groups));
-    if (canWrite) setUnassigned(await api('/libraries/unassigned/list'));
-    if (level !== 'knowledge' && (level !== 'project' || activeProject())) {
-      const uploaded = await api<Imports>(`/workspace/imports?level=${level}`);
-      setImports((old) => ({ ...old, [level]: uploaded }));
+  async function load(signal?: AbortSignal) {
+    if (refreshing.current) return;
+    refreshing.current = true;
+    try {
+      const result = await api<State>('/libraries', { signal });
+      if (signal?.aborted || !mounted.current) return;
+      setState(result);
+      const jobs: Promise<unknown>[] = [
+        api<ReadingStatus>('/workspace/reading-status', { signal }).then((status) => {
+          if (signal?.aborted || !mounted.current) return;
+          setReading(status); setFolder((old) => old || status.folder_id || '');
+        }),
+        ...result.connections.filter((c) => c.level === level && (c.level !== 'project' || c.object_id === activeProject())).map(async (c) => {
+          const rows = await api<FileRow[]>(`/libraries/${c.id}/files`, { signal });
+          if (!signal?.aborted && mounted.current) setFiles((old) => ({ ...old, [c.id]: rows }));
+        }),
+      ];
+      if (canWrite) jobs.push(api<typeof unassigned>('/libraries/unassigned/list', { signal }).then((rows) => {
+        if (!signal?.aborted && mounted.current) setUnassigned(rows);
+      }));
+      if (level !== 'knowledge' && (level !== 'project' || activeProject())) jobs.push(
+        api<Imports>(`/workspace/imports?level=${level}`, { signal }).then((rows) => {
+          if (!signal?.aborted && mounted.current) setImports((old) => ({ ...old, [level]: rows }));
+        }));
+      const results = await Promise.allSettled(jobs);
+      const failed = results.find((r) => r.status === 'rejected');
+      if (failed?.status === 'rejected') throw failed.reason;
+    } finally { refreshing.current = false; }
+  }
+  function refresh() { void load().catch((e) => { if (mounted.current) setError(`Не удалось обновить сведения: ${e.message}`); }); }
+  useEffect(() => {
+    mounted.current = true;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      if (refreshing.current) { timer = setTimeout(poll, 100); return; }
+      try { await load(controller.signal); }
+      catch (e) { if (!controller.signal.aborted) setError((e as Error).message); }
+      if (!controller.signal.aborted) timer = setTimeout(poll, 8000);
+    };
+    void poll();
+    return () => { mounted.current = false; controller.abort(); clearTimeout(timer); };
+  }, [level]);
+  async function action(fn: () => Promise<unknown>, success: string, scope = 'database', label = 'Обрабатываю базу…') {
+    if (running.current.has(scope)) return;
+    running.current.add(scope); setPending((old) => ({ ...old, [scope]: label }));
+    setError(''); setMessage('');
+    try { await fn(); if (mounted.current) { setMessage(success); refresh(); } }
+    catch (e) { if (mounted.current) setError((e as Error).message); }
+    finally {
+      running.current.delete(scope);
+      if (mounted.current) setPending((old) => { const next = { ...old }; delete next[scope]; return next; });
     }
   }
-  useEffect(() => { void load().catch((e) => setError(e.message)); const timer = setInterval(() => void load().catch(() => {}), 8000); return () => clearInterval(timer); }, [level]);
-  async function action(fn: () => Promise<unknown>, success: string) {
-    setBusy(true); setError(''); setMessage('');
-    try { await fn(); await load(); setMessage(success); } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
+  async function checkCurrent<T>(run: () => Promise<T>): Promise<T> {
+    const revision = configRevision.current;
+    try { return await run(); }
+    finally { if (revision !== configRevision.current) throw new Error('Настройки изменились во время проверки. Повторите проверку с новым подключением.'); }
   }
   async function uploadFiles(list: FileList | null) {
     if (!list?.length) return;
@@ -59,7 +105,7 @@ export default function DatabaseHub({ user }: { user: User }) {
       const form = new FormData(); form.append('level', level);
       if (level === 'project') form.append('object_id', activeProject()!);
       selected.forEach((file) => form.append('files', file, file.webkitRelativePath || file.name));
-      await api('/libraries/upload', { method: 'POST', body: form, signal: AbortSignal.timeout(600_000) });
+      await api('/libraries/upload', { method: 'POST', body: form, timeoutMs: 600_000 });
     }, 'Файлы загружены. Началось чтение базы.');
     if (filePicker.current) filePicker.current.value = '';
     if (folderPicker.current) folderPicker.current.value = '';
@@ -68,7 +114,7 @@ export default function DatabaseHub({ user }: { user: User }) {
   const allFiles = connections.flatMap((c) => files[c.id] ?? []);
   return <>
     <PageHead title="Базы данных" hint="Подключите свои папки. Синапс читает эти документы и использует их в ответах и заданиях." />
-    {error && <div className="alert error" role="alert">{error}</div>}{message && <div className="note">{message}</div>}
+    {(error || message) && <div className="workspace-feedback">{error && <div className="alert error" role="alert">{error}</div>}{message && <div className="note" role="status">{message}</div>}</div>}
     <div className="row"><p className="small muted">{state?.strict ? 'Ответы и формы — только из подключённых баз и документов активного проекта.' : 'Строгий режим источников выключен.'}</p>
       {canWrite && state && <button className="btn small" disabled={busy} onClick={() => void action(() => api('/libraries/policy', { method: 'PUT', json: { strict: !state.strict } }), 'Режим источников обновлён.')}>{state.strict ? 'Изменить режим источников' : 'Использовать только мои базы'}</button>}</div>
     <div className="database-tabs">{(Object.entries(LABELS) as [Level,string][]).map(([id,label]) => <button key={id} className={`database-tab ${level === id ? 'active' : ''}`} onClick={() => { setLevel(id); setConnecting(false); }}>{label}</button>)}</div>
@@ -81,7 +127,7 @@ export default function DatabaseHub({ user }: { user: User }) {
         <input hidden type="file" multiple ref={(node) => { folderPicker.current = node; node?.setAttribute('webkitdirectory', ''); }} onChange={(e) => void uploadFiles(e.target.files)} />
         <button className="btn" disabled={busy || level === 'project' && !activeProject() || level === 'knowledge' && !state?.platform_admin} onClick={() => filePicker.current?.click()}>Загрузить файлы</button>
         <button className="btn" disabled={busy || level === 'project' && !activeProject() || level === 'knowledge' && !state?.platform_admin} onClick={() => folderPicker.current?.click()}>Загрузить папку</button>
-        {busy && <span role="status">Выполняю…</span>}
+        {busy && <span role="status">{pending.database}</span>}
       </div>}
       {level === 'knowledge' && state && !state.platform_admin && <p className="note">Общая база знаний доступна для изменения администратору платформы.</p>}
       {connecting && <div className="connection-editor"><label htmlFor="database-path">Папка на компьютере с BIS</label><div className="row">
@@ -100,7 +146,7 @@ export default function DatabaseHub({ user }: { user: User }) {
               if (!c.enabled) await api(`/libraries/${c.id}?enabled=true`, { method: 'PATCH' });
               await api(`/libraries/${c.id}/sync?force=true`, { method: 'POST' });
             }, 'Запущено полное перечитывание базы, включая неизменившиеся файлы.')}>Обновить базу</button>
-            <ConfirmButton label="Очистить базу" confirmLabel="Удалить данные этой базы?" onConfirm={() => void action(() => api(`/libraries/${c.id}/contents`, { method: 'DELETE' }), 'База очищена и отключена. Оригиналы в папке сохранены.')} />
+            <ConfirmButton disabled={busy} label="Очистить базу" confirmLabel="Удалить данные этой базы?" onConfirm={() => void action(() => api(`/libraries/${c.id}/contents`, { method: 'DELETE' }), 'База очищена и отключена. Оригиналы в папке сохранены.')} />
           </div>}
         </div>
         {c.error && <p className="small text-bad">{c.error}</p>}
@@ -118,7 +164,7 @@ export default function DatabaseHub({ user }: { user: User }) {
     </div>
     {!!imports[level]?.total && <div className="panel"><div className="row section-list-header"><h2>Загруженные файлы · {imports[level]?.total}</h2>
       {canWrite && <div className="row"><button className="btn small" disabled={busy} onClick={() => void action(() => api(`/workspace/imports/reread?level=${level}`, { method: 'POST' }), 'Началось перечитывание сохранённых оригиналов. Повторно загружать файлы не нужно.')}>Перечитать загруженные файлы</button>
-        <ConfirmButton label="Очистить загруженные файлы" confirmLabel="Удалить импортированные данные этой базы?" onConfirm={() => void action(() => api(`/workspace/imports?level=${level}`, { method: 'DELETE' }), 'Импортированные данные очищены. Созданные в BIS акты сохранены.')} /></div>}
+        <ConfirmButton disabled={busy} label="Очистить загруженные файлы" confirmLabel="Удалить импортированные данные этой базы?" onConfirm={() => void action(() => api(`/workspace/imports?level=${level}`, { method: 'DELETE' }), 'Импортированные данные очищены. Созданные в BIS акты сохранены.')} /></div>}
       </div><details><summary>Состояние чтения</summary><div className="database-files">{imports[level]?.documents.map((d) => <div key={d.id}><strong className="small">{d.title}</strong><span className="small muted">{({ stored: 'Оригинал загружен', queued: 'Ожидает перечитывания', running: 'Читаю…', ready: 'Текст перечитан', error: 'Ошибка чтения' } as Record<string,string>)[d.state] ?? d.state}</span>{d.error && <p className="small text-bad">{d.error}</p>}</div>)}</div></details>
       {imports[level]?.has_more && <p className="small muted">Здесь показаны первые 200 файлов. Перечитывание применяется ко всем {imports[level]?.total} файлам этой базы.</p>}
     </div>}
@@ -137,10 +183,11 @@ export default function DatabaseHub({ user }: { user: User }) {
       <button className="btn" onClick={() => setFormReview(null)}>Закрыть</button>
     </div></div>}
     <details className="panel"><summary>ИИ и качество чтения</summary>
+      {Object.entries(pending).filter(([id]) => id !== 'database').map(([id, label]) => <p role="status" key={id}>{label}</p>)}
       <p className="small">Языковая модель: {reading?.text_configured ? 'настроена, требуется проверка доступа' : 'не подключена'} · OCR: {reading?.ocr_configured ? 'настроен' : 'не подключён'} · чтение чертежей зрением: {reading?.vision_configured ? 'настроено' : 'не подключено'} · голос: {reading?.voice.stt ? 'настроен' : 'не подключён'}</p>
       {reading?.model_error && <p className="text-bad">{reading.model_error}</p>}
-      {canWrite && <div className="row"><button className="btn" disabled={busy} onClick={() => void action(async () => setCheck(await api<ModelCheck>('/ai/models/check', { method: 'POST', signal: AbortSignal.timeout(130_000) })), 'Проверка моделей завершена.')}>Проверить ИИ</button>
-        <button className="btn" disabled={busy} onClick={() => void action(async () => { const result = await api<{text: string}>('/workspace/ocr-check', { method: 'POST', signal: AbortSignal.timeout(130_000) }); if (!result.text.trim()) throw new Error('OCR не извлёк текст контрольного изображения'); }, 'OCR прочитал контрольное изображение. Можно перечитать сканы.')}>Проверить OCR</button>
+      {canWrite && <div className="row"><button className="btn" disabled={!!pending['model-check'] || !!pending['ai-save']} onClick={() => void action(async () => setCheck(await checkCurrent(() => api<ModelCheck>('/ai/models/check', { method: 'POST', timeoutMs: 130_000 }))), 'Проверка моделей завершена.', 'model-check', 'Проверяю языковую модель (до 130 секунд)…')}>Проверить ИИ</button>
+        <button className="btn" disabled={!!pending['ocr-check'] || !!pending['ai-save']} onClick={() => void action(async () => { const result = await checkCurrent(() => api<{text: string}>('/workspace/ocr-check', { method: 'POST', timeoutMs: 130_000 })); if (!result.text.trim()) throw new Error('OCR не извлёк текст контрольного изображения'); }, 'OCR прочитал контрольное изображение. Можно перечитать сканы.', 'ocr-check', 'Проверяю OCR (до 130 секунд)…')}>Проверить OCR</button>
         {reading?.local_setup_available && <button className="btn" onClick={() => setConfigure(!configure)}>Подключить ИИ и OCR</button>}</div>}
       {check?.providers.length === 0 && <p className="text-bad">Настроен только офлайн-режим.</p>}
       {check?.providers.map((p) => <div className="note" key={p.provider}><strong>{p.provider}: {p.ok ? 'Ответ получен' : 'Ошибка подключения'}</strong><p className="small">{p.error || p.reply}</p>{p.hint && <p className="small text-bad">{p.hint}</p>}</div>)}
@@ -148,10 +195,11 @@ export default function DatabaseHub({ user }: { user: User }) {
         <label htmlFor="ai-folder">Folder ID</label><input id="ai-folder" value={folder} onChange={(e) => setFolder(e.target.value)} />
         <label htmlFor="ai-key">API-ключ (пусто — сохранить текущий)</label><input id="ai-key" type="password" autoComplete="off" value={key} onChange={(e) => setKey(e.target.value)} />
         <details><summary>Модель для изображений и чертежей</summary><p className="small muted">OCR распознаёт надписи. Для визуального чтения чертежей укажите доступную вашему аккаунту модель из AI Studio. Пустое поле сохраняет ранее настроенные модели зрения.</p><input aria-label="Модель зрения" value={visionModel} onChange={(e) => setVisionModel(e.target.value)} placeholder="Идентификатор модели/версия" /></details>
-        <button className="btn primary" disabled={busy || !folder.trim()} onClick={() => void action(async () => {
+        <button className="btn primary" disabled={!!pending['ai-save'] || !folder.trim()} onClick={() => void action(async () => {
           await api('/workspace/ai-setup', { method: 'POST', json: { folder_id: folder.trim(), api_key: key || null, ocr: true, speech: true, vision_model: visionModel.trim() || null } });
-          setKey(''); setConfigure(false);
-        }, 'ИИ, OCR и голос настроены. Проверьте ответ модели и перечитайте базу.')}>Сохранить подключение</button>
+          configRevision.current += 1; setKey(''); setConfigure(false); setCheck(null);
+          setReading((old) => old ? { ...old, ocr_configured: true, text_configured: true, voice: { stt: true }, folder_id: folder.trim() } : old);
+        }, 'ИИ, OCR и голос настроены. Проверьте ответ модели и перечитайте базу.', 'ai-save', 'Сохраняю подключение ИИ…')}>Сохранить подключение</button>
       </div>}
     </details>
   </>;

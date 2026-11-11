@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api, download, openFile, STATUS_LABELS, type DocumentRow } from '../../api';
 import { PageHead } from '../../components';
 import { navigate } from '../navigation';
@@ -21,6 +21,8 @@ export default function WorkspaceDocuments({ category }: { category: Category })
   const [data, setData] = useState<Result | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const request = useRef<AbortController | null>(null);
   const [filter, setFilter] = useState('all');
   const [query, setQuery] = useState('');
   const [appliedQuery, setAppliedQuery] = useState('');
@@ -28,17 +30,19 @@ export default function WorkspaceDocuments({ category }: { category: Category })
   const [check, setCheck] = useState<{ acts: number; complete: number; missing_refs: number } | null>(null);
   const [needs, setNeeds] = useState<{ document_id: string; title: string; works: string; number: string | null; reason: string }[]>([]);
   async function load(more = false) {
+    request.current?.abort();
+    const controller = new AbortController(); request.current = controller;
     setBusy(true); setError('');
     try {
-      const result = await api<Result>(`/workspace/documents?category=${category}&q=${encodeURIComponent(appliedQuery)}&offset=${more ? data?.documents.length ?? 0 : 0}`, { signal: AbortSignal.timeout(30_000) });
+      const result = await api<Result>(`/workspace/documents?category=${category}&q=${encodeURIComponent(appliedQuery)}&offset=${more ? data?.documents.length ?? 0 : 0}`, { signal: controller.signal });
       setData((old) => more && old ? { ...result, documents: [...old.documents, ...result.documents] } : result);
       if (category === 'schemes' && !more) {
-        const requested = await api<{ items: typeof needs }>('/workspace/scheme-needs', { signal: AbortSignal.timeout(30_000) });
+        const requested = await api<{ items: typeof needs }>('/workspace/scheme-needs', { signal: controller.signal });
         setNeeds(requested.items);
       }
-    } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
+    } catch (e) { if (!controller.signal.aborted) setError((e as Error).message); } finally { if (request.current === controller) setBusy(false); }
   }
-  useEffect(() => { void load(); }, [category, appliedQuery]);
+  useEffect(() => { void load(); return () => request.current?.abort(); }, [category, appliedQuery]);
   useEffect(() => { if (selected) {
     const input = document.querySelector<HTMLTextAreaElement>('.task-composer textarea');
     input?.focus(); input?.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -46,8 +50,8 @@ export default function WorkspaceDocuments({ category }: { category: Category })
   const rows = data?.documents.filter((d) => filter === 'all' || (category === 'contracts' ? d.contract_kind === filter :
     filter === 'ready' ? d.status === 'approved' : d.status !== 'approved')) ?? [];
   async function checkPackage() {
-    setBusy(true); setError('');
-    try { setCheck(await api('/archive/id-check')); } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
+    setChecking(true); setError('');
+    try { setCheck(await api('/archive/id-check')); } catch (e) { setError((e as Error).message); } finally { setChecking(false); }
   }
   function searchNow() { if (busy) return; if (query === appliedQuery) void load(); else setAppliedQuery(query); }
   return <>
@@ -62,7 +66,7 @@ export default function WorkspaceDocuments({ category }: { category: Category })
     <TaskComposer placeholder={PLACEHOLDERS[category]} documentId={selected?.id} title={selected?.title} />
     {selected && <button className="btn small" onClick={() => setSelected(null)}>Снять выбор документа</button>}
     {category === 'documents' && <div className="panel compact-panel"><div className="row"><strong>Готовность комплекта ИД</strong>
-      <button className="btn small" disabled={busy} onClick={() => void checkPackage()}>Проверить комплектность</button></div>
+      <button className="btn small" disabled={checking} onClick={() => void checkPackage()}>{checking ? 'Проверяю…' : 'Проверить комплектность'}</button></div>
       {check && <p>Актов: {check.acts} · комплектных: {check.complete} · отсутствующих ссылок: {check.missing_refs}</p>}</div>}
     {category === 'schemes' && <div className="panel"><h2>Какие схемы ещё нужны</h2><p className="small muted">По ссылкам и замечаниям имеющихся актов. Задание на другую схему можно дать текстом или голосом.</p>
       {!needs.length && <p className="muted">Не найдены акты с отсутствующими схемами.</p>}
@@ -87,7 +91,7 @@ export default function WorkspaceDocuments({ category }: { category: Category })
           {!!doc.reading.empty_pages?.length && <p className="small text-bad">Нет текста на страницах: {doc.reading.empty_pages.join(', ')}</p>}
         </div>
         <div className="row document-actions"><button className="btn small primary" onClick={() => setSelected(doc)}>Задать вопрос</button>
-          {doc.file_name && <button className="btn small" onClick={() => void openFile(`/documents/${doc.id}/file`, doc.title).catch((e) => setError(e.message))}>Открыть</button>}
+          {doc.file_name && <button className="btn small" onClick={() => void openFile(`/documents/${doc.id}/file`, (doc.file_name || doc.title)).catch((e) => setError(e.message))}>Открыть</button>}
           {category === 'schemes' && doc.file_name && <button className="btn small" onClick={() => void download(`/documents/${doc.id}/file`, doc.file_name ?? undefined).catch((e) => setError(e.message))}>Скачать</button>}
         </div>
       </article>)}</div>
