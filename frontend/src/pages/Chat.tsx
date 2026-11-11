@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { api, download, fetchBlob, openFile, streamChat, type ChatReply, type Citation, type DocRef } from "../api";
 import Icon from "../components/Icon";
 import { PTO_SUGGESTIONS } from "../modules/executive/config";
+import { takeAssistantTask } from '../modules/executive/assistantTask';
 
 interface Msg {
   role: "user" | "assistant";
@@ -26,7 +27,7 @@ const SUGGESTIONS = [
   "Подготовь письмо заказчику о направлении исполнительной документации",
 ];
 
-function Citations({ items }: { items: Citation[] }) {
+function Citations({ items, onError }: { items: Citation[]; onError: (message: string) => void }) {
   if (!items?.length) return null;
   return (
     <div className="citations">
@@ -36,7 +37,7 @@ function Citations({ items }: { items: Citation[] }) {
           <summary>
             [{i + 1}] {c.citation}
             {(c.fact_snapshot_id || c.document_id || c.source_id) && (
-              <button className="link small" onClick={(e) => { e.preventDefault(); void openFile(c.fact_snapshot_id ? `/brain/facts/snapshots/${c.fact_snapshot_id}/file${c.object_id ? `?object_id=${c.object_id}` : ""}` : c.document_id ? `/documents/${c.document_id}/file` : `/knowledge/sources/${c.source_id}/file`, c.title, c.page); }}>
+              <button className="link small" onClick={(e) => { e.preventDefault(); void openFile(c.fact_snapshot_id ? `/brain/facts/snapshots/${c.fact_snapshot_id}/file${c.object_id ? `?object_id=${c.object_id}` : ""}` : c.document_id ? `/documents/${c.document_id}/file` : `/knowledge/sources/${c.source_id}/file`, c.title, c.page).catch((e) => onError(e.message)); }}>
                 {c.page ? `открыть стр. ${c.page}` : "открыть"}
               </button>
             )}
@@ -51,15 +52,15 @@ function Citations({ items }: { items: Citation[] }) {
   );
 }
 
-function Docs({ items }: { items: DocRef[] }) {
+function Docs({ items, onError }: { items: DocRef[]; onError: (message: string) => void }) {
   if (!items?.length) return null;
   return (
     <div className="doc-cards">
       {items.map((d) => (
         <span className="doc-chip" key={d.id}>
           <span className="doc-chip-title" title={d.title}>{d.title}</span>
-          <button className="btn small" onClick={() => void openFile(`/documents/${d.id}/file`, d.title)}>Открыть</button>
-          <button className="btn small" onClick={() => void download(`/documents/${d.id}/file`, d.title)} title="Скачать">⬇</button>
+          <button className="btn small" onClick={() => void openFile(`/documents/${d.id}/file`, d.title).catch((e) => onError(e.message))}>Открыть</button>
+          <button className="btn small" onClick={() => void download(`/documents/${d.id}/file`, d.title).catch((e) => onError(e.message))} title="Скачать">⬇</button>
         </span>
       ))}
     </div>
@@ -93,7 +94,9 @@ export default function Chat({ workspace = "platform" }: { workspace?: "platform
   const [showHistory, setShowHistory] = useState(false);
   const executive = workspace === "executive";
   const [agents, setAgents] = useState<Agent[]>([]);
-  const [agent, setAgent] = useState(executive ? "pto" : "");
+  const [agent, setAgent] = useState(executive ? "assistant" : "");
+  const [documentId, setDocumentId] = useState<string | null>(null);
+  const [documentTitle, setDocumentTitle] = useState('');
   const [sessions, setSessions] = useState<{ id: string; title: string }[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Msg[]>([]);
@@ -108,6 +111,13 @@ export default function Chat({ workspace = "platform" }: { workspace?: "platform
   const [speakReplies, setSpeakReplies] = useState(false);
   const [recording, setRecording] = useState(false);
   const recorder = useRef<MediaRecorder | null>(null);
+  useEffect(() => {
+    const timer = setTimeout(() => { const task = takeAssistantTask(); if (task) {
+      setDocumentId(task.document_id ?? null); setDocumentTitle(task.title ?? '');
+      void send(task.text, task.document_id);
+    } }, 0);
+    return () => clearTimeout(timer);
+  }, []);
 
   const loadSessions = () => api<{ id: string; title: string }[]>(`/chat/sessions?workspace=${workspace}`).then(setSessions).catch(() => {});
 
@@ -170,7 +180,7 @@ export default function Chat({ workspace = "platform" }: { workspace?: "platform
     setMessages(await api<Msg[]>(`/chat/sessions/${id}?workspace=${workspace}`));
   }
 
-  async function send(message: string) {
+  async function send(message: string, selectedDocument?: string) {
     if (!message.trim() || busy) return;
     setError("");
     setText("");
@@ -180,7 +190,8 @@ export default function Chat({ workspace = "platform" }: { workspace?: "platform
     const controller = new AbortController();
     pending.current = controller;
     try {
-      const r = await streamChat<ChatReply>({ message, session_id: sessionId, agent: agent || null, workspace }, (e) => {
+      const r = await streamChat<ChatReply>({ message, session_id: sessionId, agent: agent || null, workspace,
+        document_id: selectedDocument || documentId || null }, (e) => {
         if (e.type === "route" && e.title) setSteps((s) => [...s, `Отвечает: ${e.title}`]);
         if (e.type === "step" && e.label) setSteps((s) => [...s, e.label!]);
       }, { signal: controller.signal });
@@ -209,6 +220,7 @@ export default function Chat({ workspace = "platform" }: { workspace?: "platform
           onClick={() => {
             setSessionId(null);
             setMessages([]);
+            setDocumentId(null); setDocumentTitle('');
             setError("");
             setShowHistory(false);
           }}
@@ -226,7 +238,7 @@ export default function Chat({ workspace = "platform" }: { workspace?: "platform
         <div className="chat-toolbar">
           <div className="chat-identity"><span className="synapse-avatar"><Icon name="spark" size={18} /></span><div><strong>Синапс</strong><span>Помощник {executive ? "инженера ПТО" : "по проекту"}</span></div></div>
           <button className="btn small chat-history-toggle" aria-expanded={showHistory} onClick={() => setShowHistory(!showHistory)}><Icon name="chat" size={15} />{showHistory ? "Закрыть историю" : "История"}</button>
-          <div className="field agent-picker">
+          {!executive && <div className="field agent-picker">
             <label className="sr-only" htmlFor="chat-agent">Специалист</label>
             <select id="chat-agent" aria-label="Специалист" value={agent} onChange={(e) => setAgent(e.target.value)}>
               {!executive && <option value="">Автоматически (супервизор)</option>}
@@ -236,7 +248,7 @@ export default function Chat({ workspace = "platform" }: { workspace?: "platform
                 </option>
               ))}
             </select>
-          </div>
+          </div>}
           {voice.tts && (
             <div className="field" style={{ flex: "0 0 auto" }}>
               <label>
@@ -268,8 +280,8 @@ export default function Chat({ workspace = "platform" }: { workspace?: "platform
               <div className="bubble">{m.role === "assistant" ? <Rich text={m.content} /> : m.content}</div>
               {m.role === "assistant" && (
                 <>
-                  <Docs items={m.meta?.documents ?? []} />
-                  <Citations items={m.meta?.citations ?? []} />
+                  <Docs items={m.meta?.documents ?? []} onError={setError} />
+                  <Citations items={m.meta?.citations ?? []} onError={setError} />
                   {(m.meta?.provider === "offline" || m.meta?.model === "offline") && <p className="small text-bad">Ответ получен без языковой модели. Проверьте подключение ИИ; поиск по документам доступен отдельно в разделе «Синапс».</p>}
                   <div className="meta">{agentTitle(m.agent) || "Синапс"}
                     {(m.meta?.provider || !!m.meta?.trace?.length) && <details className="chat-tech"><summary>Детали ответа</summary><p>{m.meta?.provider}{m.meta?.routed_by ? ` · ${m.meta.routed_by}` : ""}</p>{m.meta?.trace?.map((t, n) => <span key={n}>{t.tool}{t.error ? " · ошибка" : ""}<br /></span>)}</details>}
@@ -305,15 +317,15 @@ export default function Chat({ workspace = "platform" }: { workspace?: "platform
               }
             }}
           />
-          {voice.stt && (
-            <button className={`btn ${recording ? "recording" : ""}`} title="Голосовая команда" onClick={toggleRecording} disabled={busy}>
+          {(voice.stt || executive) && (
+            <button className={`btn ${recording ? "recording" : ""}`} title="Голосовая команда" aria-label="Голосовая команда" onClick={() => voice.stt ? void toggleRecording() : setError('Голос не подключён. Откройте «Базы данных» → «ИИ и качество чтения» и настройте распознавание.')} disabled={busy}>
               {recording ? "Стоп" : <Icon name="mic" />}
             </button>
           )}
           <button className="btn primary" aria-label="Отправить сообщение" disabled={busy || !text.trim()} onClick={() => send(text)}>
             <span>Отправить</span><Icon name="arrow" size={18} />
           </button>
-        </div><div className="composer-caption"><span>Основания — в ваших документах. Решение — за вами.</span><span className="composer-keyboard">Enter ↵</span></div></div>
+        </div>{documentTitle && <div className="small muted">Документ: {documentTitle}</div>}<div className="composer-caption"><span>Основания — в ваших документах. Решение — за вами.</span><span className="composer-keyboard">Enter ↵</span></div></div>
       </div>
     </div>
   );

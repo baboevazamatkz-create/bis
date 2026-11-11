@@ -91,7 +91,24 @@ def index_pages(db: Session, embedder: Embedder, source: KnowledgeSource, pages:
 
     # без pgvector векторы не нужны: поиск полнотекстовый и по номерам пунктов
     keep = VECTOR or getattr(embedder, "semantic", False)  # смысловые векторы храним и без pgvector
-    vectors = embedder.embed_documents(texts) if texts and keep else [None] * len(texts)
+    vectors = [None] * len(texts)
+    if texts and keep:
+        try:
+            vectors = embedder.embed_documents(texts)
+            if len(vectors) != len(texts):
+                raise ValueError('Провайдер вернул неполный набор векторов')
+            if VECTOR:
+                from bis.models.knowledge import EMBEDDING_DIM
+
+                if any(len(v) != EMBEDDING_DIM for v in vectors):
+                    raise ValueError('Размерность векторов не совпадает с индексом')
+            source.meta = {**(source.meta or {}), 'embedding_status': 'ready'}
+        except Exception as exc:  # noqa: BLE001 — preserve text and citations when an optional AI service fails
+            vectors = [None] * len(texts)
+            source.meta = {**(source.meta or {}), 'embedding_status': 'error',
+                           'embedding_error': f'{type(exc).__name__}: {str(exc)[:200]}'}
+    else:
+        source.meta = {**(source.meta or {}), 'embedding_status': 'lexical'}
     for c, vec in zip(chunks, vectors, strict=True):
         db.add(
             KnowledgeChunk(

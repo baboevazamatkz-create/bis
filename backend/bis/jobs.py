@@ -166,5 +166,8 @@ def load_all_jobs() -> dict[str, Job]:
     import bis.services.library_jobs  # noqa: F401
     import bis.services.project_reading_jobs  # noqa: F401
     import bis.services.works  # noqa: F401
+    from bis.services.source_reread import register_job
+
+    register_job()
 
     return JOBS

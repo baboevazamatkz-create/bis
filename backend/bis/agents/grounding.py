@@ -146,6 +146,10 @@ def retrieve(ctx, question: str) -> str:
                 focused = ctx.focus.get("document")
                 if focused and (not selected or re.search(r"\b(его|ему|него|нём|нему|этому|этого|этот|этом)\b", question, re.I)):
                     selected = [{"id": focused}]
+            if ctx.selected_document and not re.search(r'№\s*[\w./-]+', question):
+                selected = [{'id': ctx.selected_document}, *(d for d in selected if d['id'] != ctx.selected_document)]
+                if is_contract:
+                    ctx.choices = []
             excerpts = []
             previous_focus = dict(ctx.focus)
             for item in selected[:2]:

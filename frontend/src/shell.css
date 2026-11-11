@@ -374,3 +374,23 @@ td { padding-top: 14px; padding-bottom: 14px; }
 .project-sheet pre { max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; }
 .project-reading-workspace .row > label { display: inline-flex; align-items: center; gap: 8px; }
 .project-reading-workspace input[type="checkbox"] { width: auto; margin: 0; }
+.workspace-documents { display: grid; }
+.workspace-search input { flex: 1; width: auto; min-width: 160px; }
+.workspace-document { display: flex; justify-content: space-between; gap: 20px; padding: 22px 0; border-top: 1px solid var(--border, #e4e8e2); }
+.workspace-document.selected { background: var(--soft); border-radius: 12px; padding-inline: 14px; }
+.workspace-document-copy { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.workspace-document-copy p { margin: 6px 0; }
+.document-actions { align-self: center; flex-wrap: wrap; justify-content: flex-end; }
+.section-list-header { justify-content: space-between; align-items: center; }
+.task-composer textarea { flex: 1; min-width: 220px; }
+.task-composer .row { align-items: center; }
+.compact-panel { padding-block: 18px; }
+.database-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 24px; }
+.database-tab { padding: 20px 12px; border: 1px solid var(--border, #e4e8e2); border-radius: 12px; background: transparent; color: inherit; text-align: left; font: inherit; cursor: pointer; }
+.database-tab.active { background: var(--accent-soft); border-color: var(--accent); }
+.database-connection { border-top: 1px solid var(--border, #e4e8e2); padding: 22px 0; }
+.database-files > div { padding: 12px 0; display: grid; gap: 5px; overflow-wrap: anywhere; border-bottom: 1px solid var(--border, #e4e8e2); }
+.connection-editor { padding: 20px 0; display: grid; gap: 10px; }
+.connection-editor input { min-width: 0; flex: 1; }
+.workspace-id .nav-item span { white-space: normal; line-height: 1.45; }
+@media(max-width: 700px) { .workspace-document { flex-direction: column; gap: 12px; } .document-actions { align-self: flex-start; } .database-tabs { grid-template-columns: 1fr; } .database-tab { padding: 14px; } .task-composer textarea { flex-basis: 100%; min-width: 0; } }

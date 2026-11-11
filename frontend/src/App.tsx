@@ -1,11 +1,9 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { api, DEMO, setToken, setOrganizationScope, activeProject, setActiveProject, type User } from "./api";
 import { previewFor } from "./demo/mock";
 import Icon from "./components/Icon";
-import Login from "./pages/Login";
 import ExecutiveWorkspace from "./modules/executive/ExecutiveWorkspace";
-import { ID_NAV, PLATFORM_NAV, parseRoute } from "./modules/navigation";
-const PlatformWorkspace = lazy(() => import("./modules/platform/PlatformWorkspace"));
+import { ID_NAV, parseRoute } from "./modules/navigation";
 
 export default function App() {
   const [mobile, setMobile] = useState(() => matchMedia("(max-width: 960px)").matches);
@@ -13,6 +11,7 @@ export default function App() {
   const [theme, setTheme] = useState(() => { try { return localStorage.getItem("bis:theme") ?? "light"; } catch { return "light"; } });
   const nav = useRef<HTMLElement>(null);
   const menuButton = useRef<HTMLButtonElement>(null);
+  const [startError, setStartError] = useState("");
   const [user, setUser] = useState<User | null>(null);
   const [project, setProject] = useState("");
   const [orgName, setOrgName] = useState("");
@@ -27,7 +26,7 @@ export default function App() {
     window.addEventListener("bis:logout", onLogout);
     window.addEventListener("hashchange", onRoute);
     window.addEventListener("bis:preview", onPreview);
-    api<{ user: User }>("/auth/me").then((r) => setUser(r.user)).catch(() => setToken(null)).finally(() => setLoading(false));
+    api<{ user: User }>("/auth/me").then((r) => setUser(r.user)).catch((e) => { setToken(null); setStartError(e.message); }).finally(() => setLoading(false));
     return () => {
       window.removeEventListener("bis:logout", onLogout);
       window.removeEventListener("hashchange", onRoute);
@@ -70,9 +69,9 @@ export default function App() {
   }, [mobile, menuOpen]);
   if (loading) return <div className="login muted">Загрузка…</div>;
   if (!user && DEMO) return <div className="login muted">Демо-данные не загружены</div>;
-  if (!user) return <Login onLogin={setUser} />;
+  if (!user) return <div className="login"><h1>BIS</h1><p>Не удалось открыть рабочее пространство.</p><p className="muted">{startError || "Перезапустите локальный BIS-Pilot."}</p><button className="btn primary" onClick={() => window.location.reload()}>Повторить подключение</button></div>;
   setOrganizationScope(user.organization_id);
-  const groups = route.workspace === "id" ? ID_NAV : PLATFORM_NAV;
+  const groups = ID_NAV;
   return (
     <div className={`layout workspace-${route.workspace}`}>
       <a className="skip-link" href="#main-content" onClick={(e) => { e.preventDefault(); document.getElementById("main-content")?.focus(); }}>Перейти к содержимому</a>
@@ -96,7 +95,7 @@ export default function App() {
             <div className={`nav-block ${!group.title ? "nav-bottom" : ""}`} key={i}>{group.title && <div className="nav-group">{i === 0 && route.workspace === "id" ? "Рабочее пространство" : group.title}</div>}{links}</div>;
         })}</div>
         <div className="sidebar-footer"><div className="user-avatar">{user.full_name.split(" ").slice(0, 2).map((s) => s[0]).join("")}</div><div className="user-info"><span className="user-name">{user.full_name}</span><small>{orgName || "Текущая организация"}</small></div>
-          <button className="icon-button" aria-label="Выйти из аккаунта" title="Выйти" onClick={() => { setToken(null); window.location.reload(); }}><Icon name="logout" size={16} /></button></div>
+</div>
       </nav>
       <main className="main">
         <header className="app-header">
@@ -112,7 +111,7 @@ export default function App() {
         <div id="main-content" tabIndex={-1} className={`page-content ${route.page === "chat" ? "page-chat" : ""}`}>
         {DEMO && <div className="demo-banner">Демо-версия: данные вымышленные</div>}
         <Suspense fallback={<p className="muted">Загрузка рабочего пространства…</p>}>
-          {route.workspace === "id" ? <ExecutiveWorkspace key={`id:${user.organization_id}:${project}`} page={route.page} user={user} /> : <PlatformWorkspace key={`platform:${user.organization_id}:${project}`} page={route.page} user={user} />}
+          <ExecutiveWorkspace key={`id:${user.organization_id}:${project}`} page={route.page} user={user} />
         </Suspense>
         </div>
       </main>

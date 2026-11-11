@@ -5,6 +5,7 @@ import datetime as dt
 import hashlib
 import mimetypes
 import os
+from contextlib import contextmanager
 from pathlib import Path
 
 from sqlalchemy import select
@@ -19,7 +20,7 @@ from bis.services import archive
 from bis.services.documents import save_document
 
 MAX_FILE = 100 * 1024 * 1024
-SUPPORTED = {".pdf", ".docx", ".xlsx", ".txt", ".md", ".csv", ".png", ".jpg", ".jpeg", ".tif", ".tiff"}
+SUPPORTED = {".pdf", ".docx", ".xlsx", ".xlsm", ".txt", ".md", ".csv", ".png", ".jpg", ".jpeg", ".tif", ".tiff"}
 
 
 def checked_path(value):
@@ -39,9 +40,10 @@ def infer_form(name):
     return None
 
 
-def is_form(path):
+def is_form(path, level="knowledge"):
     low = path.lower()
-    return any(x in low for x in ("шаблон", "бланк", "формы", "forms", "templates")) or infer_form(low) in ("aosr", "aook")
+    return any(x in low for x in ("шаблон", "бланк", "формы", "forms", "templates")) or (
+        level == "knowledge" and infer_form(low) in ("aosr", "aook"))
 
 
 def retire(db, version):
@@ -55,7 +57,7 @@ def retire(db, version):
             doc.status = "replaced"
 
 
-def scan(db, storage, embedder, gateway, connection):
+def scan(db, storage, embedder, gateway, connection, *, force=False, checkpoint=None):
     root = checked_path(connection.path)
     if not root.is_dir():
         raise FileNotFoundError("Папка недоступна. Проверьте путь и подключение диска.")
@@ -96,15 +98,18 @@ def scan(db, storage, embedder, gateway, connection):
                     raise ValueError("Файл меняется во время чтения; повторите синхронизацию")
                 digest = hashlib.sha256(data).hexdigest()
                 old = db.get(LibraryVersion, item.active_version_id) if item.active_version_id else None
-                if old and old.sha256 == digest and item.state == 'ready':
+                if old and old.sha256 == digest and item.state == 'ready' and not force:
                     counts['unchanged'] += 1
                     continue
                 pages, method = archive._pages(data, path.name, mimetypes.guess_type(path.name)[0])
                 if not any(p.text.strip() for p in pages):
-                    raise ValueError("Нет извлечённого текста. Нужен OCR или проверка файла")
+                    raise ValueError(next((p.warning for p in pages if p.warning),
+                                          "Нет извлечённого текста. Нужен OCR или проверка файла"))
                 text = '\n'.join(p.text for p in pages)
-                form = is_form(relative)
-                dtype, _ = archive.detect_type(gateway, text, path.name)
+                form = is_form(relative, connection.level)
+                # Initial indexing must not wait for a cloud classifier for each file.
+                # Unknown types stay visible for review; semantic enrichment runs separately.
+                dtype, _ = archive.detect_type(None, text, path.name)
                 kind = 'norm' if connection.level == 'knowledge' and not form else (
                     'project_doc' if dtype == 'project_doc' else 'org_document')
                 versions = db.scalars(select(LibraryVersion).where(LibraryVersion.file_id == item.id)).all()
@@ -120,16 +125,19 @@ def scan(db, storage, embedder, gateway, connection):
                 src.status = 'unknown' if kind == 'norm' else 'active'
                 src.designation = detect_designation(text, path.name) if kind == "norm" else None
                 src.meta = {**(src.meta or {}), 'library_version_id': str(version.id), 'relative_path': relative,
-                            'level': connection.level, 'text_from': method}
+                            'level': connection.level, 'text_from': method, 'reading': archive.reading_report(pages, method)}
                 version.source_id = src.id
                 if connection.organization_id:
                     doc = save_document(db, storage, org_id=connection.organization_id,
                         kind=archive.KIND.get(dtype, 'other') if not form else 'other', title=path.stem,
-                        data={'library_scope': connection.level, 'library_version_id': str(version.id)},
+                        data={'library_scope': connection.level, 'library_version_id': str(version.id),
+                              'text_from': method, 'reading': archive.reading_report(pages, method)},
                         file_bytes=data, file_name=path.name, created_by='system:library',
                         object_id=connection.object_id, doc_date=archive.doc_date(text, dtype),
                         mime=version.mime or 'application/octet-stream')
                     doc.source, doc.status = 'library', 'registered'
+                    if dtype == 'contract':
+                        doc.data = {**doc.data, 'contract_kind': archive.contract_kind(text)}
                     src.document_id, version.document_id = doc.id, doc.id
                 retire(db, old)
                 item.active_version_id, item.state, item.error = version.id, 'ready', None
@@ -140,6 +148,9 @@ def scan(db, storage, embedder, gateway, connection):
         except Exception as exc:  # noqa: BLE001 — isolate parser/model errors to one file
             item.state, item.error = 'error', f'Ошибка чтения: {type(exc).__name__}'
             counts['errors'] += 1
+        if checkpoint:
+            connection.error = f"Прочитано: {counts['updated']}; ошибок: {counts['errors']}"
+            checkpoint()
     for relative, item in known.items():
         if relative not in seen and item.state != 'removed':
             retire(db, db.get(LibraryVersion, item.active_version_id) if item.active_version_id else None)
@@ -151,21 +162,44 @@ def scan(db, storage, embedder, gateway, connection):
     return counts
 
 
-def execute(connection_id):
+@contextmanager
+def connection_lease(connection_id):
+    """Keep folder ownership across per-file commits without holding a row transaction."""
+    from sqlalchemy import text
+
+    from bis.db import get_engine
+
+    key = int.from_bytes(connection_id.bytes[:8], 'big', signed=True)
+    with get_engine().connect() as lease:
+        acquired = bool(lease.scalar(text('SELECT pg_try_advisory_lock(:key)'), {'key': key}))
+        lease.commit()
+        try:
+            yield acquired
+        finally:
+            if acquired:
+                lease.execute(text('SELECT pg_advisory_unlock(:key)'), {'key': key})
+                lease.commit()
+
+
+def execute(connection_id, *, force=False):
     from bis.db import SessionLocal
-    from bis.llm.gateway import get_gateway
-    from bis.rag.embeddings import get_embedder
+    from bis.rag.embeddings import get_query_embedder
     from bis.services.storage import get_storage
 
-    with SessionLocal() as db:
-        connection = db.scalar(select(LibraryConnection).where(LibraryConnection.id == connection_id,
-            LibraryConnection.enabled.is_(True)).with_for_update(skip_locked=True))
-        if connection is None:
+    with connection_lease(connection_id) as acquired:
+        if not acquired:
             return
-        try:
-            scan(db, get_storage(), get_embedder(), get_gateway(), connection)
-        except Exception as exc:  # noqa: BLE001 — an unavailable mount must not delete its contents
-            db.rollback()
-            connection = db.get(LibraryConnection, connection_id)
-            connection.status, connection.error = 'error', str(exc)[:1000]
-        db.commit()
+        with SessionLocal() as db:
+            connection = db.scalar(select(LibraryConnection).where(LibraryConnection.id == connection_id,
+                LibraryConnection.enabled.is_(True)))
+            if connection is None:
+                return
+            connection.status, connection.error = 'reading', None
+            db.commit()
+            try:
+                scan(db, get_storage(), get_query_embedder(), None, connection, force=force, checkpoint=db.commit)
+            except Exception as exc:  # noqa: BLE001 — an unavailable mount must not delete its contents
+                db.rollback()
+                connection = db.get(LibraryConnection, connection_id)
+                connection.status, connection.error = 'error', str(exc)[:1000]
+            db.commit()

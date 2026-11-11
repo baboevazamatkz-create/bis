@@ -56,6 +56,15 @@ def recognize_pages(data: bytes, mime: str | None, client: httpx.Client | None =
     mime = (mime or "").lower()
     if "pdf" in mime:
         items = [("PDF", p) for p in _pdf_pages(data)]
+    elif any(kind in mime for kind in ('tiff', 'bmp', 'gif', 'webp')):
+        from PIL import Image, ImageSequence
+
+        with Image.open(io.BytesIO(data)) as image:
+            items = []
+            for frame in ImageSequence.Iterator(image):
+                buf = io.BytesIO()
+                frame.convert('RGB').save(buf, format='JPEG')
+                items.append(('JPEG', buf.getvalue()))
     elif "png" in mime:
         items = [("PNG", data)]
     else:

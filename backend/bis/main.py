@@ -28,6 +28,7 @@ from bis.api import (
     telegram,
     voice,
     works,
+    workspace,
 )
 from bis.config import get_settings
 from bis.middleware import RequestLogMiddleware
@@ -47,6 +48,7 @@ def create_app() -> FastAPI:
 
     api = APIRouter(prefix="/api")
     api.include_router(admin.router)
+    api.include_router(workspace.router)
     api.include_router(brain.router)
     api.include_router(facts.router)
     api.include_router(projects.router)

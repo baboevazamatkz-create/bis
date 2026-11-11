@@ -28,27 +28,19 @@ async def main():
         page.set_default_timeout(8000)
         errors = []
         page.on("pageerror", lambda e: errors.append(str(e)))
-        await page.goto(BASE + "/#/id/brain", wait_until="networkidle")
-        await page.get_by_placeholder("Что найти:", exact=False).wait_for()
+        await page.goto(BASE + "/#/id/project", wait_until="networkidle")
 
         async def fail(route):
             await route.fulfill(status=500, json={"detail": "Тестовая ошибка поиска"})
 
-        await page.route("**/api/brain/search?**", fail)
-        await page.get_by_placeholder("Что найти:", exact=False).fill("КЖ0")
-        await page.get_by_role("button", name="Найти", exact=True).click()
+        await page.route("**/api/workspace/documents?**", fail)
+        await page.get_by_label("Поиск документов").fill("КЖ0")
+        await page.get_by_role("button", name="Найти в списке", exact=True).click()
         await expect(page.get_by_role("alert")).to_have_text("Тестовая ошибка поиска")
         await expect(
-            page.get_by_role("button", name="Найти", exact=True)
+            page.get_by_role("button", name="Найти в списке", exact=True)
         ).to_be_enabled()
         await page.screenshot(path=str(OUT / "visible-search-error.png"))
-        await page.goto(BASE + "/#/id/knowledge", wait_until="networkidle")
-        await page.route("**/api/knowledge/search?**", fail)
-        await page.get_by_placeholder("Спросите своими словами:", exact=False).fill(
-            "КЖ"
-        )
-        await page.get_by_role("button", name="Найти", exact=True).click()
-        await expect(page.get_by_role("alert")).to_have_text("Тестовая ошибка поиска")
         await page.goto(BASE + "/#/id/chat", wait_until="networkidle")
 
         async def stream_error(route):
@@ -119,8 +111,7 @@ async def main():
         assert not errors, errors
         result.update(
             {
-                "brain_error_visible": True,
-                "knowledge_error_visible": True,
+                "document_search_error_visible": True,
                 "stream_error_visible": True,
                 "cancel_unblocks_chat": True,
                 "javascript_errors": errors,

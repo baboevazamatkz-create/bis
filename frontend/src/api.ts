@@ -151,7 +151,9 @@ export async function download(path: string, fallbackName = "document") {
     return;
   }
   const token = getToken();
-  const res = await fetch(`/api${path}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+  const headers = new Headers(); projectHeader(headers);
+  if (token) headers.set('Authorization', `Bearer ${token}`);
+  const res = await fetch(`/api${path}`, { headers });
   if (!res.ok) throw new ApiError(res.status, "Не удалось скачать файл");
   const cd = res.headers.get("Content-Disposition") ?? "";
   const match = /filename\*=UTF-8''([^;]+)/.exec(cd);

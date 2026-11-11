@@ -68,7 +68,15 @@ def _pages(data: bytes, name: str, mime: str | None) -> tuple[list[Page], str]:
     from bis.rag.columns import split_columns
 
     pages, how = _raw_pages(data, name, mime)
-    return [Page(p.number, split_columns(p.text)) for p in pages], how
+    return [Page(p.number, split_columns(p.text), p.warning) for p in pages], how
+
+
+def reading_report(pages, method):
+    empty = [p.number for p in pages if p.number is not None and not p.text.strip()]
+    sparse = [p.number for p in pages if p.number is not None and len(p.text.strip()) < 50]
+    return {'segments': len(pages), 'with_text': sum(bool(p.text.strip()) for p in pages), 'sparse_pages': sparse,
+            'empty_pages': empty, 'complete': bool(pages) and not sparse and not any(p.warning for p in pages) and any(p.text.strip() for p in pages),
+            'method': method, 'warnings': list(dict.fromkeys(p.warning for p in pages if p.warning))}
 
 
 def _raw_pages(data: bytes, name: str, mime: str | None) -> tuple[list[Page], str]:
@@ -90,11 +98,36 @@ def _raw_pages(data: bytes, name: str, mime: str | None) -> tuple[list[Page], st
     if ext in (".dwg",):
         return [], "none"
     if (mime or "").startswith("image/") or ext in (".jpg", ".jpeg", ".png", ".tif", ".tiff"):
-        return [Page(1, t) for t in _ocr_pages(data, mime or mimetypes.guess_type(name)[0])[:1]], "ocr"
+        recognized = _ocr_pages(data, mime or mimetypes.guess_type(name)[0])
+        return ([Page(i + 1, t) for i, t in enumerate(recognized)] or
+                [Page(1, '', getattr(recognized, 'error', None) or 'OCR не извлёк текст изображения')]), "ocr"
     try:
         parsed = parse_file(data, name, mime)
     except UnsupportedFormat:
         return [], "none"
+    if ext in ('.xlsx', '.xlsm'):
+        warnings = []
+        if parsed.meta.get('uncached_formulas'):
+            warnings.append(f"Формул без сохранённых результатов: {len(parsed.meta['uncached_formulas'])}")
+        if parsed.meta.get('truncated_sheets'):
+            warnings.append('Не полностью прочитаны листы: ' + ', '.join(parsed.meta['truncated_sheets']))
+        if warnings:
+            for page in parsed.pages:
+                page.warning = '; '.join(warnings)
+        return parsed.pages, 'parsed'
+    if ext == '.docx' and not parsed.text.strip():
+        import zipfile
+
+        with zipfile.ZipFile(__import__('io').BytesIO(data)) as package:
+            images = [n for n in package.namelist() if n.startswith('word/media/') and
+                      Path(n).suffix.lower() in ('.png', '.jpg', '.jpeg', '.tif', '.tiff', '.bmp')]
+            pages = []
+            for image in images:
+                recognized = _ocr_pages(package.read(image), mimetypes.guess_type(image)[0])
+                pages.extend(Page(None, text) for text in recognized)
+                if not recognized:
+                    pages.append(Page(None, '', getattr(recognized, 'error', None) or f'Не прочитано изображение {image}'))
+        return pages or [Page(None, '', 'В DOCX нет извлечённого текста; преобразуйте скан в PDF')], 'ocr_docx'
     if parsed.meta.get("needs_ocr") or not parsed.text.strip():
         scanned = _ocr_pages(data, mime or "application/pdf")
         if any(t.strip() for t in scanned):
@@ -104,20 +137,32 @@ def _raw_pages(data: bytes, name: str, mime: str | None) -> tuple[list[Page], st
             for i in range(size):
                 native = parsed.pages[i].text if i < len(parsed.pages) else ""
                 recognized = scanned[i] if i < len(scanned) else ""
-                pages.append(Page(i + 1, native if len(native.strip()) >= 50 else recognized or native))
+                from bis.rag.parsers import text_quality
+
+                pages.append(Page(i + 1, native if len(native.strip()) >= 50 and text_quality(native) >= 0.5 else recognized or native))
             return pages, "ocr"
+        error = getattr(scanned, 'error', None) or 'OCR не извлёк текст страницы'
+        for page in parsed.pages:
+            if page.number in parsed.meta.get('ocr_pages', []) or not page.text.strip():
+                page.warning = error
     return parsed.pages, "parsed"
 
 
 def _ocr_pages(data: bytes, mime: str | None) -> list[str]:
     from bis import ocr
 
+    class OCRResult(list):
+        error: str | None = None
+
+    result = OCRResult()
     if not ocr.available():
-        return []
+        result.error = 'OCR не подключён: настройте распознавание сканов'
+        return result
     try:
         return ocr.recognize_pages(data, mime)
-    except ocr.OCRError:
-        return []
+    except ocr.OCRError as exc:
+        result.error = str(exc)[:500]
+        return result
 
 
 def detect_type(gateway, text: str, name: str) -> tuple[str, str]:
@@ -270,8 +315,7 @@ def import_file(db: Session, storage: Storage, gateway, embedder, org_id: uuid.U
         title = f"{TITLES[dtype]}: {title}"
     doc = save_document(db, storage, org_id=org_id, kind=kind, title=title[:900],
                         data={"sha256": digest, "archive": True, "detected_type": dtype, "detected_by": by, "text_from": how,
-                              "reading": {"segments": len(pages), "with_text": sum(bool(p.text.strip()) for p in pages),
-                                          "empty_pages": [p.number for p in pages if p.number and not p.text.strip()]},
+                              "reading": reading_report(pages, how),
                               "folder": folder[:300]},
                         file_bytes=data, file_name=Path(name).name, created_by=actor, object_id=object_id,
                         mime=mime or "application/octet-stream")

@@ -11,13 +11,14 @@ from bis.services import project_alignment, project_reading
 class ReadProject(BaseModel):
     document_id: str
     page_budget: int = Field(4, ge=1, le=12)
-    with_vision: bool = False
+    with_vision: bool | None = Field(None, description='None — использовать подключённую модель зрения автоматически; false — только текст')
 
 
 @tool('read_project_document', 'Прочитать следующие страницы РД: штампы, строки спецификаций, элементы и ссылки. '
       'Возвращает цитаты и охват. Визуальное предположение не является подтверждённой позицией.', scopes=('documents:read',))
 def read_project_document(ctx, args: ReadProject):
-    return project_reading.view(project_reading.read(ctx, args.document_id, budget=args.page_budget, with_vision=args.with_vision))
+    vision = args.with_vision if args.with_vision is not None else bool(ctx.gateway and ctx.gateway.has_capability('vision', 'vision'))
+    return project_reading.view(project_reading.read(ctx, args.document_id, budget=args.page_budget, with_vision=vision))
 
 
 class CompareAct(BaseModel):

@@ -105,7 +105,22 @@ def connect(body: ConnectionIn, tasks: BackgroundTasks, db: Session = Depends(ge
         obj = db.get(ConstructionObject, body.object_id)
         if obj is None or obj.organization_id != user.organization_id:
             raise HTTPException(404, 'Объект не найден')
-    path = sync.checked_path(body.path)
+    try:
+        path = sync.checked_path(body.path)
+    except PermissionError:
+        import json
+        import os
+
+        if not os.environ.get('BIS_LOCAL_DIR') or user.role != 'admin':
+            raise
+        from bis.config import get_settings
+        from bis.services.local_config import save
+
+        path = Path(body.path).expanduser().resolve()
+        if not path.is_dir():
+            raise HTTPException(400, 'Папка не найдена на компьютере с BIS') from None
+        roots = [str(p) for p in get_settings().library_roots]
+        save({'BIS_LIBRARY_ROOTS': json.dumps([*roots, str(path)], ensure_ascii=False)})
     c = LibraryConnection(name=body.name, path=str(path), level=body.level, object_id=body.object_id,
                           organization_id=None if body.level == 'knowledge' else user.organization_id)
     db.add(c)
@@ -118,14 +133,49 @@ def connect(body: ConnectionIn, tasks: BackgroundTasks, db: Session = Depends(ge
 
 
 @router.post('/{connection_id}/sync', status_code=202)
-def synchronize(connection_id: uuid.UUID, tasks: BackgroundTasks, db: Session = Depends(get_db),
+def synchronize(connection_id: uuid.UUID, tasks: BackgroundTasks, force: bool = False, db: Session = Depends(get_db),
                 user: User = Depends(require('settings:write'))):
     c = owned(db, user, connection_id, write=True)
     if not c.enabled:
         raise HTTPException(409, 'Подключение отключено')
-    tasks.add_task(sync.execute, c.id)
+    tasks.add_task(sync.execute, c.id, force=force)
     return {'status': 'queued'}
 
+
+@router.delete('/{connection_id}/contents')
+def clear_contents(connection_id: uuid.UUID, db: Session = Depends(get_db),
+                   user: User = Depends(require('settings:write'))):
+    """Clear only imported copies for this connection. Never touch the mounted originals."""
+    from sqlalchemy import delete
+
+    c = owned(db, user, connection_id, write=True, content=True)
+    with sync.connection_lease(c.id) as acquired:
+        if not acquired:
+            raise HTTPException(409, 'База сейчас обрабатывается; повторите очистку после завершения')
+        locked = db.scalar(select(LibraryConnection).where(LibraryConnection.id == c.id)
+                           .with_for_update(skip_locked=True))
+        if locked is None:
+            raise HTTPException(409, 'База сейчас обрабатывается; повторите очистку после завершения')
+        versions = list(db.scalars(select(LibraryVersion).join(LibraryFile, LibraryFile.id == LibraryVersion.file_id)
+                                  .where(LibraryFile.connection_id == c.id)))
+        source_ids = [v.source_id for v in versions if v.source_id]
+        document_ids = [v.document_id for v in versions if v.document_id]
+        from bis.models import KnowledgeSource
+
+        # Database cascades invalidate source references; generated acts and originals remain.
+        db.execute(delete(LibraryFile).where(LibraryFile.connection_id == c.id))
+        if source_ids:
+            db.execute(delete(KnowledgeSource).where(KnowledgeSource.id.in_(source_ids)))
+        if document_ids:
+            db.execute(delete(Document).where(Document.id.in_(document_ids), Document.source == 'library'))
+        c.enabled, c.status, c.error, c.synced_at = False, 'empty', None, None
+        audit(db, user.organization_id, actor_type='user', actor=str(user.id), action='library.clear',
+              entity_type='library_connection', entity_id=c.id, details={'versions': len(versions)})
+        db.commit()
+        from bis.rag.search import invalidate_vectors
+
+        invalidate_vectors()
+        return {'cleared_versions': len(versions), 'enabled': False, 'originals_preserved': True}
 
 @router.patch('/{connection_id}')
 def toggle(connection_id: uuid.UUID, enabled: bool, db: Session = Depends(get_db),
@@ -142,7 +192,16 @@ def files(connection_id: uuid.UUID, db: Session = Depends(get_db), user: User = 
     result = []
     for f in db.scalars(select(LibraryFile).where(LibraryFile.connection_id == connection_id).order_by(LibraryFile.relative_path)):
         versions = db.scalars(select(LibraryVersion).where(LibraryVersion.file_id == f.id).order_by(LibraryVersion.revision.desc())).all()
-        result.append({'id': f.id, 'path': f.relative_path, 'state': f.state, 'error': f.error,
+        active = next((v for v in versions if v.id == f.active_version_id), None)
+        from bis.models import KnowledgeSource
+
+        source = db.get(KnowledgeSource, active.source_id) if active and active.source_id else None
+        reading = (source.meta or {}).get('reading') or {} if source else {}
+        partial = f.state == 'ready' and (reading.get('warnings') or reading.get('empty_pages'))
+        result.append({'id': f.id, 'path': f.relative_path, 'state': 'partial' if partial else f.state,
+            'error': f.error or '; '.join(reading.get('warnings', [])) or None, 'reading': reading,
+            'source_id': str(source.id) if source else None, 'source_kind': source.kind if source else None,
+            'source_status': source.status if source else None,
             'active_version_id': f.active_version_id, 'versions': [
                 {'id': v.id, 'revision': v.revision, 'sha256': v.sha256, 'form_kind': v.form_kind,
                  'mapping': v.mapping, 'approved_at': v.approved_at, 'source_id': v.source_id,

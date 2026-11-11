@@ -15,7 +15,7 @@ from pathlib import Path
 log = logging.getLogger("bis.local")
 
 
-def load_env(path: Path) -> None:
+def load_env(path: Path, *, prefer_file: bool = False) -> None:
     """KEY=VALUE из .env в окружение процесса (ключи Яндекса читаются из окружения)."""
     if not path.exists():
         return
@@ -24,7 +24,11 @@ def load_env(path: Path) -> None:
         if not line or line.startswith("#") or "=" not in line:
             continue
         k, v = line.split("=", 1)
-        os.environ.setdefault(k.strip(), v.strip())
+        key, value = k.strip(), v.strip()
+        if prefer_file and key != 'BIS_WEB_DIR':
+            os.environ[key] = value
+        else:
+            os.environ.setdefault(key, value)
 
 
 def _pg_bin(name: str) -> str:
@@ -96,11 +100,12 @@ def start_database(data_dir: Path) -> str:
 def prepare(workdir: Path) -> Path:
     """Окружение, база и миграции. Возвращает папку данных."""
     os.chdir(workdir)
-    load_env(workdir / ".env")
+    load_env(workdir / ".env", prefer_file=True)
+    os.environ['BIS_LOCAL_DIR'] = str(workdir)
     # pgvector из встроенной сборки падает на части процессоров — по умолчанию поиск полнотекстовый
     os.environ.setdefault("BIS_VECTOR_ENABLED", "false")
     # без формы входа на своём компьютере (BIS_AUTO_LOGIN=false в .env — вернуть вход)
-    os.environ.setdefault("BIS_AUTO_LOGIN", "true")
+    os.environ["BIS_AUTO_LOGIN"] = "true"  # local pilot deliberately has no login screen
     data = Path(os.environ.get("BIS_DATA_DIR") or (workdir / "data"))
     os.environ["BIS_DATABASE_URL"] = start_database(data)
     os.environ.setdefault("BIS_STORAGE_DIR", str(data / "files"))

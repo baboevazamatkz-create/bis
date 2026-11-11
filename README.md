@@ -81,3 +81,5 @@ AutoCAD/nanoCAD, ассистент для вопросов, уведомлен�
 docker compose -f deploy/docker-compose.yml up -d --build
 docker compose -f deploy/docker-compose.yml exec api bis seed-demo   # вход: admin@demo.bis / demo12345
 ```
+
+Текущий интерфейс пилота: [рабочее место ПТО](docs/PILOT_WORKSPACE.md).

@@ -20,7 +20,7 @@ def test_executive_agents_cannot_write_finance_or_material_records(db, demo):
         tools = agent.available_tools(ctx, reg.tools)
         writes = {t.name for t in tools if any(s.endswith(":write") for s in t.scopes)}
         assert writes <= WRITE_TOOLS
-        assert not {"m29_report", "material_balance", "closing_check", "calc_penalty"} & {t.name for t in tools}
+        assert not {"m29_report", "material_balance", "closing_check"} & {t.name for t in tools}
 
 
 def test_executive_delegation_stays_in_workspace(db, demo):
@@ -36,12 +36,12 @@ def test_executive_delegation_stays_in_workspace(db, demo):
 def test_executive_chat_filters_agents_and_separates_session_history(client, auth):
     llm = ScriptedProvider(["Помогаю с исполнительной документацией."])
     set_gateway(LLMGateway(entries={"local": ProviderEntry(llm, "confidential")}))
-    rejected = client.post("/api/chat", headers=auth, json={"message": "Привет", "workspace": "executive", "agent": "contracts"})
+    rejected = client.post("/api/chat", headers=auth, json={"message": "Привет", "workspace": "executive", "agent": "materials"})
     assert rejected.status_code == 400
     result = client.post("/api/chat", headers=auth, json={"message": "Помоги проверить ИД", "workspace": "executive"})
     assert result.status_code == 200
     data = result.json()
-    assert data["agent"] == "pto"
+    assert data["agent"] == "assistant"
     assert "Рабочее пространство: исполнительная документация" in llm.calls[0]["messages"][0].content
     session_id = data["session_id"]
     assert session_id in {s["id"] for s in client.get("/api/chat/sessions?workspace=executive", headers=auth).json()}

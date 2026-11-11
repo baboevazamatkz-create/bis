@@ -30,6 +30,7 @@ class ChatIn(BaseModel):
     agent: str | None = None
     object_id: uuid.UUID | None = None
     workspace: Literal["platform", "executive"] = "platform"
+    document_id: uuid.UUID | None = None
 
 
 @router.get("/agents")
@@ -73,6 +74,18 @@ def _answer(db: Session, user: User, body: ChatIn, progress=None, on_route=None,
                 ConstructionObject.status == 'active').limit(2)).all()
             if len(projects) == 1:
                 selected_project = projects[0]
+    selected_document = None
+    if body.document_id:
+        from bis.models import Document
+
+        selected_document = db.scalar(select(Document).where(Document.id == body.document_id,
+            Document.organization_id == user.organization_id).execution_options(library_management=True))
+        if selected_document is None:
+            raise HTTPException(404, 'Документ не найден')
+        if selected_document.object_id:
+            if selected_project and selected_project != selected_document.object_id:
+                raise HTTPException(409, 'Документ относится к другому проекту')
+            selected_project = selected_document.object_id
     scope = bind_context(db, user.organization_id, selected_project)
     reg = get_registry()
     if body.session_id:
@@ -97,7 +110,7 @@ def _answer(db: Session, user: User, body: ChatIn, progress=None, on_route=None,
 
         if explicit and explicit not in AGENTS:
             raise HTTPException(400, "Специалист недоступен в блоке исполнительной документации")
-        explicit = explicit or "pto"
+        explicit = explicit or "assistant"
     try:
         agent_name, routed_by = reg.supervisor().route(body.message, get_gateway(), explicit)
     except LookupError as e:
@@ -123,10 +136,16 @@ def _answer(db: Session, user: User, body: ChatIn, progress=None, on_route=None,
             ctx.focus['object'] = str(scope.object_id)
         else:
             ctx.focus = {}
+    if selected_document:
+        from bis.services.library_access import assert_document
+
+        assert_document(db, selected_document)
+        ctx.focus['document'] = str(selected_document.id)
+        ctx.selected_document = str(selected_document.id)
     ctx.progress = progress
     from bis.services.executive_pipeline import is_work_report
 
-    if body.workspace == "executive" and agent_name == "pto" and is_work_report(body.message):
+    if body.workspace == "executive" and agent_name in ("pto", "assistant") and is_work_report(body.message):
         import json
 
         from bis.agents.base import AgentResult

@@ -56,6 +56,7 @@ class AgentContext:
     choices: list[dict[str, Any]] = field(default_factory=list)
     workspace: str = "platform"
     is_cancelled: Callable[[], bool] | None = None
+    selected_document: str | None = None
 
     def check_cancelled(self) -> None:
         if self.is_cancelled and self.is_cancelled():
@@ -454,7 +455,8 @@ class Agent:
             from bis.agents.resolve import AmbiguousReference
             from bis.brain.orchestrator import answer, investigate, question_plan
 
-            if question_plan(user_text, ctx.focus)['predicates'] and has_scope(ctx.user.role, 'documents:read'):
+            contract_question = re.search(r'договор|генподряд|субподряд|неустойк|оплат|аванс|гаранти', user_text, re.I)
+            if not ctx.selected_document and not contract_question and question_plan(user_text, ctx.focus)['predicates'] and has_scope(ctx.user.role, 'documents:read'):
                 try:
                     with ctx.db.begin_nested():
                         investigation = investigate(ctx, user_text)
