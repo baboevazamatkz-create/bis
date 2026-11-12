@@ -3,6 +3,7 @@ import { api, download, openFile, STATUS_LABELS, type DocumentRow } from '../../
 import { PageHead } from '../../components';
 import { navigate } from '../navigation';
 import TaskComposer from './TaskComposer';
+import RunList from './RunList';
 import { askAssistant } from './assistantTask';
 
 type Category = 'documents' | 'schemes' | 'project' | 'contracts';
@@ -17,7 +18,7 @@ const PLACEHOLDERS = {
 };
 const READ: Record<string, string> = { indexed: 'Текст доступен', partial: 'Прочитано частично', unread: 'Текст не прочитан', reading: 'Перечитывается…' };
 
-export default function WorkspaceDocuments({ category }: { category: Category }) {
+export default function WorkspaceDocuments({ category, canWrite = false }: { category: Category; canWrite?: boolean }) {
   const [data, setData] = useState<Result | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -48,7 +49,7 @@ export default function WorkspaceDocuments({ category }: { category: Category })
     input?.focus(); input?.scrollIntoView({ behavior: 'smooth', block: 'center' });
   } }, [selected]);
   const rows = data?.documents.filter((d) => filter === 'all' || (category === 'contracts' ? d.contract_kind === filter :
-    filter === 'ready' ? d.status === 'approved' : d.status !== 'approved')) ?? [];
+    filter === 'ready' ? ['approved', 'signed'].includes(d.status) : !['approved', 'signed'].includes(d.status))) ?? [];
   async function checkPackage() {
     setChecking(true); setError('');
     try { setCheck(await api('/archive/id-check')); } catch (e) { setError((e as Error).message); } finally { setChecking(false); }
@@ -65,6 +66,7 @@ export default function WorkspaceDocuments({ category }: { category: Category })
     {data?.needs_project && <div className="note">Выберите объект вверху страницы, чтобы видеть его документы и задавать вопросы по проекту.</div>}
     <TaskComposer placeholder={PLACEHOLDERS[category]} documentId={selected?.id} title={selected?.title} />
     {selected && <button className="btn small" onClick={() => setSelected(null)}>Снять выбор документа</button>}
+    {category === 'documents' && <RunList canWrite={canWrite} />}
     {category === 'documents' && <div className="panel compact-panel"><div className="row"><strong>Готовность комплекта ИД</strong>
       <button className="btn small" disabled={checking} onClick={() => void checkPackage()}>{checking ? 'Проверяю…' : 'Проверить комплектность'}</button></div>
       {check && <p>Актов: {check.acts} · комплектных: {check.complete} · отсутствующих ссылок: {check.missing_refs}</p>}</div>}

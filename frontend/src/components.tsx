@@ -164,8 +164,13 @@ export function useVoice(onText: (text: string) => void, { pauseMs = 2200, idleM
   const stopRef = useRef<() => void>(() => {});
   const cb = useRef(onText);
   cb.current = onText;
-  useEffect(() => () => stopRef.current(), []);
 
+  const disposed = useRef(false);
+  const activeStream = useRef<MediaStream | null>(null);
+  useEffect(() => { disposed.current = false; return () => {
+    disposed.current = true; stopRef.current();
+    activeStream.current?.getTracks().forEach((track) => track.stop());
+  }; }, []);
   async function start() {
     setErr("");
     if (DEMO) {
@@ -200,6 +205,8 @@ export function useVoice(onText: (text: string) => void, { pauseMs = 2200, idleM
       setErr("Нет доступа к микрофону — разрешите его в браузере");
       return;
     }
+    if (disposed.current) { stream.getTracks().forEach((track) => track.stop()); return; }
+    activeStream.current = stream;
     const rec = new MediaRecorder(stream);
     const chunks: Blob[] = [];
     // тишина: громкость микрофона ниже порога
@@ -231,13 +238,14 @@ export function useVoice(onText: (text: string) => void, { pauseMs = 2200, idleM
     rec.onstop = async () => {
       stream.getTracks().forEach((t) => t.stop());
       setLevel(0);
+      if (disposed.current) return;
       if (!heard) { setState("idle"); return; }
       setState("busy");
       const form = new FormData();
       form.append("file", new Blob(chunks, { type: rec.mimeType }), "voice.webm");
       try {
         const r = await api<{ text: string }>("/voice/transcribe", { method: "POST", body: form, timeoutMs: 120_000 });
-        if (r.text.trim()) cb.current(r.text.trim());
+        if (!disposed.current && r.text.trim()) cb.current(r.text.trim());
         else setErr("Речь не распознана — повторите");
       } catch (e) {
         setErr((e as Error).message);

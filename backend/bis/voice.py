@@ -47,7 +47,7 @@ class VoiceError(Exception):
 
 def status() -> dict[str, bool]:
     s = get_settings()
-    stt = bool(s.stt_url) if s.stt_provider == "openai" else bool(s.yandex()[0]) and bool(ffmpeg_exe())
+    stt = bool(s.stt_url) if s.stt_provider == "openai" else all(s.yandex()) and bool(ffmpeg_exe())
     return {"stt": stt, "tts": bool(s.tts_url)}
 
 
@@ -77,18 +77,27 @@ def _transcribe_yandex(audio: bytes, client: httpx.Client | None) -> str:
     folder, key = s.yandex()
     if not folder:
         raise VoiceError("Не задан каталог Yandex Cloud (BIS_YANDEX_FOLDER_ID)")
+    if not key:
+        raise VoiceError("Не задан API-ключ Yandex Cloud для распознавания речи")
+    chunks = _ogg_chunks(audio)
+    if len(chunks) > 40:
+        raise VoiceError("Запись слишком длинная: разделите её на несколько частей")
     http = client or httpx.Client(timeout=60)
-    parts = []
-    for chunk in _ogg_chunks(audio)[:40]:
-        try:
-            r = http.post(YANDEX_STT, params={"folderId": folder, "lang": "ru-RU", "format": "oggopus", "topic": "general"},
-                          headers={"Authorization": f"Api-Key {key or 'proxy-injected'}"}, content=chunk)
-        except httpx.HTTPError as e:
-            raise VoiceError(f"SpeechKit недоступен: {e}") from e
-        if r.status_code >= 400:
-            raise VoiceError(f"SpeechKit: HTTP {r.status_code}: {r.text[:200]}")
-        parts.append(r.json().get("result", ""))
-    return " ".join(p for p in parts if p).strip()
+    try:
+        parts = []
+        for chunk in chunks:
+            try:
+                r = http.post(YANDEX_STT, params={"folderId": folder, "lang": "ru-RU", "format": "oggopus", "topic": "general"},
+                              headers={"Authorization": f"Api-Key {key}"}, content=chunk)
+            except httpx.HTTPError as e:
+                raise VoiceError(f"SpeechKit недоступен: {e}") from e
+            if r.status_code >= 400:
+                raise VoiceError(f"SpeechKit: HTTP {r.status_code}: {r.text.replace(key, '[ключ скрыт]')[:200]}")
+            parts.append(r.json().get("result", ""))
+        return " ".join(p for p in parts if p).strip()
+    finally:
+        if client is None:
+            http.close()
 
 
 def transcribe(audio: bytes, filename: str = "audio.webm", mime: str | None = None,

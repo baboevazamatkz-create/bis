@@ -21,7 +21,7 @@ def status(user: User = Depends(require("knowledge:read"))):
 
 
 def _read(file: UploadFile) -> bytes:
-    data = file.file.read()
+    data = file.file.read(MAX_AUDIO + 1)
     if len(data) > MAX_AUDIO:
         raise HTTPException(413, "Аудио больше 25 МБ")
     return data

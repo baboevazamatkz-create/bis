@@ -90,7 +90,7 @@ def _answer(db: Session, user: User, body: ChatIn, progress=None, on_route=None,
     reg = get_registry()
     if body.session_id:
         session = db.get(ChatSession, body.session_id)
-        if session is None or session.user_id != user.id or (scope.object_id and session.object_id != scope.object_id):
+        if session is None or session.user_id != user.id or session.organization_id != user.organization_id or (scope.object_id and session.object_id != scope.object_id):
             raise HTTPException(404, "Диалог не найден")
         first = db.scalar(select(ChatMessage).where(ChatMessage.session_id == session.id, ChatMessage.role == "assistant")
                           .order_by(ChatMessage.created_at).limit(1))
@@ -136,6 +136,18 @@ def _answer(db: Session, user: User, body: ChatIn, progress=None, on_route=None,
             ctx.focus['object'] = str(scope.object_id)
         else:
             ctx.focus = {}
+    if selected_document is None and previous:
+        previous_id = ((previous.meta or {}).get('context') or {}).get('selected_document')
+        if previous_id:
+            from bis.models import Document
+
+            try:
+                selected_document = db.get(Document, uuid.UUID(previous_id))
+            except (ValueError, TypeError):
+                selected_document = None
+            if selected_document and (selected_document.organization_id != user.organization_id or
+                    selected_document.object_id not in (None, scope.object_id)):
+                selected_document = None
     if selected_document:
         from bis.services.library_access import assert_document
 
@@ -160,7 +172,7 @@ def _answer(db: Session, user: User, body: ChatIn, progress=None, on_route=None,
             text = "Черновик комплекта ИД подготовлен." if payload.get("documents") else "Сообщение сохранено; для сборки нужны уточнения."
             if payload.get("gaps"):
                 text += "\n\n" + "\n".join("• " + g["message"] for g in payload["gaps"])
-            text += "\n\nРезультат и приложения доступны в разделе «Сообщить о работе». Утверждение — после проверки инженером."
+            text += "\n\nРезультат и приложения доступны в разделе «Исполнительная документация». Утверждение — после проверки инженером."
         ctx.trace.append({"tool": "prepare_executive_package", "arguments": {"text": body.message}, "error": error})
         result = AgentResult(text=text, agent="pto", documents=ctx.documents, trace=ctx.trace, provider="executive_pipeline", model="evidence-v1")
     else:
@@ -173,7 +185,7 @@ def _answer(db: Session, user: User, body: ChatIn, progress=None, on_route=None,
         created_at=now + timedelta(microseconds=1),
         meta={"citations": result.citations, "documents": result.documents, "trace": result.trace,
               "provider": result.provider, "model": result.model, "routed_by": routed_by,
-              "context": {"focus": ctx.focus}, "workspace": body.workspace},
+              "context": {"focus": ctx.focus, "selected_document": ctx.selected_document}, "workspace": body.workspace},
     ))
     ctx.check_cancelled()
     db.commit()
@@ -272,8 +284,11 @@ def sessions(workspace: Literal["platform", "executive"] = "platform", db: Sessi
     executive = select(ChatMessage.session_id).where(ChatMessage.role == "assistant",
                                                     ChatMessage.meta["workspace"].astext == "executive")
     scope = ChatSession.id.in_(executive) if workspace == "executive" else ChatSession.id.notin_(executive)
-    rows = db.scalars(select(ChatSession).where(ChatSession.user_id == user.id, scope)
-                      .order_by(ChatSession.created_at.desc()).limit(100))
+    stmt = select(ChatSession).where(ChatSession.user_id == user.id, ChatSession.organization_id == user.organization_id, scope)
+    source_context = db.info.get('source_context')
+    if source_context and source_context.object_id:
+        stmt = stmt.where(ChatSession.object_id == source_context.object_id)
+    rows = db.scalars(stmt.order_by(ChatSession.created_at.desc()).limit(100))
     return [{"id": s.id, "title": s.title, "created_at": s.created_at} for s in rows]
 
 
@@ -281,7 +296,8 @@ def sessions(workspace: Literal["platform", "executive"] = "platform", db: Sessi
 def session_messages(session_id: uuid.UUID, workspace: Literal["platform", "executive"] = "platform", db: Session = Depends(get_db),
                      user: User = Depends(require("knowledge:read"))):
     session = db.get(ChatSession, session_id)
-    if session is None or session.user_id != user.id:
+    source_context = db.info.get('source_context')
+    if session is None or session.user_id != user.id or session.organization_id != user.organization_id or (source_context and source_context.object_id and session.object_id != source_context.object_id):
         raise HTTPException(404, "Диалог не найден")
     rows = db.scalars(select(ChatMessage).where(ChatMessage.session_id == session_id).order_by(ChatMessage.created_at))
     messages = list(rows)

@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from bis.api.deps import require
 from bis.api.libraries import can_manage_knowledge
+from bis.api.uploads import read_upload
 from bis.db import get_db
 from bis.models import KnowledgeChunk, KnowledgeSource, User
 from bis.rag.embeddings import get_embedder, get_query_embedder
@@ -81,7 +82,7 @@ def upload(
         raise HTTPException(409, "В строгом режиме подключайте исходные файлы через раздел Библиотеки")
     if scope == "global" and not can_manage_knowledge(user):
         raise HTTPException(403, "Загрузка в общую библиотеку доступна администратору платформы")
-    data = file.file.read()
+    data = read_upload(file)
     if len(data) > MAX_UPLOAD:
         raise HTTPException(413, "Файл больше 100 МБ")
     try:

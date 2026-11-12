@@ -16,6 +16,7 @@ from bis.agents.base import AgentContext
 from bis.agents.builtin_tools import AOSRArgs, LetterArgs, create_aosr_draft, create_letter_draft
 from bis.api.deps import agent_context, require
 from bis.api.schemas import DocumentOut
+from bis.api.uploads import read_upload
 from bis.db import get_db
 from bis.documents import DOCUMENT_KINDS, AOSRData, validate_aosr
 from bis.documents.aosr import REPRESENTATIVE_ROLES
@@ -179,7 +180,7 @@ def upload_document(
         obj = db.get(ConstructionObject, object_id)
         if obj is None or obj.organization_id != user.organization_id:
             raise HTTPException(404, "Объект не найден")
-    data = file.file.read()
+    data = read_upload(file)
     name = file.filename or "file"
     mime = file.content_type or mimetypes.guess_type(name)[0]
     doc = docsvc.save_document(db, get_storage(), org_id=user.organization_id, kind=kind, title=title or name,
@@ -253,7 +254,7 @@ def upload_template(file: UploadFile = File(...), kind: str = Form(...), name: s
                           user: User = Depends(require("settings:write"))):
     if not (file.filename or "").lower().endswith(".docx"):
         raise HTTPException(415, "Шаблон должен быть в формате DOCX")
-    data = file.file.read()
+    data = read_upload(file)
     if is_default:
         for t in db.scalars(select(DocumentTemplate).where(DocumentTemplate.organization_id == user.organization_id,
                                                            DocumentTemplate.kind == kind)):

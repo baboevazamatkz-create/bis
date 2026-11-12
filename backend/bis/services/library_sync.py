@@ -85,7 +85,7 @@ def scan(db, storage, embedder, gateway, connection, *, force=False, checkpoint=
         try:
             with db.begin_nested():
                 if path.suffix.lower() not in SUPPORTED:
-                    raise UnsupportedFormat("Формат не поддерживается; DOC/XLS необходимо преобразовать в DOCX/XLSX")
+                    raise UnsupportedFormat("Формат не поддерживается; сохраните документ в PDF, DOCX или XLSX")
                 resolved = path.resolve(strict=True)
                 if root not in resolved.parents:
                     raise PermissionError("Файл выходит за пределы подключённой папки")

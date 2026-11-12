@@ -76,14 +76,20 @@ def create_app() -> FastAPI:
     async def forbidden(_: Request, exc: PermissionError):
         return JSONResponse(status_code=403, content={"detail": str(exc)})
 
+    @app.exception_handler(FileNotFoundError)
+    async def missing_file(_: Request, exc: FileNotFoundError):
+        return JSONResponse(status_code=404, content={"detail": "Исходный файл недоступен. Проверьте папку хранения и подключение диска."})
+
     if settings.web_dir and Path(settings.web_dir).is_dir():  # локальный запуск: веб-интерфейс отдаёт сам API
-        web = Path(settings.web_dir)
+        web = Path(settings.web_dir).resolve()
         app.mount("/assets", StaticFiles(directory=web / "assets"), name="assets")
 
         @app.get("/{path:path}", include_in_schema=False)
         async def spa(path: str):
+            if path == 'api' or path.startswith('api/'):
+                return JSONResponse(status_code=404, content={'detail': 'API-метод не найден. Проверьте версию приложения.'})
             f = web / path
-            return FileResponse(f if path and f.is_file() and web in f.resolve().parents else web / "index.html")
+            return FileResponse(f if path and f.is_file() and web in f.resolve().parents else web / "index.html", headers={"Cache-Control": "no-cache"})
 
     return app
 

@@ -285,6 +285,12 @@ def test_selected_contract_answers_read_that_document(client, auth, db, demo):
         for t in result.json()["trace"]
     )
 
+    continued = client.post('/api/chat', headers={**auth, 'X-BIS-Project': str(obj.id)},
+                            json={'message': 'Уточни срок окончания', 'workspace': 'executive', 'session_id': result.json()['session_id']})
+    assert continued.status_code == 200, continued.text
+    assert any(t['tool'] == 'get_document' and t['arguments'].get('document_id') == str(doc.id)
+               for t in continued.json()['trace'])
+
 
 @pytest.fixture
 def local_settings(tmp_path, monkeypatch):

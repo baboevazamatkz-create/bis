@@ -6,7 +6,7 @@ import DatabaseHub from "./DatabaseHub";
 export default function ExecutiveWorkspace({ page, user }: { page: string; user: User }) {
   if (page === "libraries") return <DatabaseHub user={user} />;
   if (page === "documents" || page === "schemes" || page === "project" || page === "contracts") {
-    return <WorkspaceDocuments key={page} category={page} />;
+    return <WorkspaceDocuments key={page} category={page} canWrite={user.role !== "viewer"} />;
   }
   return <Chat workspace="executive" />;
 }

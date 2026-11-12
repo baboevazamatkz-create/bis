@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from bis.api.deps import require
 from bis.api.schemas import DocumentOut
+from bis.api.uploads import read_upload
 from bis.cad.scheme import SchemeData
 from bis.cad.scheme import parse_survey as parse_survey_file
 from bis.db import get_db
@@ -36,7 +37,7 @@ def import_estimate(contract_id: uuid.UUID, file: UploadFile = File(...), replac
     """Импорт сметы / ведомости объёмов из Excel: заголовки определяются автоматически."""
     c = _owned(db, user, Contract, contract_id, "Договор")
     try:
-        items = csvc.import_estimate(db, c, file.file.read(), replace=replace)
+        items = csvc.import_estimate(db, c, read_upload(file), replace=replace)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
     audit(db, user.organization_id, actor_type="user", actor=str(user.id), action="estimate.import",
@@ -242,7 +243,7 @@ def parse_survey(file: UploadFile = File(...), geodetic: bool = Form(False),
                        user: User = Depends(require("documents:read"))):
     """Разбор файла съёмки геодезиста (CSV/TXT/XLSX) в точки схемы."""
     try:
-        points = parse_survey_file(file.file.read(), file.filename or "survey.csv", geodetic=geodetic)
+        points = parse_survey_file(read_upload(file), file.filename or "survey.csv", geodetic=geodetic)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
     return {"points": [p.model_dump() for p in points]}
@@ -381,7 +382,7 @@ def archive_import(file: UploadFile = File(...), object_id: uuid.UUID | None = F
         object_id = object_id or scope.object_id
     if object_id:
         _owned(db, user, ConstructionObject, object_id, "Объект")
-    data = file.file.read()
+    data = read_upload(file)
     if len(data) > 100 * 1024 * 1024:
         raise HTTPException(413, "Файл больше 100 МБ")
     try:

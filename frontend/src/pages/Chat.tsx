@@ -71,7 +71,7 @@ const DOC_LINK = /^(?:document:|\/?(?:api\/)?documents\/)([0-9a-f-]{36})(?:\/fil
 const MD = /\[([^\]]+)\]\(([^)\s]+)\)|\*\*([^*]+)\*\*/g;
 
 /** Текст ответа: ссылки на документы — кнопки «открыть», внешние — ссылки, **жирный** — жирный. */
-function Rich({ text }: { text: string }) {
+function Rich({ text, onError }: { text: string; onError: (message: string) => void }) {
   const out: ReactNode[] = [];
   let last = 0;
   for (const m of text.matchAll(MD)) {
@@ -80,7 +80,7 @@ function Rich({ text }: { text: string }) {
     if (bold) out.push(<b key={m.index}>{bold}</b>);
     else if (DOC_LINK.test(url)) {
       const id = DOC_LINK.exec(url)![1];
-      out.push(<button key={m.index} className="link" onClick={() => void openFile(`/documents/${id}/file`, label)}>{label}</button>);
+      out.push(<button key={m.index} className="link" onClick={() => void openFile(`/documents/${id}/file`, label).catch((e) => onError(e.message))}>{label}</button>);
     } else if (/^https?:\/\//.test(url)) {
       out.push(<a key={m.index} href={url} target="_blank" rel="noopener noreferrer">{label}</a>);
     } else out.push(label);
@@ -106,7 +106,15 @@ export default function Chat({ workspace = "platform" }: { workspace?: "platform
   const [error, setError] = useState("");
   const bottom = useRef<HTMLDivElement>(null);
   const pending = useRef<AbortController | null>(null);
-  useEffect(() => () => pending.current?.abort(), []);
+  const historyRequest = useRef<AbortController | null>(null);
+  const audioStream = useRef<MediaStream | null>(null);
+  const disposed = useRef(false);
+  useEffect(() => { disposed.current = false; return () => {
+    disposed.current = true;
+    pending.current?.abort(); historyRequest.current?.abort();
+    if (recorder.current) { recorder.current.onstop = null; if (recorder.current.state !== 'inactive') recorder.current.stop(); }
+    audioStream.current?.getTracks().forEach((track) => track.stop());
+  }; }, []);
   const [voice, setVoice] = useState({ stt: false, tts: false });
   const [speakReplies, setSpeakReplies] = useState(false);
   const [recording, setRecording] = useState(false);
@@ -147,6 +155,8 @@ export default function Chat({ workspace = "platform" }: { workspace?: "platform
     }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (disposed.current) { stream.getTracks().forEach((track) => track.stop()); return; }
+      audioStream.current = stream;
       const rec = new MediaRecorder(stream);
       const chunks: Blob[] = [];
       rec.ondataavailable = (e) => chunks.push(e.data);
@@ -157,7 +167,8 @@ export default function Chat({ workspace = "platform" }: { workspace?: "platform
         form.append("file", new Blob(chunks, { type: rec.mimeType }), "voice.webm");
         try {
           const r = await api<{ text: string }>("/voice/transcribe", { method: "POST", body: form, timeoutMs: 120_000 });
-          if (r.text.trim()) send(r.text);
+          if (!disposed.current && r.text.trim()) { setText(r.text); }
+          else if (!disposed.current) setError('Речь не распознана — повторите запись');
         } catch (e) {
           setError((e as Error).message);
         }
@@ -166,6 +177,7 @@ export default function Chat({ workspace = "platform" }: { workspace?: "platform
       recorder.current = rec;
       setRecording(true);
     } catch {
+      audioStream.current?.getTracks().forEach((track) => track.stop());
       setError("Нет доступа к микрофону");
     }
   }
@@ -176,14 +188,18 @@ export default function Chat({ workspace = "platform" }: { workspace?: "platform
   }, [messages, busy]);
 
   async function openSession(id: string) {
+    historyRequest.current?.abort();
+    const controller = new AbortController(); historyRequest.current = controller;
     try {
-      const messages = await api<Msg[]>(`/chat/sessions/${id}?workspace=${workspace}`);
-      setSessionId(id); setMessages(messages);
-    } catch (e) { setError((e as Error).message); }
+      const messages = await api<Msg[]>(`/chat/sessions/${id}?workspace=${workspace}`, { signal: controller.signal });
+      if (controller.signal.aborted || disposed.current) return;
+      setSessionId(id); setMessages(messages); setDocumentId(null); setDocumentTitle(''); setError('');
+    } catch (e) { if (!controller.signal.aborted) setError((e as Error).message); }
   }
 
   async function send(message: string, selectedDocument?: string) {
-    if (!message.trim() || busy) return;
+    if (!message.trim() || busy || pending.current) return;
+    historyRequest.current?.abort();
     setError("");
     setText("");
     setMessages((m) => [...m, { role: "user", content: message }]);
@@ -220,6 +236,7 @@ export default function Chat({ workspace = "platform" }: { workspace?: "platform
           disabled={busy}
           style={{ width: "100%", marginBottom: 16 }}
           onClick={() => {
+            historyRequest.current?.abort();
             setSessionId(null);
             setMessages([]);
             setDocumentId(null); setDocumentTitle('');
@@ -279,7 +296,7 @@ export default function Chat({ workspace = "platform" }: { workspace?: "platform
           )}
           {messages.map((m, i) => (
             <div key={i} className={`msg ${m.role}`}>
-              <div className="bubble">{m.role === "assistant" ? <Rich text={m.content} /> : m.content}</div>
+              <div className="bubble">{m.role === "assistant" ? <Rich onError={setError} text={m.content} /> : m.content}</div>
               {m.role === "assistant" && (
                 <>
                   <Docs items={m.meta?.documents ?? []} onError={setError} />
