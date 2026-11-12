@@ -3,8 +3,8 @@
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-$SourceCommit = '5a8be052a00c70c8d04175b4c40a61a19cfdf856'
-$Expected = 'acbf818783a15811bce0f7a1a34fb5c253400c477532d2fe86620a029929dc8d'
+$SourceCommit = '886cf10116063923c24180e9f64113006c1cf04d'
+$Expected = '898e94c71bb2af0234dce19f1ef48513045d62fe4b6e65ddb2dc73dddb840415'
 $SourceUrl = "https://github.com/baboevazamatkz-create/bis/archive/$SourceCommit.zip"
 $TempDir = Join-Path ([IO.Path]::GetTempPath()) ('bis-pilot-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $TempDir | Out-Null
