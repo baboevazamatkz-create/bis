@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import time
 from typing import Any
 
@@ -53,4 +54,8 @@ def check_providers(gateway: LLMGateway) -> list[dict[str, Any]]:
         except LLMError as e:
             out.append({"provider": name, "model": model, "ok": False, "error": str(e)[:400], "hint": hint_for(str(e)),
                         "routes": routes, "capabilities": list(entry.capabilities)})
+    for result in out:
+        gateway.health[result['provider']] = {
+            'provider': result['provider'], 'ok': result['ok'],
+            'error': result.get('error'), 'checked_at': dt.datetime.now(dt.UTC).isoformat()}
     return out

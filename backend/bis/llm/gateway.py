@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -27,6 +28,7 @@ from bis.llm.types import (
     ToolCall,
     ToolSpec,
 )
+from bis.services.local_config import LOCK
 
 log = logging.getLogger(__name__)
 
@@ -44,6 +46,7 @@ class LLMGateway:
     entries: dict[str, ProviderEntry]
     routes: dict[str, list[str]] = field(default_factory=dict)
     on_usage: Callable[[LLMResponse, str], None] | None = None
+    health: dict[str, dict] = field(default_factory=dict)
 
     @classmethod
     def from_settings(cls, settings: Settings) -> LLMGateway:
@@ -108,7 +111,7 @@ class LLMGateway:
             candidates = [c for c in candidates if "vision" in self.entries[c[0]].capabilities]
             if not candidates:
                 raise LLMError("Не подключена модель зрения (провайдер с возможностью vision)", retryable=False)
-        if prefer:
+        if prefer and getattr(self.entries.get(prefer, None), "provider", None) is not None and getattr(self.entries[prefer].provider, "model", "") != "offline":
             candidates.sort(key=lambda c: c[0] != prefer)
         if not candidates:
             raise LLMError(
@@ -122,11 +125,23 @@ class LLMGateway:
             try:
                 response = self._call(entry.provider, messages, tools, max_tokens, json_mode, mask)
             except LLMError as e:
+                self.health[name] = {'provider': name, 'ok': False, 'error': str(e)[:400],
+                                     'checked_at': dt.datetime.now(dt.UTC).isoformat()}
                 log.warning("LLM %s: %s", name, e)
                 errors.append(str(e))
                 if not e.retryable and len(candidates) == 1:
                     raise
                 continue
+            if getattr(entry.provider, 'model', '') != 'offline':
+                self.health[name] = {'provider': name, 'ok': True, 'checked_at': dt.datetime.now(dt.UTC).isoformat()}
+            elif any(getattr(e.provider, 'model', '') not in ('', 'offline') for e in self.entries.values()):
+                from bis.llm.providers.offline import NO_MODEL
+
+                reason = ('Облачная модель настроена, но не ответила на этот запрос. Причина: ' + '; '.join(errors)[:700]) if errors else (
+                    'Настроенная модель не выбрана для этой задачи: проверьте маршрут и разрешённый уровень данных.')
+                reason += '\nИспользован офлайн-режим. Настройки ключа не изменялись.'
+                content = response.message.content.replace(NO_MODEL, '').strip()
+                response.message = replace(response.message, content=reason + ('\n\n' + content if content else ''))
             if self.on_usage:
                 self.on_usage(response, task)
             return response
@@ -172,13 +187,15 @@ _gateway: LLMGateway | None = None
 
 def get_gateway() -> LLMGateway:
     global _gateway
-    if _gateway is None:
-        from bis.config import get_settings
+    with LOCK:
+        if _gateway is None:
+            from bis.config import get_settings
 
-        _gateway = LLMGateway.from_settings(get_settings())
-    return _gateway
+            _gateway = LLMGateway.from_settings(get_settings())
+        return _gateway
 
 
 def set_gateway(gateway: LLMGateway | None) -> None:
     global _gateway
-    _gateway = gateway
+    with LOCK:
+        _gateway = gateway

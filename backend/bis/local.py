@@ -19,12 +19,11 @@ def load_env(path: Path, *, prefer_file: bool = False) -> None:
     """KEY=VALUE из .env в окружение процесса (ключи Яндекса читаются из окружения)."""
     if not path.exists():
         return
-    for line in path.read_text(encoding="utf-8-sig").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
+    from dotenv import dotenv_values
+
+    for key, value in dotenv_values(path, encoding='utf-8-sig').items():
+        if value is None:
             continue
-        k, v = line.split("=", 1)
-        key, value = k.strip(), v.strip()
         if prefer_file and key != 'BIS_WEB_DIR':
             os.environ[key] = value
         else:

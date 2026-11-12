@@ -82,7 +82,7 @@ class OpenAICompatProvider:
         self.name = cfg.name
         self.model = cfg.model
         headers = {"Content-Type": "application/json"}
-        key = cfg.resolved_api_key()
+        key = self._api_key = cfg.resolved_api_key()
         if key:
             headers["Authorization"] = f"{cfg.auth_scheme} {key}"
         headers.update(cfg.extra.get("headers", {}))
@@ -120,7 +120,7 @@ class OpenAICompatProvider:
             raise LLMError(f"{self.name}: сеть: {e}") from e
         if r.status_code >= 400:
             raise LLMError(
-                f"{self.name}: HTTP {r.status_code}: {r.text[:300]}",
+                f"{self.name}: HTTP {r.status_code}: {r.text.replace(self._api_key or chr(0), '[ключ скрыт]')[:300]}",
                 retryable=r.status_code in (408, 409, 429) or r.status_code >= 500,
             )
         return parse_openai_response(r.json(), self.name, self.model)

@@ -65,6 +65,13 @@ def documents(category: Literal['documents', 'schemes', 'project', 'contracts'],
 
 @router.get('/reading-status')
 def reading_status(user: User = Depends(require('knowledge:read'))):
+    from bis.services.local_config import LOCK
+
+    with LOCK:
+        return _reading_status()
+
+
+def _reading_status():
     from bis import ocr
     from bis.config import get_settings
     from bis.llm.gateway import get_gateway
@@ -86,6 +93,7 @@ def reading_status(user: User = Depends(require('knowledge:read'))):
     return {'providers': providers, 'model_error': error, 'ocr_configured': ocr.available() and bool(key),
             'text_configured': text_configured, 'vision_configured': vision_configured,
             'ocr_provider': settings.ocr_provider, 'yandex_folder_set': bool(folder),
+            'key_configured': bool(key), 'last_model_attempts': list(gateway.health.values()) if error is None else [],
             'folder_id': folder, 'local_setup_available': bool(__import__('os').environ.get('BIS_LOCAL_DIR')),
             'voice': voice.status(),
             'note': 'Наличие настроек не подтверждает доступ к облаку. Проверка выполняется отдельно.'}
@@ -173,9 +181,17 @@ class AISetup(BaseModel):
 
 @router.post('/ai-setup')
 def ai_setup(body: AISetup, user: User = Depends(require('settings:write'))):
-    """Local pilot settings only; return no credentials and preserve unrelated .env entries."""
+    from bis.services.local_config import LOCK
+
+    with LOCK:
+        return _save_ai_setup(body)
+
+
+def _save_ai_setup(body: AISetup):
+    """Publish an immutable model config before switching the saved environment to it."""
     import json
     import os
+    import uuid
     from pathlib import Path
 
     from bis.config import get_settings
@@ -188,10 +204,10 @@ def ai_setup(body: AISetup, user: User = Depends(require('settings:write'))):
     envfile = root / '.env'
     if not envfile.is_file():
         raise HTTPException(409, 'Не найден файл настроек локального пилота')
-    key = body.api_key.get_secret_value().strip() if body.api_key else get_settings().yandex()[1]
+    key = body.api_key.get_secret_value().strip() if body.api_key else (os.environ.get('YANDEX_API_KEY') or get_settings().yandex()[1])
     if not key or any(c.isspace() for c in key):
         raise HTTPException(422, 'Введите действующий API-ключ без пробелов')
-    config = root / 'config' / 'llm.pilot.json'
+    config = root / 'config' / f'llm.pilot.{uuid.uuid4().hex}.json'
     config.parent.mkdir(parents=True, exist_ok=True)
     configured = get_settings()
     try:
@@ -232,7 +248,7 @@ def ai_setup(body: AISetup, user: User = Depends(require('settings:write'))):
         'routes': routes}, ensure_ascii=False, indent=2), encoding='utf-8')
     values = {'YANDEX_FOLDER_ID': body.folder_id, 'BIS_YANDEX_FOLDER_ID': body.folder_id, 'YANDEX_API_KEY': key,
               'BIS_LLM_CONFIG_FILE': config.as_posix(), 'BIS_OCR_PROVIDER': 'yandex' if body.ocr else 'none',
-              'BIS_STT_PROVIDER': 'yandex' if body.speech else 'openai'}
+              'BIS_STT_PROVIDER': 'yandex' if body.speech else 'openai', 'BIS_YANDEX_API_KEY_ENV': 'YANDEX_API_KEY'}
     from bis.services.local_config import save
 
     save(values)

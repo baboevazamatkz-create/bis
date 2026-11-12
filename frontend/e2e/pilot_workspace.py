@@ -108,7 +108,7 @@ async def main():
             .first.locator("summary")
             .click()
         )
-        await expect(page.get_by_text("OCR: не подключён", exact=False)).to_be_visible()
+        await expect(page.get_by_text("OCR: не настроен", exact=False)).to_be_visible()
         await page.get_by_role("button", name="Подключить ИИ и OCR", exact=True).click()
         await page.get_by_label("Folder ID", exact=True).fill("fixturefolder")
         await page.get_by_label(

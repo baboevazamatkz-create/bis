@@ -228,3 +228,65 @@ def test_vision_falls_back_from_local_to_cloud():
                     routes={"default": ["cloud"], "vision": ["local-vision", "cloud"]})
     r = gw.complete([Message(role="user", content="?", images=[{"mime": "image/jpeg", "data": "AA=="}])], task="vision")
     assert r.provider != "local-vision" and cloud.calls  # ответила следующая в очереди
+
+
+def test_transient_failure_does_not_claim_missing_key_or_pin_offline():
+    from bis.llm.providers.offline import OfflineProvider
+
+    class Intermittent:
+        name = 'cloud'
+        model = 'cloud-model'
+        calls = 0
+
+        def complete(self, *args, **kwargs):
+            self.calls += 1
+            if self.calls == 2:
+                raise LLMError('cloud: HTTP 429: request quota exceeded')
+            return LLMResponse(Message('assistant', 'Ответ облака'), 'end', self.name, self.model)
+
+    cloud = Intermittent()
+    gw = LLMGateway(entries={'cloud': ProviderEntry(cloud), 'offline': ProviderEntry(OfflineProvider(), 'confidential')},
+                    routes={'default': ['cloud', 'offline']})
+    assert gw.complete([Message('user', 'Привет')]).provider == 'cloud'
+    failure = gw.complete([Message('user', 'Привет')])
+    assert failure.model == 'offline'
+    assert 'HTTP 429' in failure.message.content and 'не подключена' not in failure.message.content
+    assert gw.health['cloud']['ok'] is False
+    assert gw.has_capability('text') == ['cloud']
+    assert gw.complete([Message('user', 'Привет')], prefer='offline').provider == 'cloud'
+    assert gw.health['cloud']['ok'] is True
+
+
+def test_missing_explicit_configuration_is_not_silent_offline(tmp_path):
+    from bis.config import Settings
+
+    with pytest.raises(ValueError, match='Файл настройки модели не найден'):
+        Settings(llm_config_file=tmp_path / 'missing.json').llm_providers()
+
+
+def test_quoted_local_environment_values_are_loaded_without_quotes(tmp_path, monkeypatch):
+    from bis.local import load_env
+
+    path = tmp_path / '.env'
+    path.write_text('export YANDEX_FOLDER_ID="quoted-folder"\nYANDEX_API_KEY=\'fixture-quoted-key\'\n', encoding='utf-8-sig')
+    monkeypatch.setenv('YANDEX_FOLDER_ID', 'stale')
+    monkeypatch.setenv('YANDEX_API_KEY', 'stale')
+    load_env(path, prefer_file=True)
+    import os
+
+    assert os.environ['YANDEX_FOLDER_ID'] == 'quoted-folder'
+    assert os.environ['YANDEX_API_KEY'] == 'fixture-quoted-key'
+
+
+def test_error_redacts_the_key_used_by_an_inflight_client(monkeypatch):
+    monkeypatch.setenv('TEST_ROTATING_KEY', 'fixture-original-secret')
+    config = ProviderConfig(name='cloud', kind='openai_compat', model='test',
+                            base_url='https://example.test/v1', api_key_env='TEST_ROTATING_KEY')
+    client = httpx.Client(base_url='https://example.test/v1', transport=httpx.MockTransport(
+        lambda r: httpx.Response(401, text='Rejected fixture-original-secret')))
+    provider = OpenAICompatProvider(config, client=client)
+    monkeypatch.setenv('TEST_ROTATING_KEY', 'fixture-new-secret')
+    with pytest.raises(LLMError) as caught:
+        provider.complete([Message('user', 'Test')])
+    assert 'fixture-original-secret' not in str(caught.value)
+    assert '[ключ скрыт]' in str(caught.value)

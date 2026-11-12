@@ -7,7 +7,7 @@ interface Connection { id: string; name: string; level: Level; path: string; obj
 interface State { connections: Connection[]; allowed_roots: string[]; platform_admin: boolean; strict: boolean }
 interface FileRow { id: string; path: string; state: string; error: string | null; source_id?: string; source_kind?: string; source_status?: string; active_version_id?: string;
   versions?: { id: string; form_kind: string | null; approved_at: string | null }[] }
-interface ReadingStatus { providers: { name: string; capabilities: string[] }[]; model_error: string | null; text_configured: boolean; vision_configured: boolean; ocr_configured: boolean; folder_id: string | null; local_setup_available: boolean; voice: { stt: boolean } }
+interface ReadingStatus { key_configured?: boolean; last_model_attempts?: {provider: string; ok: boolean; error?: string; checked_at: string}[]; providers: { name: string; capabilities: string[] }[]; model_error: string | null; text_configured: boolean; vision_configured: boolean; ocr_configured: boolean; folder_id: string | null; local_setup_available: boolean; voice: { stt: boolean } }
 interface ModelCheck { providers: { provider: string; ok: boolean; error?: string; hint?: string; reply?: string }[] }
 interface Imports { total: number; documents: { id: string; title: string; state: string; error: string | null }[]; has_more: boolean }
 const LABELS = { knowledge: 'База знаний', project: 'База проекта', organization: 'База организаций' };
@@ -42,13 +42,14 @@ export default function DatabaseHub({ user }: { user: User }) {
   async function load(signal?: AbortSignal) {
     if (refreshing.current) return;
     refreshing.current = true;
+    const revision = configRevision.current;
     try {
       const result = await api<State>('/libraries', { signal });
       if (signal?.aborted || !mounted.current) return;
       setState(result);
       const jobs: Promise<unknown>[] = [
         api<ReadingStatus>('/workspace/reading-status', { signal }).then((status) => {
-          if (signal?.aborted || !mounted.current) return;
+          if (signal?.aborted || !mounted.current || revision !== configRevision.current) return;
           setReading(status); setFolder((old) => old || status.folder_id || '');
         }),
         ...result.connections.filter((c) => c.level === level && (c.level !== 'project' || c.object_id === activeProject())).map(async (c) => {
@@ -184,7 +185,9 @@ export default function DatabaseHub({ user }: { user: User }) {
     </div></div>}
     <details className="panel"><summary>ИИ и качество чтения</summary>
       {Object.entries(pending).filter(([id]) => id !== 'database').map(([id, label]) => <p role="status" key={id}>{label}</p>)}
-      <p className="small">Языковая модель: {reading?.text_configured ? 'настроена, требуется проверка доступа' : 'не подключена'} · OCR: {reading?.ocr_configured ? 'настроен' : 'не подключён'} · чтение чертежей зрением: {reading?.vision_configured ? 'настроено' : 'не подключено'} · голос: {reading?.voice.stt ? 'настроен' : 'не подключён'}</p>
+      <p className="small">Языковая модель: {!reading ? 'получаю состояние…' : reading.text_configured ? 'настройки сохранены' : 'не настроена'} · OCR: {!reading ? 'получаю состояние…' : reading.ocr_configured ? 'настройки сохранены' : 'не настроен'} · чтение чертежей зрением: {reading?.vision_configured ? 'настроено' : 'не подключено'} · голос: {reading?.voice.stt ? 'настроен' : 'не подключён'}</p>
+      {reading && <p className="small muted">Ключ Яндекса: {reading.key_configured ? 'задан' : 'не задан'}. Доступность сервиса проверяется отдельно; временная ошибка не удаляет ключ.</p>}
+      {reading?.last_model_attempts?.map((attempt) => <p className={attempt.ok ? 'small muted' : 'small text-bad'} key={attempt.provider}>{attempt.provider}: {attempt.ok ? 'последний запрос выполнен' : `ошибка последнего запроса — ${attempt.error}`}</p>)}
       {reading?.model_error && <p className="text-bad">{reading.model_error}</p>}
       {canWrite && <div className="row"><button className="btn" disabled={!!pending['model-check'] || !!pending['ai-save']} onClick={() => void action(async () => setCheck(await checkCurrent(() => api<ModelCheck>('/ai/models/check', { method: 'POST', timeoutMs: 130_000 }))), 'Проверка моделей завершена.', 'model-check', 'Проверяю языковую модель (до 130 секунд)…')}>Проверить ИИ</button>
         <button className="btn" disabled={!!pending['ocr-check'] || !!pending['ai-save']} onClick={() => void action(async () => { const result = await checkCurrent(() => api<{text: string}>('/workspace/ocr-check', { method: 'POST', timeoutMs: 130_000 })); if (!result.text.trim()) throw new Error('OCR не извлёк текст контрольного изображения'); }, 'OCR прочитал контрольное изображение. Можно перечитать сканы.', 'ocr-check', 'Проверяю OCR (до 130 секунд)…')}>Проверить OCR</button>
@@ -198,7 +201,7 @@ export default function DatabaseHub({ user }: { user: User }) {
         <button className="btn primary" disabled={!!pending['ai-save'] || !folder.trim()} onClick={() => void action(async () => {
           await api('/workspace/ai-setup', { method: 'POST', json: { folder_id: folder.trim(), api_key: key || null, ocr: true, speech: true, vision_model: visionModel.trim() || null } });
           configRevision.current += 1; setKey(''); setConfigure(false); setCheck(null);
-          setReading((old) => old ? { ...old, ocr_configured: true, text_configured: true, voice: { stt: true }, folder_id: folder.trim() } : old);
+          setReading((old) => old ? { ...old, key_configured: true, last_model_attempts: [], ocr_configured: true, text_configured: true, voice: { stt: true }, folder_id: folder.trim() } : old);
         }, 'ИИ, OCR и голос настроены. Проверьте ответ модели и перечитайте базу.', 'ai-save', 'Сохраняю подключение ИИ…')}>Сохранить подключение</button>
       </div>}
     </details>

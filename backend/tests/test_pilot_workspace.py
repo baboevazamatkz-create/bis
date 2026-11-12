@@ -295,6 +295,7 @@ def local_settings(tmp_path, monkeypatch):
         "YANDEX_API_KEY",
         "BIS_OCR_PROVIDER",
         "BIS_STT_PROVIDER",
+        "BIS_YANDEX_API_KEY_ENV",
         "BIS_LIBRARY_ROOTS",
     ]
     before = {key: os.environ.get(key) for key in keys}
@@ -494,3 +495,93 @@ def test_doc_piece_table_preserves_unicode_and_cells():
             return io.BytesIO(table)
 
     assert read_pieces(word, Package()) == 'Договор № 123\nКабель | 125 м'
+
+
+def test_ai_settings_survive_repeated_saves_and_fresh_process(client, auth, local_settings, monkeypatch):
+    import subprocess
+    import sys
+
+    monkeypatch.setenv('BIS_YANDEX_API_KEY_ENV', 'OLD_UNUSED_KEY')
+    get_settings.cache_clear()
+    first = client.post('/api/workspace/ai-setup', headers=auth,
+                        json={'folder_id': 'folderone', 'api_key': 'fixture-persistent-key'})
+    assert first.status_code == 200
+    original_config = get_settings().llm_config_file
+    original_content = original_config.read_bytes()
+    for _ in range(3):
+        response = client.post('/api/workspace/ai-setup', headers=auth, json={'folder_id': 'foldertwo'})
+        assert response.status_code == 200, response.text
+        status = client.get('/api/workspace/reading-status', headers=auth).json()
+        assert status['key_configured'] and status['text_configured'] and status['ocr_configured']
+    assert original_config.read_bytes() == original_content
+    env = dict(os.environ)
+    for key in list(env):
+        if key.startswith(('BIS_', 'YANDEX_')):
+            env.pop(key)
+    script = '''
+from pathlib import Path
+from bis.local import load_env
+load_env(Path('.env'), prefer_file=True)
+from bis.config import get_settings
+from bis.llm.gateway import get_gateway
+s=get_settings()
+assert s.yandex()==('foldertwo','fixture-persistent-key')
+assert get_gateway().entries['yandexgpt'].provider.client.headers['Authorization']=='Api-Key fixture-persistent-key'
+assert get_gateway().has_capability('text')==['yandexgpt']
+from bis import ocr
+assert ocr.available()
+print('restart OK')
+'''
+    result = subprocess.run([sys.executable, '-c', script], cwd=local_settings, env=env, capture_output=True, text=True, timeout=20)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == 'restart OK'
+
+
+def test_gateway_build_cannot_overwrite_new_ai_settings(client, auth, local_settings, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    from bis.api.workspace import AISetup, ai_setup
+    from bis.llm.gateway import LLMGateway, get_gateway, set_gateway
+
+    ai_setup(AISetup(folder_id='oldfolder', api_key='fixture-old-key'), None)
+    set_gateway(None)
+    entered, release = Event(), Event()
+    original = LLMGateway.from_settings
+
+    def delayed(cls, settings):
+        entered.set()
+        assert release.wait(5)
+        return original(settings)
+
+    monkeypatch.setattr(LLMGateway, 'from_settings', classmethod(delayed))
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        old = pool.submit(get_gateway)
+        assert entered.wait(5)
+        saved = pool.submit(ai_setup, AISetup(folder_id='newfolder', api_key='fixture-new-key'), None)
+        release.set()
+        old.result(timeout=10)
+        saved.result(timeout=10)
+    gateway = get_gateway()
+    assert gateway.entries['yandexgpt'].provider.model.startswith('gpt://newfolder/')
+    assert gateway.entries['yandexgpt'].provider.client.headers['Authorization'] == 'Api-Key fixture-new-key'
+
+
+def test_failed_save_retains_previous_configuration(client, auth, local_settings, monkeypatch):
+    from bis.api.workspace import AISetup, ai_setup
+    from bis.llm.gateway import get_gateway
+    from bis.services import local_config
+
+    ai_setup(AISetup(folder_id='oldfolder', api_key='fixture-old-key'), None)
+    before = (local_settings / '.env').read_bytes()
+    gateway = get_gateway()
+
+    def fail(values):
+        raise PermissionError('fixture locked file')
+
+    monkeypatch.setattr(local_config, 'save', fail)
+    with pytest.raises(PermissionError):
+        ai_setup(AISetup(folder_id='newfolder', api_key='fixture-new-key'), None)
+    assert (local_settings / '.env').read_bytes() == before
+    assert get_gateway() is gateway
+    assert get_settings().yandex() == ('oldfolder', 'fixture-old-key')

@@ -148,7 +148,9 @@ class Settings(BaseSettings):
 
     def llm_providers(self) -> list[ProviderConfig]:
         raw: list[dict[str, Any]] | None = None
-        if self.llm_config_file and self.llm_config_file.exists():
+        if self.llm_config_file:
+            if not self.llm_config_file.is_file():
+                raise ValueError("Файл настройки модели не найден. Восстановите подключение в Базах данных → ИИ и качество чтения.")
             data = json.loads(self.llm_config_file.read_text(encoding="utf-8"))
             raw = data.get("providers")
         elif self.llm_providers_json:
@@ -159,7 +161,9 @@ class Settings(BaseSettings):
         return [ProviderConfig.model_validate(p) for p in raw]
 
     def llm_routes(self) -> dict[str, list[str]]:
-        if self.llm_config_file and self.llm_config_file.exists():
+        if self.llm_config_file:
+            if not self.llm_config_file.is_file():
+                raise ValueError("Файл настройки модели не найден. Восстановите подключение в Базах данных → ИИ и качество чтения.")
             data = json.loads(self.llm_config_file.read_text(encoding="utf-8"))
             if data.get("routes"):
                 return data["routes"]
