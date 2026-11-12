@@ -171,6 +171,8 @@ def detect_type(gateway, text: str, name: str) -> tuple[str, str]:
     """(тип, кем определён)."""
     # тип — по названию файла и заголовку документа (первые строки), а не по упоминаниям в тексте:
     # в договоре встречаются «КС-2» и «АОСР», в письме — «исполнительная схема»
+    if re.match(r'^\s*договор(?:\s+(?:суб)?подряда|\s*№|\s+(?:поставки|оказания))', text, re.I):
+        return 'contract', 'rules'
     head = "\n".join(ln for ln in text.splitlines() if ln.strip())[:300]
     probe = (Path(name).stem.replace("_", " ") + "\n" + head).lower()
     if re.search(r"\bисх\.?\s*№|^\s*вх\.?\s*№", head, re.IGNORECASE | re.MULTILINE):

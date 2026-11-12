@@ -22,7 +22,7 @@ def documents(category: Literal['documents', 'schemes', 'project', 'contracts'],
               offset: int = 0, q: str | None = Query(None, max_length=300), db: Session = Depends(get_db), user: User = Depends(require('documents:read'))):
     scope = db.info.get('source_context')
     project = scope.object_id if scope else None
-    kinds = {'documents': ['aosr', 'aook', 'id_registry', 'work_journal'], 'schemes': ['scheme', 'survey'],
+    kinds = {'documents': ['letter', 'aosr', 'aook', 'id_registry', 'work_journal'], 'schemes': ['scheme', 'survey'],
              'project': ['project_doc', 'other'], 'contracts': ['contract']}[category]
     stmt = select(Document).where(Document.organization_id == user.organization_id, Document.kind.in_(kinds),
         Document.status != 'replaced', or_(Document.object_id == project if project else False,
@@ -65,38 +65,39 @@ def documents(category: Literal['documents', 'schemes', 'project', 'contracts'],
 
 @router.get('/reading-status')
 def reading_status(user: User = Depends(require('knowledge:read'))):
-    from bis.services.local_config import LOCK
-
-    with LOCK:
-        return _reading_status()
+    return _reading_status()
 
 
 def _reading_status():
-    from bis import ocr
+    import os
+
     from bis.config import get_settings
-    from bis.llm.gateway import get_gateway
+    from bis.llm import gateway as gateway_module
 
     settings = get_settings()
     try:
-        gateway = get_gateway()
-        providers = [{'name': name, 'capabilities': list(entry.capabilities)} for name, entry in gateway.entries.items()
-                     if getattr(entry.provider, 'model', '') not in ('', 'offline')]
-        text_configured = bool(gateway.has_capability('text', 'chat'))
-        vision_configured = bool(gateway.has_capability('vision', 'vision'))
+        configs = {p.name: p for p in settings.llm_providers() if p.kind != 'offline'}
+        routes = settings.llm_routes()
+        names = routes.get('chat') or routes.get('default') or list(configs)
+        vision_names = routes.get('vision') or routes.get('default') or list(configs)
+        providers = [{'name': p.name, 'capabilities': p.capabilities} for p in configs.values()]
+        text_configured = any(name in configs and 'text' in configs[name].capabilities for name in names)
+        vision_configured = any(name in configs and 'vision' in configs[name].capabilities for name in vision_names)
         error = None
-    except Exception as exc:  # noqa: BLE001 — diagnostics must remain usable with broken provider settings
+    except Exception as exc:  # noqa: BLE001 — settings remain accessible even if a provider cannot start
         providers, error = [], f'Ошибка настройки модели: {type(exc).__name__}'
         text_configured, vision_configured = False, False
     folder, key = settings.yandex()
+    cached_gateway = gateway_module._gateway
     from bis import voice
 
-    return {'providers': providers, 'model_error': error, 'ocr_configured': ocr.available() and bool(key),
+    return {'providers': providers, 'model_error': error,
+            'ocr_configured': settings.ocr_provider == 'yandex' and bool(folder and key),
             'text_configured': text_configured, 'vision_configured': vision_configured,
             'ocr_provider': settings.ocr_provider, 'yandex_folder_set': bool(folder),
-            'key_configured': bool(key), 'last_model_attempts': list(gateway.health.values()) if error is None else [],
-            'folder_id': folder, 'local_setup_available': bool(__import__('os').environ.get('BIS_LOCAL_DIR')),
-            'voice': voice.status(),
-            'note': 'Наличие настроек не подтверждает доступ к облаку. Проверка выполняется отдельно.'}
+            'key_configured': bool(key), 'last_model_attempts': list(cached_gateway.health.copy().values()) if cached_gateway else [],
+            'folder_id': folder, 'local_setup_available': bool(os.environ.get('BIS_LOCAL_DIR')),
+            'voice': voice.status(), 'note': 'Настройки и доступность сервиса проверяются отдельно.'}
 
 
 @router.get('/scheme-needs')
@@ -258,7 +259,8 @@ def _save_ai_setup(body: AISetup):
 
 
 @router.post('/ocr-check')
-def check_ocr(user: User = Depends(require('settings:write'))):
+def check_ocr(db: Session = Depends(get_db), user: User = Depends(require('settings:write'))):
+    db.close()  # release the authentication connection before a slow cloud call
     import io
 
     from PIL import Image, ImageDraw

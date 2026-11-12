@@ -128,6 +128,9 @@ def retrieve(ctx, question: str) -> str:
                 numbered = re.search(r"(?:договор\w*\s*)?№\s*([\w./-]+)", question, re.I)
                 if numbered:
                     exact = [d for d in candidates if (d.get("number") or "").casefold() == numbered[1].casefold()]
+                    if not exact:
+                        exact = [d for d in candidates if re.search(r'(?<!\d)' + re.escape(numbered[1]) + r'(?![\w./-])',
+                            d.get('title') or '', re.I)]
                     if exact:
                         candidates = exact
                 focused = ctx.focus.get("document")
@@ -137,7 +140,9 @@ def retrieve(ctx, question: str) -> str:
                         candidates = matches
                 # Search hits do not prove intent when more than one contract is present.
                 found["contract_candidates"] = candidates
-                overview = re.search(r"\b(все|всех|оба|кажд\w*|сравн\w*|список|обзор|сколько)\b", question, re.I)
+                overview = re.search(r"\b(все|всех|оба|кажд\w*|сравн\w*|список|обзор)\b", question, re.I)
+                if re.search(r"сколько\s+(?:всего\s+)?договоров", question, re.I):
+                    overview = True
                 if len(candidates) > 1 and not overview:
                     ctx.choices = candidates
                 selected = candidates if len(candidates) == 1 and not overview else []

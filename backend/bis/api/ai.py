@@ -241,7 +241,8 @@ def assemble(body: AssembleIn, db: Session = Depends(get_db), user: User = Depen
 
 
 @router.post("/ai/models/check")
-def models_check(user: User = Depends(require("settings:write"))):
+def models_check(db: Session = Depends(get_db), user: User = Depends(require("settings:write"))):
+    db.close()
     """Проверить подключение моделей (администратор): отвечает ли каждый провайдер, умеет ли JSON."""
     from bis.llm.check import check_providers
 

@@ -456,7 +456,7 @@ class Agent:
             from bis.brain.orchestrator import answer, investigate, question_plan
 
             contract_question = re.search(r'договор|генподряд|субподряд|неустойк|оплат|аванс|гаранти', user_text, re.I)
-            if not ctx.selected_document and not contract_question and question_plan(user_text, ctx.focus)['predicates'] and has_scope(ctx.user.role, 'documents:read'):
+            if not requests_write(user_text) and not ctx.selected_document and not contract_question and question_plan(user_text, ctx.focus)['predicates'] and has_scope(ctx.user.role, 'documents:read'):
                 try:
                     with ctx.db.begin_nested():
                         investigation = investigate(ctx, user_text)
@@ -490,8 +490,15 @@ class Agent:
             discovered = retrieve(ctx, user_text)
             if discovered:
                 messages.append(Message(role="system", content=discovered))
+        if not requests_write(user_text):
+            from bis.agents.contract_answers import contract_amount_answer
+
+            amount = contract_amount_answer(ctx, user_text)
+            if amount:
+                return AgentResult(text=amount, agent=self.name, citations=ctx.citations, documents=ctx.documents,
+                                   trace=ctx.trace, provider='contract_evidence', model='quoted-amount')
         scope = ctx.db.info.get("source_context")
-        if scope and scope.strict and re.search(r"норматив|\bгост\b|\bснип\b|\bсп\s*\d|допустим|требовани|по норм|толщин|расстояни|по стандарт", user_text, re.I):
+        if not requests_write(user_text) and scope and scope.strict and re.search(r"норматив|\bгост\b|\bснип\b|\bсп\s*\d|допустим|требовани|по норм|толщин|расстояни|по стандарт", user_text, re.I):
             from bis.agents.builtin_tools import SearchArgs, search_knowledge
 
             result = search_knowledge.handler(ctx, SearchArgs(query=user_text, scope="norms"))
@@ -582,10 +589,16 @@ class Agent:
                    "Результат ниже может быть неполным."
         missing_choices = ctx.choices and "?" in text and not any(
             str(c.get("number") or c.get("title") or c.get("name") or "\0") in text for c in ctx.choices)
-        if (deflects(text) or missing_choices) and not wrote and not re.search(r"\[\d+\]", text):
+        if not requests_write(user_text) and (deflects(text) or missing_choices) and not wrote and not re.search(r"\[\d+\]", text):
             recovered_answer = recovery_answer(ctx)
             if recovered_answer:
                 text = recovered_answer
+        if not requests_write(user_text) and not wrote:
+            from bis.agents.contract_answers import contract_amount_answer
+
+            confirmed_amount = contract_amount_answer(ctx, user_text)
+            if confirmed_amount:
+                text = confirmed_amount
         scope = ctx.db.info.get("source_context")
         if scope and scope.strict and not wrote:
             refs = {int(n) for n in re.findall(r"\[(\d{1,3})\]", text)}

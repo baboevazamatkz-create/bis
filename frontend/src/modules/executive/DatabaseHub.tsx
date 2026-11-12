@@ -28,6 +28,7 @@ export default function DatabaseHub({ user }: { user: User }) {
   const busy = !!pending.database;
   const refreshing = useRef(false);
   const configRevision = useRef(0);
+  const checks = useRef(new Set<AbortController>());
   const mounted = useRef(true);
   const [connecting, setConnecting] = useState(false);
   const [path, setPath] = useState('');
@@ -48,7 +49,7 @@ export default function DatabaseHub({ user }: { user: User }) {
       if (signal?.aborted || !mounted.current) return;
       setState(result);
       const jobs: Promise<unknown>[] = [
-        api<ReadingStatus>('/workspace/reading-status', { signal }).then((status) => {
+        api<ReadingStatus>('/workspace/reading-status', { signal, timeoutMs: 8000 }).then((status) => {
           if (signal?.aborted || !mounted.current || revision !== configRevision.current) return;
           setReading(status); setFolder((old) => old || status.folder_id || '');
         }),
@@ -94,10 +95,11 @@ export default function DatabaseHub({ user }: { user: User }) {
       if (mounted.current) setPending((old) => { const next = { ...old }; delete next[scope]; return next; });
     }
   }
-  async function checkCurrent<T>(run: () => Promise<T>): Promise<T> {
+  async function checkCurrent<T>(run: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    const controller = new AbortController(); checks.current.add(controller);
     const revision = configRevision.current;
-    try { return await run(); }
-    finally { if (revision !== configRevision.current) throw new Error('Настройки изменились во время проверки. Повторите проверку с новым подключением.'); }
+    try { return await run(controller.signal); }
+    finally { checks.current.delete(controller); if (revision !== configRevision.current) throw new Error('Настройки изменились во время проверки. Повторите проверку с новым подключением.'); }
   }
   async function uploadFiles(list: FileList | null) {
     if (!list?.length) return;
@@ -189,9 +191,9 @@ export default function DatabaseHub({ user }: { user: User }) {
       {reading && <p className="small muted">Ключ Яндекса: {reading.key_configured ? 'задан' : 'не задан'}. Доступность сервиса проверяется отдельно; временная ошибка не удаляет ключ.</p>}
       {reading?.last_model_attempts?.map((attempt) => <p className={attempt.ok ? 'small muted' : 'small text-bad'} key={attempt.provider}>{attempt.provider}: {attempt.ok ? 'последний запрос выполнен' : `ошибка последнего запроса — ${attempt.error}`}</p>)}
       {reading?.model_error && <p className="text-bad">{reading.model_error}</p>}
-      {canWrite && <div className="row"><button className="btn" disabled={!!pending['model-check'] || !!pending['ai-save']} onClick={() => void action(async () => setCheck(await checkCurrent(() => api<ModelCheck>('/ai/models/check', { method: 'POST', timeoutMs: 130_000 }))), 'Проверка моделей завершена.', 'model-check', 'Проверяю языковую модель (до 130 секунд)…')}>Проверить ИИ</button>
-        <button className="btn" disabled={!!pending['ocr-check'] || !!pending['ai-save']} onClick={() => void action(async () => { const result = await checkCurrent(() => api<{text: string}>('/workspace/ocr-check', { method: 'POST', timeoutMs: 130_000 })); if (!result.text.trim()) throw new Error('OCR не извлёк текст контрольного изображения'); }, 'OCR прочитал контрольное изображение. Можно перечитать сканы.', 'ocr-check', 'Проверяю OCR (до 130 секунд)…')}>Проверить OCR</button>
-        {reading?.local_setup_available && <button className="btn" onClick={() => setConfigure(!configure)}>Подключить ИИ и OCR</button>}</div>}
+      {canWrite && <div className="row">{(pending['model-check'] || pending['ocr-check']) && <button className="btn" onClick={() => checks.current.forEach((c) => c.abort())}>Остановить проверки</button>}<button className="btn" disabled={!!pending['model-check'] || !!pending['ai-save']} onClick={() => void action(async () => setCheck(await checkCurrent((signal) => api<ModelCheck>('/ai/models/check', { method: 'POST', signal, timeoutMs: 130_000 }))), 'Проверка моделей завершена.', 'model-check', 'Проверяю языковую модель (до 130 секунд)…')}>Проверить ИИ</button>
+        <button className="btn" disabled={!!pending['ocr-check'] || !!pending['ai-save']} onClick={() => void action(async () => { const result = await checkCurrent((signal) => api<{text: string}>('/workspace/ocr-check', { method: 'POST', signal, timeoutMs: 130_000 })); if (!result.text.trim()) throw new Error('OCR не извлёк текст контрольного изображения'); }, 'OCR прочитал контрольное изображение. Можно перечитать сканы.', 'ocr-check', 'Проверяю OCR (до 130 секунд)…')}>Проверить OCR</button>
+        {(!reading || reading.local_setup_available) && <button className="btn" onClick={() => setConfigure(!configure)}>Подключить ИИ и OCR</button>}</div>}
       {check?.providers.length === 0 && <p className="text-bad">Настроен только офлайн-режим.</p>}
       {check?.providers.map((p) => <div className="note" key={p.provider}><strong>{p.provider}: {p.ok ? 'Ответ получен' : 'Ошибка подключения'}</strong><p className="small">{p.error || p.reply}</p>{p.hint && <p className="small text-bad">{p.hint}</p>}</div>)}
       {configure && <div className="connection-editor"><p className="small muted">Яндекс Cloud получит обрабатываемые фрагменты и изображения. Нужны права на языковые модели, OCR и SpeechKit.</p>
