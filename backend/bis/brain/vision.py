@@ -63,6 +63,11 @@ _AUTH = ("403", "401", "Forbidden", "PermissionDenied", "Permission denied", "Н
          "сеть:", "Connection refused", "ConnectError")
 
 
+def reset_status() -> None:
+    """A new connection must not inherit a previous provider's 30 minute cooldown."""
+    _DOWN.update(until=None, reason=None)
+
+
 def available(gateway) -> bool:
     import time
 

@@ -297,6 +297,8 @@ def local_settings(tmp_path, monkeypatch):
     keys = [
         "BIS_LLM_CONFIG_FILE",
         "BIS_ANTHROPIC_API_KEY",
+        "BIS_EMBEDDING_PROVIDER",
+        "BIS_VECTOR_ENABLED",
         "BIS_OPENAI_API_KEY",
         "BIS_COMPATIBLE_API_KEY",
         "BIS_GIGACHAT_API_KEY",
@@ -434,6 +436,7 @@ def test_all_tiff_pages_reach_ocr(monkeypatch):
         )
 
     monkeypatch.setattr(ocr, "available", lambda: True)
+    monkeypatch.setattr(get_settings(), "ocr_provider", "yandex")
     monkeypatch.setattr(type(get_settings()), 'yandex', lambda self: ('fixturefolder', 'fixture-key'))
     monkeypatch.setattr(ocr, "_client", lambda: httpx.Client(transport=httpx.MockTransport(handler)))
     pages, method = archive._raw_pages(out.getvalue(), "scan.tiff", "image/tiff")
@@ -625,3 +628,40 @@ def test_failed_save_retains_previous_configuration(client, auth, local_settings
     assert (local_settings / '.env').read_bytes() == before
     assert get_gateway() is gateway
     assert get_settings().yandex() == ('oldfolder', 'fixture-old-key')
+
+
+def test_legacy_form_recognizes_claude_key_and_drops_retired_yandex(client, auth, local_settings, monkeypatch):
+    from bis.brain import vision
+    from bis.llm.check import check_providers
+    from bis.llm.gateway import get_gateway
+    from bis.llm.providers.offline import ScriptedProvider
+    from bis.rag.embeddings import HashingEmbedder, get_embedder
+
+    original = client.post('/api/workspace/ai-setup', headers=auth, json={
+        'folder_id': 'oldfolder', 'api_key': 'fixture-yandex-key', 'vision_model': 'oldvision/latest'})
+    assert original.status_code == 200
+    monkeypatch.setenv('BIS_EMBEDDING_PROVIDER', 'yandex')
+    get_settings.cache_clear()
+    vision._DOWN.update(until=9999999999, reason='Yandex HTTP 403')
+    response = client.post('/api/workspace/ai-setup', headers=auth, json={
+        'folder_id': 'oldfolder', 'api_key': 'sk-ant-fixture-migration'})
+    assert response.status_code == 200 and response.json()['provider'] == 'anthropic-claude'
+    settings = get_settings()
+    assert settings.ocr_provider == 'anthropic' and settings.embedding_provider == 'hash'
+    assert not settings.vector_enabled
+    assert isinstance(get_embedder(), HashingEmbedder)
+    assert {p.name for p in settings.llm_providers()} == {'anthropic-claude', 'offline'}
+    assert vision._DOWN['until'] is None
+    assert settings.yandex()[1] == 'fixture-yandex-key'
+    gateway = get_gateway()
+    monkeypatch.setattr(gateway.entries['anthropic-claude'], 'provider',
+                        ScriptedProvider(['Москва', '{"ok":true}'], name='anthropic-claude'))
+    assert [r['provider'] for r in check_providers(gateway)] == ['anthropic-claude']
+
+
+def test_mismatched_provider_rejects_anthropic_key_before_saving(client, auth, local_settings):
+    before = (local_settings / '.env').read_bytes()
+    result = client.post('/api/workspace/ai-provider', headers=auth, json={
+        'provider': 'yandex', 'folder_id': 'fixture', 'api_key': 'sk-ant-fixture-key'})
+    assert result.status_code == 422 and 'Anthropic' in result.json()['detail']
+    assert (local_settings / '.env').read_bytes() == before

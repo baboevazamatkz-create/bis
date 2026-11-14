@@ -42,36 +42,49 @@ def _anthropic_images(data: bytes, mime: str | None) -> list[dict[str, str]]:
     from PIL import Image, ImageSequence
 
     mime = (mime or "").lower()
-    images: list[Image.Image] = []
+    out: list[dict[str, str]] = []
+
+    def encode(image):
+        # Encode and release one rendered page at a time instead of retaining all bitmaps.
+        try:
+            if max(image.size) > 2048:
+                image.thumbnail((2048, 2048), Image.Resampling.LANCZOS)
+            buf = io.BytesIO()
+            if mime == "image/png" and image.mode in ("RGB", "RGBA"):
+                image.save(buf, format="PNG", optimize=True)
+                kind = "image/png"
+            else:
+                with image.convert("RGB") as rgb:
+                    rgb.save(buf, format="JPEG", quality=92, optimize=True)
+                kind = "image/jpeg"
+            if buf.tell() > 4_500_000:
+                buf = io.BytesIO()
+                with image.convert("RGB") as rgb:
+                    rgb.save(buf, format="JPEG", quality=85, optimize=True)
+                kind = "image/jpeg"
+            out.append({"mime": kind, "data": base64.b64encode(buf.getvalue()).decode("ascii")})
+        finally:
+            image.close()
+
     if "pdf" in mime:
         import pypdfium2 as pdfium
 
-        pdf = pdfium.PdfDocument(data)
-        for index in range(len(pdf)):
-            page = pdf[index]
-            width, height = page.get_size()
-            images.append(page.render(scale=1600 / max(width, height)).to_pil().convert("RGB"))
+        with pdfium.PdfDocument(data) as pdf:
+            for index in range(len(pdf)):
+                page = pdf[index]
+                try:
+                    width, height = page.get_size()
+                    bitmap = page.render(scale=1600 / max(width, height))
+                    try:
+                        encode(bitmap.to_pil().copy())
+                    finally:
+                        bitmap.close()
+                finally:
+                    page.close()
     else:
         with Image.open(io.BytesIO(data)) as image:
-            images = [frame.copy() for frame in ImageSequence.Iterator(image)]
-
-    out: list[dict[str, str]] = []
-    for image in images:
-        if max(image.size) > 2048:
-            image.thumbnail((2048, 2048), Image.Resampling.LANCZOS)
-        buf = io.BytesIO()
-        # PNG preserves fine linework; other inputs are normalized to universally supported JPEG.
-        if mime == "image/png" and image.mode in ("RGB", "RGBA"):
-            image.save(buf, format="PNG", optimize=True)
-            kind = "image/png"
-        else:
-            image.convert("RGB").save(buf, format="JPEG", quality=92, optimize=True)
-            kind = "image/jpeg"
-        if buf.tell() > 4_500_000:
-            buf = io.BytesIO()
-            image.convert("RGB").save(buf, format="JPEG", quality=85, optimize=True)
-            kind = "image/jpeg"
-        out.append({"mime": kind, "data": base64.b64encode(buf.getvalue()).decode("ascii")})
+            for frame in ImageSequence.Iterator(image):
+                encode(frame.copy())
     return out
 
 
@@ -95,7 +108,10 @@ def _anthropic_recognize_pages(data: bytes, mime: str | None) -> list[str]:
             )
         except LLMError as exc:
             raise OCRError(f"Claude Vision OCR: {exc}") from exc
-        return response.message.content.strip()
+        text = response.message.content.strip()
+        if response.stop_reason in ('max_tokens', 'refusal') or not text:
+            raise OCRError('Claude Vision OCR: страница прочитана не полностью; повторите обработку')
+        return text
 
     with ThreadPoolExecutor(max_workers=min(4, len(images))) as pool:
         return list(pool.map(read, images))

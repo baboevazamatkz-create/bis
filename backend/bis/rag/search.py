@@ -210,7 +210,7 @@ def hybrid_search(
         if clause:
             stmt = stmt.where(or_(KnowledgeChunk.clause == clause, KnowledgeChunk.clause.like(clause + ".%")))
             ranked.append(list(db.execute(stmt.order_by(KnowledgeChunk.ord).limit(5)).all()))
-        elif VECTOR and qvec is not None:
+        elif VECTOR and get_settings().vector_enabled and qvec is not None:
             stmt = stmt.order_by(KnowledgeChunk.embedding.cosine_distance(qvec)).limit(pool)
             ranked.append(list(db.execute(stmt).all()))
         else:
@@ -224,7 +224,7 @@ def hybrid_search(
             weights.append(1.3)
         except ImportError:
             logging.getLogger(__name__).warning("Недоступен NumPy: поиск продолжится по тексту")
-    vectors = [(qvec, 1.0)] if VECTOR and qvec is not None else []
+    vectors = [(qvec, 1.0)] if VECTOR and get_settings().vector_enabled and qvec is not None else []
     if expansions and vectors:
         with contextlib.suppress(Exception):
             vectors.append((embedder.embed_query(query + ". " + "; ".join(expansions)), 0.7))

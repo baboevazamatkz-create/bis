@@ -37,6 +37,7 @@ try {
 }
 if (-not $Key) { $Key = Get-Setting 'YANDEX_API_KEY' }
 if (-not $Key -or $Key -match '\s') { throw 'An API key without whitespace is required. Settings were not changed.' }
+if ($Key.StartsWith('sk-ant-')) { throw 'This is an Anthropic key. Open BIS: Databases > Select AI provider > Anthropic. Settings were not changed.' }
 $ConfigDir = Join-Path $BisRoot 'config'
 $ConfigPath = Join-Path $ConfigDir 'llm.yandex-text.json'
 $ExistingConfig = Get-Setting 'BIS_LLM_CONFIG_FILE'

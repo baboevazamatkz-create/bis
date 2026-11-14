@@ -80,3 +80,18 @@ def test_anthropic_ocr_routes_every_page_through_vision(monkeypatch):
     monkeypatch.setattr('bis.llm.gateway.get_gateway', lambda: gateway)
     assert ocr.recognize_pages(b'fixture', 'application/pdf') == ['текст page-a', 'текст page-b']
     assert set(gateway.pages) == {'page-a', 'page-b'}
+
+
+def test_anthropic_converts_physical_pdf_and_tiff_pages_in_order():
+    from PIL import Image
+
+    from bis import ocr
+
+    assert len(ocr._anthropic_images(_pdf(3), 'application/pdf')) == 3
+    out = io.BytesIO()
+    Image.new('RGB', (20, 20), 'white').save(out, format='TIFF', save_all=True,
+                                          append_images=[Image.new('RGB', (20, 20), 'black')])
+    images = ocr._anthropic_images(out.getvalue(), 'image/tiff')
+    assert len(images) == 2
+    pixels = [Image.open(io.BytesIO(base64.b64decode(image['data']))).getpixel((0, 0))[0] for image in images]
+    assert pixels[0] > 240 and pixels[1] < 15

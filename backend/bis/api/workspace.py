@@ -101,6 +101,9 @@ def _reading_status():
             'ocr_provider': settings.ocr_provider, 'yandex_folder_set': bool(folder),
             'key_configured': bool(key), 'last_model_attempts': list(cached_gateway.health.copy().values()) if cached_gateway else [],
             'selected_provider': selected_provider,
+            'selected_model': selected_config.model if selected_config else None,
+            'selected_kind': selected_config.kind if selected_config else None,
+            'selected_base_url': selected_config.base_url if selected_config else None,
             'provider_key_configured': bool(selected_config and selected_config.resolved_api_key()),
             'folder_id': folder, 'local_setup_available': bool(os.environ.get('BIS_LOCAL_DIR')),
             'voice': voice.status(), 'note': 'Настройки и доступность сервиса проверяются отдельно.'}
@@ -221,6 +224,12 @@ def _save_ai_provider(body: AIProviderSetup):
     if not (root / '.env').is_file():
         raise HTTPException(409, 'Не найден файл настроек локального пилота')
 
+    supplied_key = body.api_key.get_secret_value().strip() if body.api_key else ''
+    if supplied_key.startswith('sk-ant-') and body.provider != 'anthropic':
+        raise HTTPException(422, 'Это ключ Anthropic. Выберите провайдера Anthropic · Claude.')
+    if body.api_key and not supplied_key:
+        raise HTTPException(422, 'API-ключ пустой')
+
     presets = {
         'anthropic': ('anthropic', 'Claude', body.model or 'claude-opus-5-5', None),
         'openai': ('openai_compat', 'OpenAI', body.model or 'gpt-4.1-mini', 'https://api.openai.com/v1'),
@@ -263,13 +272,15 @@ def _save_ai_provider(body: AIProviderSetup):
         previous_providers, previous_routes = [], {}
     vision_providers = [p.model_dump(exclude_none=True) for p in previous_providers
                         if 'vision' in p.capabilities and p.kind != 'offline' and p.name != provider_name]
+    if body.provider == 'anthropic':
+        vision_providers = []  # no retired cloud providers in Claude checks or fallbacks
     vision_names = {p['name'] for p in vision_providers}
     vision_order = [n for n in previous_routes.get('vision', vision_names) if n in vision_names]
 
     selected = {'name': provider_name, 'kind': kind, 'model': model,
                 'max_sensitivity': 'internal', 'mask_pii': body.provider in ('anthropic', 'openai', 'yandex'),
                 'capabilities': ['text', 'tools', *(['vision'] if body.provider == 'anthropic' else [])],
-                'timeout': 120, 'temperature': 0.2}
+                'timeout': 60 if body.provider == 'anthropic' else 120, 'temperature': 0.2}
     if base_url:
         selected['base_url'] = base_url.rstrip('/')
     if body.provider == 'yandex':
@@ -300,8 +311,17 @@ def _save_ai_provider(body: AIProviderSetup):
             values[key_env[body.provider]] = body.api_key.get_secret_value().strip()
         if body.provider == 'anthropic':
             values['BIS_OCR_PROVIDER'] = 'anthropic'
+            if configured.embedding_provider == 'yandex':
+                values.update(BIS_EMBEDDING_PROVIDER='hash', BIS_VECTOR_ENABLED='false')
     save(values)
     set_gateway(None)
+    from bis.brain.vision import reset_status
+    from bis.rag.embeddings import set_embedder
+    from bis.rag.search import invalidate_vectors
+
+    reset_status()
+    set_embedder(None)
+    invalidate_vectors()
     return {'saved': True, 'provider': provider_name, 'label': label,
             'message': f'{label} выбран для языковой модели. OCR и голосовые настройки сохранены отдельно.'}
 
@@ -311,6 +331,9 @@ def ai_setup(body: AISetup, user: User = Depends(require('settings:write'))):
     from bis.services.local_config import LOCK
 
     with LOCK:
+        # Old browser bundles submit this Yandex-only endpoint. Never send a Claude key there.
+        if body.api_key and body.api_key.get_secret_value().strip().startswith('sk-ant-'):
+            return _save_ai_provider(AIProviderSetup(provider='anthropic', api_key=body.api_key))
         return _save_ai_setup(body)
 
 

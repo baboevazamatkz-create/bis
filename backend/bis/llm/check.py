@@ -31,7 +31,10 @@ def hint_for(error: str) -> str | None:
 
 def check_providers(gateway: LLMGateway) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
+    active = {name for names in gateway.routes.values() for name in names} if gateway.routes else set(gateway.entries)
     for name, entry in gateway.entries.items():
+        if name not in active:
+            continue
         model = getattr(entry.provider, "model", "")
         if model in ("offline", ""):
             continue

@@ -103,11 +103,12 @@ class AnthropicProvider:
         self.cfg = cfg
         self.name = cfg.name
         self.model = cfg.model or DEFAULT_MODEL
+        self._api_key = cfg.resolved_api_key()
         if client is None:
             import anthropic
 
-            kwargs: dict[str, Any] = {"timeout": cfg.timeout, "max_retries": 2}
-            key = cfg.resolved_api_key()
+            kwargs: dict[str, Any] = {"timeout": cfg.timeout, "max_retries": 0}
+            key = self._api_key
             if key:
                 kwargs["api_key"] = key
             if cfg.base_url:
@@ -143,9 +144,9 @@ class AnthropicProvider:
         try:
             response = self.client.beta.messages.create(**params)
         except anthropic.BadRequestError as e:
-            raise LLMError(f"{self.name}: запрос отклонён: {e.message}", retryable=False) from e
+            raise LLMError(f"{self.name}: запрос отклонён: {e.message.replace(self._api_key or chr(0), '[ключ скрыт]')}", retryable=False) from e
         except (anthropic.AuthenticationError, anthropic.PermissionDeniedError, anthropic.NotFoundError) as e:
-            raise LLMError(f"{self.name}: доступ: {e.message}", retryable=False) from e
+            raise LLMError(f"{self.name}: доступ: {e.message.replace(self._api_key or chr(0), '[ключ скрыт]')}", retryable=False) from e
         except anthropic.RateLimitError as e:
             raise LLMError(f"{self.name}: превышен лимит запросов", retryable=True) from e
         except anthropic.APIStatusError as e:

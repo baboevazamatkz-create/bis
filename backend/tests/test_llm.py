@@ -168,13 +168,13 @@ def test_provider_config_expands_env_and_check_reports_hints(monkeypatch):
             raise LLMError('y: HTTP 403: {"error":{"message":"rpc error: code = PermissionDenied desc = ..."}}')
 
     gw = LLMGateway(entries={"ok": ProviderEntry(ScriptedProvider(["Москва", '{"ok": true}'], name="ok")),
-                             "denied": ProviderEntry(Denied()), "offline": ProviderEntry(ScriptedProvider(name="offline"))},
+                             "denied": ProviderEntry(Denied()), "retired": ProviderEntry(Denied()), "offline": ProviderEntry(ScriptedProvider(name="offline"))},
                     routes={"chat": ["ok", "denied"]})
     gw.entries["offline"].provider.model = "offline"
     res = {r["provider"]: r for r in check_providers(gw)}
     assert res["ok"]["ok"] and res["ok"]["reply"] == "Москва" and res["ok"]["json"] is True and res["ok"]["routes"] == ["chat"]
     assert not res["denied"]["ok"] and "ai.languageModels.user" in res["denied"]["hint"]
-    assert "offline" not in res
+    assert "offline" not in res and "retired" not in res
 
 
 def test_yandex_embedder_and_semantic_search_without_pgvector(monkeypatch):
@@ -290,3 +290,28 @@ def test_error_redacts_the_key_used_by_an_inflight_client(monkeypatch):
         provider.complete([Message('user', 'Test')])
     assert 'fixture-original-secret' not in str(caught.value)
     assert '[ключ скрыт]' in str(caught.value)
+
+
+def test_anthropic_auth_error_is_single_request_and_key_is_redacted(monkeypatch):
+    import anthropic
+    import httpx2
+
+    from bis.llm.providers.anthropic_provider import AnthropicProvider
+
+    key = 'sk-ant-fixture-do-not-expose'
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        assert request.headers['x-api-key'] == key
+        return httpx2.Response(401, json={'error': {'type': 'authentication_error', 'message': f'Invalid {key}'}})
+
+    original = anthropic.Anthropic
+    monkeypatch.setattr(anthropic, 'Anthropic', lambda **kw: original(
+        **kw, http_client=httpx2.Client(transport=httpx2.MockTransport(handler))))
+    provider = AnthropicProvider(ProviderConfig(name='claude', kind='anthropic', api_key=key))
+    assert provider.client.max_retries == 0
+    with pytest.raises(LLMError) as error:
+        provider.complete([Message(role='user', content='Проверка')])
+    assert key not in str(error.value) and len(requests) == 1
+    provider.client.close()
