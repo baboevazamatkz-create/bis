@@ -79,15 +79,17 @@ def _reading_status():
         configs = {p.name: p for p in settings.llm_providers() if p.kind != 'offline'}
         routes = settings.llm_routes()
         names = routes.get('chat') or routes.get('default') or list(configs)
+        selected_provider = next((name for name in names if name in configs and configs[name].kind != 'offline'), None)
         vision_names = routes.get('vision') or routes.get('default') or list(configs)
         providers = [{'name': p.name, 'capabilities': p.capabilities} for p in configs.values()]
         text_configured = any(name in configs and 'text' in configs[name].capabilities for name in names)
         vision_configured = any(name in configs and 'vision' in configs[name].capabilities for name in vision_names)
         error = None
     except Exception as exc:  # noqa: BLE001 — settings remain accessible even if a provider cannot start
-        providers, error = [], f'Ошибка настройки модели: {type(exc).__name__}'
+        providers, error, selected_provider = [], f'Ошибка настройки модели: {type(exc).__name__}', None
         text_configured, vision_configured = False, False
     folder, key = settings.yandex()
+    selected_config = configs.get(selected_provider) if not error else None
     cached_gateway = gateway_module._gateway
     from bis import voice
 
@@ -96,6 +98,8 @@ def _reading_status():
             'text_configured': text_configured, 'vision_configured': vision_configured,
             'ocr_provider': settings.ocr_provider, 'yandex_folder_set': bool(folder),
             'key_configured': bool(key), 'last_model_attempts': list(cached_gateway.health.copy().values()) if cached_gateway else [],
+            'selected_provider': selected_provider,
+            'provider_key_configured': bool(selected_config and selected_config.resolved_api_key()),
             'folder_id': folder, 'local_setup_available': bool(os.environ.get('BIS_LOCAL_DIR')),
             'voice': voice.status(), 'note': 'Настройки и доступность сервиса проверяются отдельно.'}
 
@@ -178,6 +182,119 @@ class AISetup(BaseModel):
     ocr: bool = True
     speech: bool = True
     vision_model: str | None = Field(default=None, pattern=r'^[A-Za-z0-9_./-]+$', max_length=100)
+
+
+class AIProviderSetup(BaseModel):
+    provider: Literal['anthropic', 'openai', 'ollama', 'compatible', 'gigachat', 'yandex']
+    api_key: SecretStr | None = None
+    model: str = Field(default='', pattern=r'^[A-Za-z0-9_.:/-]*$', max_length=160)
+    base_url: str | None = Field(default=None, max_length=500)
+    folder_id: str | None = Field(default=None, pattern=r'^[A-Za-z0-9_-]+$', max_length=100)
+    scope: Literal['GIGACHAT_API_PERS', 'GIGACHAT_API_B2B', 'GIGACHAT_API_CORP'] = 'GIGACHAT_API_CORP'
+
+
+@router.post('/ai-provider')
+def ai_provider_setup(body: AIProviderSetup, user: User = Depends(require('settings:write'))):
+    """Select the text model without changing separate OCR, STT or vision credentials."""
+    from bis.services.local_config import LOCK
+
+    with LOCK:
+        return _save_ai_provider(body)
+
+
+def _save_ai_provider(body: AIProviderSetup):
+    import json
+    import os
+    import uuid
+    from pathlib import Path
+
+    from bis.config import get_settings
+    from bis.llm.gateway import set_gateway
+    from bis.services.local_config import save
+
+    home = os.environ.get('BIS_LOCAL_DIR')
+    if not home:
+        raise HTTPException(409, 'Настройка через интерфейс доступна при локальном запуске BIS-Pilot')
+    root = Path(home)
+    if not (root / '.env').is_file():
+        raise HTTPException(409, 'Не найден файл настроек локального пилота')
+
+    presets = {
+        'anthropic': ('anthropic', 'Claude', body.model or 'claude-opus-5-5', None),
+        'openai': ('openai_compat', 'OpenAI', body.model or 'gpt-4.1-mini', 'https://api.openai.com/v1'),
+        'ollama': ('openai_compat', 'Ollama', body.model or 'qwen3:8b', body.base_url or 'http://127.0.0.1:11434/v1'),
+        'compatible': ('openai_compat', 'Совместимый API', body.model, body.base_url),
+        'gigachat': ('gigachat', 'GigaChat', body.model or 'GigaChat-2-Max', body.base_url),
+        'yandex': ('openai_compat', 'YandexGPT', body.model or 'yandexgpt/latest', 'https://llm.api.cloud.yandex.net/v1'),
+    }
+    kind, label, model, base_url = presets[body.provider]
+    if body.provider == 'yandex' and not body.folder_id:
+        raise HTTPException(422, 'Для YandexGPT укажите Folder ID')
+    if body.provider in ('compatible', 'ollama') and not base_url:
+        raise HTTPException(422, 'Укажите адрес API модели')
+    if body.provider == 'compatible' and not model:
+        raise HTTPException(422, 'Укажите идентификатор модели')
+    if body.provider == 'yandex':
+        model = f'gpt://{body.folder_id}/{model}'
+    key_env = {'anthropic': 'BIS_ANTHROPIC_API_KEY', 'openai': 'BIS_OPENAI_API_KEY',
+               'compatible': 'BIS_COMPATIBLE_API_KEY', 'gigachat': 'BIS_GIGACHAT_API_KEY'}
+    if body.provider in ('openai', 'anthropic', 'gigachat', 'yandex') and not body.api_key:
+        existing_key = os.environ.get('YANDEX_API_KEY') if body.provider == 'yandex' else os.environ.get(key_env[body.provider])
+        if not existing_key:
+            raise HTTPException(422, 'Введите API-ключ выбранного провайдера')
+    if body.api_key and any(c.isspace() for c in body.api_key.get_secret_value().strip()):
+        raise HTTPException(422, 'Ключ API содержит пробелы; проверьте его и повторите ввод')
+    if base_url:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(base_url)
+        if parsed.scheme not in ('http', 'https') or not parsed.netloc:
+            raise HTTPException(422, 'Адрес API должен начинаться с http:// или https://')
+
+    configured = get_settings()
+    try:
+        previous_providers, previous_routes = configured.llm_providers(), configured.llm_routes()
+    except (ValueError, OSError):
+        previous_providers, previous_routes = [], {}
+    vision_providers = [p.model_dump(exclude_none=True) for p in previous_providers
+                        if 'vision' in p.capabilities and p.kind != 'offline']
+    vision_names = {p['name'] for p in vision_providers}
+    vision_order = [n for n in previous_routes.get('vision', vision_names) if n in vision_names]
+
+    provider_name = {'anthropic': 'anthropic-claude', 'openai': 'openai', 'ollama': 'ollama',
+                     'compatible': 'custom-model', 'gigachat': 'gigachat', 'yandex': 'yandexgpt'}[body.provider]
+    selected = {'name': provider_name, 'kind': kind, 'model': model,
+                'max_sensitivity': 'internal', 'mask_pii': body.provider in ('anthropic', 'openai', 'yandex'),
+                'capabilities': ['text', 'tools'], 'timeout': 120, 'temperature': 0.2}
+    if base_url:
+        selected['base_url'] = base_url.rstrip('/')
+    if body.provider == 'yandex':
+        selected.update(api_key_env='YANDEX_API_KEY', auth_scheme='Api-Key')
+    elif body.provider == 'ollama':
+        selected['auth_scheme'] = 'Bearer'
+    elif body.provider == 'gigachat':
+        selected.update(api_key_env=key_env['gigachat'], extra={'scope': body.scope})
+    else:
+        selected['api_key_env'] = key_env[body.provider]
+
+    config = root / 'config' / f'llm.pilot.{uuid.uuid4().hex}.json'
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text(json.dumps({'providers': [selected, *vision_providers,
+        {'name': 'offline', 'kind': 'offline', 'max_sensitivity': 'confidential'}],
+        'routes': {'default': [provider_name, 'offline'], **({'vision': vision_order} if vision_order else {})}},
+        ensure_ascii=False, indent=2), encoding='utf-8')
+    values = {'BIS_LLM_CONFIG_FILE': config.as_posix()}
+    if body.provider == 'yandex':
+        values.update(YANDEX_FOLDER_ID=body.folder_id, BIS_YANDEX_FOLDER_ID=body.folder_id)
+        if body.api_key:
+            values['YANDEX_API_KEY'] = body.api_key.get_secret_value().strip()
+    else:
+        if body.provider != 'ollama' and body.api_key:
+            values[key_env[body.provider]] = body.api_key.get_secret_value().strip()
+    save(values)
+    set_gateway(None)
+    return {'saved': True, 'provider': provider_name, 'label': label,
+            'message': f'{label} выбран для языковой модели. OCR и голосовые настройки сохранены отдельно.'}
 
 
 @router.post('/ai-setup')

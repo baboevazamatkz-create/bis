@@ -296,6 +296,10 @@ def test_selected_contract_answers_read_that_document(client, auth, db, demo):
 def local_settings(tmp_path, monkeypatch):
     keys = [
         "BIS_LLM_CONFIG_FILE",
+        "BIS_ANTHROPIC_API_KEY",
+        "BIS_OPENAI_API_KEY",
+        "BIS_COMPATIBLE_API_KEY",
+        "BIS_GIGACHAT_API_KEY",
         "YANDEX_FOLDER_ID",
         "BIS_YANDEX_FOLDER_ID",
         "YANDEX_API_KEY",
@@ -327,6 +331,33 @@ def test_local_ai_setup_never_returns_the_key_and_preserves_other_settings(clien
     status = client.get("/api/workspace/reading-status", headers=auth)
     assert secret not in status.text and status.json()["ocr_configured"] is True
     assert get_settings().yandex() == ("fixturefolder", secret)
+
+
+def test_anthropic_can_be_selected_in_bis_without_changing_yandex_ocr(client, auth, local_settings):
+    yandex_key = 'fixture-yandex-ocr-key'
+    assert client.post('/api/workspace/ai-setup', headers=auth,
+                       json={'folder_id': 'ocrfolder', 'api_key': yandex_key}).status_code == 200
+    secret = 'sk-ant-fixture-key'
+    response = client.post('/api/workspace/ai-provider', headers=auth, json={
+        'provider': 'anthropic', 'model': 'claude-opus-5-5', 'api_key': secret,
+    })
+    assert response.status_code == 200, response.text
+    assert secret not in response.text
+    settings = get_settings()
+    providers = {p.name: p for p in settings.llm_providers()}
+    assert providers['anthropic-claude'].kind == 'anthropic'
+    assert providers['anthropic-claude'].model == 'claude-opus-5-5'
+    assert providers['anthropic-claude'].resolved_api_key() == secret
+    assert settings.llm_routes()['default'] == ['anthropic-claude', 'offline']
+    from bis.llm.gateway import get_gateway
+    assert get_gateway().entries['anthropic-claude'].provider.model == 'claude-opus-5-5'
+    assert settings.yandex() == ('ocrfolder', yandex_key)
+    status = client.get('/api/workspace/reading-status', headers=auth)
+    assert status.status_code == 200 and secret not in status.text
+    assert status.json()['selected_provider'] == 'anthropic-claude'
+    assert status.json()['provider_key_configured'] is True
+    assert status.json()['ocr_configured'] is True
+    assert 'UNRELATED=preserve' in (local_settings / '.env').read_text()
 
 
 def test_clear_uploaded_sources_does_not_clear_other_projects_or_generated_acts(client, auth, db, demo):
