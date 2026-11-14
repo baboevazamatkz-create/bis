@@ -94,7 +94,9 @@ def _reading_status():
     from bis import voice
 
     return {'providers': providers, 'model_error': error,
-            'ocr_configured': settings.ocr_provider == 'yandex' and bool(folder and key),
+            'ocr_configured': (settings.ocr_provider == 'yandex' and bool(folder and key)) or
+                              (settings.ocr_provider == 'anthropic' and bool(selected_config and
+                                  'vision' in selected_config.capabilities and selected_config.resolved_api_key())),
             'text_configured': text_configured, 'vision_configured': vision_configured,
             'ocr_provider': settings.ocr_provider, 'yandex_folder_set': bool(folder),
             'key_configured': bool(key), 'last_model_attempts': list(cached_gateway.health.copy().values()) if cached_gateway else [],
@@ -251,21 +253,23 @@ def _save_ai_provider(body: AIProviderSetup):
         if parsed.scheme not in ('http', 'https') or not parsed.netloc:
             raise HTTPException(422, 'Адрес API должен начинаться с http:// или https://')
 
+    provider_name = {'anthropic': 'anthropic-claude', 'openai': 'openai', 'ollama': 'ollama',
+                     'compatible': 'custom-model', 'gigachat': 'gigachat', 'yandex': 'yandexgpt'}[body.provider]
+
     configured = get_settings()
     try:
         previous_providers, previous_routes = configured.llm_providers(), configured.llm_routes()
     except (ValueError, OSError):
         previous_providers, previous_routes = [], {}
     vision_providers = [p.model_dump(exclude_none=True) for p in previous_providers
-                        if 'vision' in p.capabilities and p.kind != 'offline']
+                        if 'vision' in p.capabilities and p.kind != 'offline' and p.name != provider_name]
     vision_names = {p['name'] for p in vision_providers}
     vision_order = [n for n in previous_routes.get('vision', vision_names) if n in vision_names]
 
-    provider_name = {'anthropic': 'anthropic-claude', 'openai': 'openai', 'ollama': 'ollama',
-                     'compatible': 'custom-model', 'gigachat': 'gigachat', 'yandex': 'yandexgpt'}[body.provider]
     selected = {'name': provider_name, 'kind': kind, 'model': model,
                 'max_sensitivity': 'internal', 'mask_pii': body.provider in ('anthropic', 'openai', 'yandex'),
-                'capabilities': ['text', 'tools'], 'timeout': 120, 'temperature': 0.2}
+                'capabilities': ['text', 'tools', *(['vision'] if body.provider == 'anthropic' else [])],
+                'timeout': 120, 'temperature': 0.2}
     if base_url:
         selected['base_url'] = base_url.rstrip('/')
     if body.provider == 'yandex':
@@ -281,16 +285,21 @@ def _save_ai_provider(body: AIProviderSetup):
     config.parent.mkdir(parents=True, exist_ok=True)
     config.write_text(json.dumps({'providers': [selected, *vision_providers,
         {'name': 'offline', 'kind': 'offline', 'max_sensitivity': 'confidential'}],
-        'routes': {'default': [provider_name, 'offline'], **({'vision': vision_order} if vision_order else {})}},
+        'routes': {'default': [provider_name, 'offline'],
+                   'vision': [provider_name, *(n for n in vision_order if n != provider_name), 'offline']}
+        },
         ensure_ascii=False, indent=2), encoding='utf-8')
     values = {'BIS_LLM_CONFIG_FILE': config.as_posix()}
     if body.provider == 'yandex':
         values.update(YANDEX_FOLDER_ID=body.folder_id, BIS_YANDEX_FOLDER_ID=body.folder_id)
         if body.api_key:
             values['YANDEX_API_KEY'] = body.api_key.get_secret_value().strip()
+        values['BIS_OCR_PROVIDER'] = 'yandex'
     else:
         if body.provider != 'ollama' and body.api_key:
             values[key_env[body.provider]] = body.api_key.get_secret_value().strip()
+        if body.provider == 'anthropic':
+            values['BIS_OCR_PROVIDER'] = 'anthropic'
     save(values)
     set_gateway(None)
     return {'saved': True, 'provider': provider_name, 'label': label,

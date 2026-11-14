@@ -116,7 +116,7 @@ class Settings(BaseSettings):
     # Yandex Cloud (SpeechKit, Vision OCR): каталог и переменная с ключом AI Studio
     yandex_folder_id: str | None = None  # BIS_YANDEX_FOLDER_ID или YANDEX_FOLDER_ID
     yandex_api_key_env: str = "YANDEX_API_KEY"
-    ocr_provider: Literal["none", "yandex"] = "none"  # распознавание сканов и фото документов
+    ocr_provider: Literal["none", "yandex", "anthropic"] = "none"  # распознавание сканов и фото документов
 
     # Голос: stt_provider=openai — OpenAI-совместимый сервер в закрытом контуре; yandex — SpeechKit
     stt_provider: Literal["openai", "yandex"] = "openai"
