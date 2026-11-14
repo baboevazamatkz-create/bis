@@ -665,3 +665,41 @@ def test_mismatched_provider_rejects_anthropic_key_before_saving(client, auth, l
         'provider': 'yandex', 'folder_id': 'fixture', 'api_key': 'sk-ant-fixture-key'})
     assert result.status_code == 422 and 'Anthropic' in result.json()['detail']
     assert (local_settings / '.env').read_bytes() == before
+
+
+def test_key_save_completes_while_previous_client_initialization_is_blocked(client, auth, local_settings, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    from bis.api.workspace import AISetup, ai_setup
+    from bis.llm.gateway import LLMGateway, get_gateway, set_gateway
+
+    ai_setup(AISetup(folder_id='oldfolder', api_key='fixture-old-key'), None)
+    set_gateway(None)
+    entered, release = Event(), Event()
+    original = LLMGateway.from_settings
+    calls = []
+
+    def delayed(cls, settings):
+        calls.append(settings.llm_config_file)
+        if len(calls) == 1:
+            entered.set()
+            assert release.wait(10)
+        return original(settings)
+
+    monkeypatch.setattr(LLMGateway, 'from_settings', classmethod(delayed))
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        building = pool.submit(get_gateway)
+        assert entered.wait(5)
+        try:
+            saved = pool.submit(ai_setup, AISetup(folder_id='newfolder', api_key='fixture-new-key'), None)
+            assert saved.result(timeout=3)['saved'] is True
+            current = pool.submit(get_gateway).result(timeout=3)
+            assert current.entries['yandexgpt'].provider.model.startswith('gpt://newfolder/')
+        finally:
+            release.set()
+        gateway = building.result(timeout=10)
+        assert gateway is current
+    assert gateway.entries['yandexgpt'].provider.model.startswith('gpt://newfolder/')
+    assert gateway.entries['yandexgpt'].provider.client.headers['Authorization'] == 'Api-Key fixture-new-key'
+    assert len(calls) == 2

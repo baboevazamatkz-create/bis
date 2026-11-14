@@ -199,10 +199,12 @@ class AIProviderSetup(BaseModel):
 
 
 @router.post('/ai-provider')
-def ai_provider_setup(body: AIProviderSetup, user: User = Depends(require('settings:write'))):
+def ai_provider_setup(body: AIProviderSetup, user: User = Depends(require('settings:write')),
+                      db: Session = Depends(get_db)):
     """Select a model while keeping independent STT and OCR credentials intact."""
     from bis.services.local_config import LOCK
 
+    db.close()  # saving local files must not retain the authentication database connection
     with LOCK:
         return _save_ai_provider(body)
 

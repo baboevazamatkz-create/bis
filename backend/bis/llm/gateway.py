@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 
@@ -183,19 +184,46 @@ class LLMGateway:
 
 
 _gateway: LLMGateway | None = None
+_gateway_revision = 0
+_gateway_build_lock = threading.Lock()
 
 
 def get_gateway() -> LLMGateway:
     global _gateway
-    with LOCK:
-        if _gateway is None:
-            from bis.config import get_settings
+    while True:
+        with LOCK:
+            if _gateway is not None:
+                return _gateway
+            revision = _gateway_revision
+            build_lock = _gateway_build_lock
+        # One constructor per revision. Saving creates a new lock so an obsolete constructor
+        # cannot block new requests, even when certificate/proxy discovery never returns.
+        with build_lock:
+            with LOCK:
+                if _gateway is not None:
+                    return _gateway
+                if revision != _gateway_revision:
+                    continue
+                from bis.config import get_settings
 
-            _gateway = LLMGateway.from_settings(get_settings())
-        return _gateway
+                settings = get_settings()
+            try:
+                candidate = LLMGateway.from_settings(settings)
+            except Exception:
+                with LOCK:
+                    if revision != _gateway_revision:
+                        continue
+                raise
+            with LOCK:
+                if revision != _gateway_revision:
+                    continue
+                _gateway = candidate
+                return _gateway
 
 
 def set_gateway(gateway: LLMGateway | None) -> None:
-    global _gateway
+    global _gateway, _gateway_revision, _gateway_build_lock
     with LOCK:
+        _gateway_revision += 1
+        _gateway_build_lock = threading.Lock()
         _gateway = gateway
