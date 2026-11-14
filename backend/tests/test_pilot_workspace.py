@@ -350,7 +350,7 @@ def test_anthropic_can_be_selected_in_bis_without_changing_yandex_ocr(client, au
     assert 'vision' in providers['anthropic-claude'].capabilities
     assert providers['anthropic-claude'].resolved_api_key() == secret
     assert settings.llm_routes()['default'] == ['anthropic-claude', 'offline']
-    assert settings.llm_routes()['vision'][0] == 'anthropic-claude'
+    assert settings.llm_routes()['vision'] == ['anthropic-claude', 'offline']
     assert settings.ocr_provider == 'anthropic'
     from bis.llm.gateway import get_gateway
     assert get_gateway().entries['anthropic-claude'].provider.model == 'claude-opus-5-5'

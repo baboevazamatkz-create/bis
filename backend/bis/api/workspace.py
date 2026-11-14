@@ -197,7 +197,7 @@ class AIProviderSetup(BaseModel):
 
 @router.post('/ai-provider')
 def ai_provider_setup(body: AIProviderSetup, user: User = Depends(require('settings:write'))):
-    """Select the text model without changing separate OCR, STT or vision credentials."""
+    """Select a model while keeping independent STT and OCR credentials intact."""
     from bis.services.local_config import LOCK
 
     with LOCK:
@@ -283,11 +283,11 @@ def _save_ai_provider(body: AIProviderSetup):
 
     config = root / 'config' / f'llm.pilot.{uuid.uuid4().hex}.json'
     config.parent.mkdir(parents=True, exist_ok=True)
+    vision_route = [provider_name, 'offline'] if body.provider == 'anthropic' else [
+        provider_name, *(n for n in vision_order if n != provider_name), 'offline']
     config.write_text(json.dumps({'providers': [selected, *vision_providers,
         {'name': 'offline', 'kind': 'offline', 'max_sensitivity': 'confidential'}],
-        'routes': {'default': [provider_name, 'offline'],
-                   'vision': [provider_name, *(n for n in vision_order if n != provider_name), 'offline']}
-        },
+        'routes': {'default': [provider_name, 'offline'], 'vision': vision_route}},
         ensure_ascii=False, indent=2), encoding='utf-8')
     values = {'BIS_LLM_CONFIG_FILE': config.as_posix()}
     if body.provider == 'yandex':
