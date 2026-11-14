@@ -3,8 +3,8 @@ param([string]$BisRoot = '')
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-$SourceCommit = 'bb0e821a83bb1eb58ddfe8c7faa9e27c45ee41ce'
-$Expected = '0b25106e53080d385eee5a236f0d846d346b49cf96684a02fcde0369b187169d'
+$SourceCommit = '5c897190882085e9bb0c9858e3bee65e0f475674'
+$Expected = 'ffc6d0b0b66f0d2dcd4c4e1887efb0d49b4008f0344bbe7378d3306e31651363'
 if (-not $BisRoot) {
     $Candidates = @('C:\BIS-Pilot', 'C:\Users\Public\BIS-Pilot') | Where-Object { Test-Path (Join-Path $_ '.pilot-installation') }
     if (@($Candidates).Count -ne 1) { throw 'Specify the pilot folder with -BisRoot.' }
