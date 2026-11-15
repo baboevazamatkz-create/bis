@@ -57,9 +57,14 @@ def ingest_bytes(
         raise ValueError(f"Неизвестный тип источника: {kind}")
     mime = mime or mimetypes.guess_type(filename)[0]
     parsed = parse_file(data, filename, mime)
+    pages, method = parsed.pages, "parsed"
+    if parsed.meta.get("needs_ocr") or parsed.meta.get("embedded_images"):
+        from bis.services.archive import _raw_pages
+
+        pages, method = _raw_pages(data, filename, mime)
     key = storage.put(data, filename, prefix=f"knowledge/{org_id or 'global'}")
     if kind in NORMATIVE_KINDS and not designation:
-        designation = detect_designation(parsed.text, filename)
+        designation = detect_designation("\n".join(page.text for page in pages), filename)
     source = KnowledgeSource(
         organization_id=org_id,
         kind=kind,
@@ -72,11 +77,11 @@ def ingest_bytes(
         mime=mime,
         document_id=document_id,
         meta={**parsed.meta, "original_sha256": hashlib.sha256(data).hexdigest(),
-              "reading": reading_report(parsed.pages, "parsed")},
+              "reading": reading_report(pages, method)},
     )
     db.add(source)
     db.flush()
-    index_pages(db, embedder, source, parsed.pages)
+    index_pages(db, embedder, source, pages)
     return source
 
 
