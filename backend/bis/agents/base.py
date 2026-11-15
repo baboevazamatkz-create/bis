@@ -312,24 +312,37 @@ def citation_refs(text: str) -> set[int]:
 
 _PAGE_CITATION = re.compile(
     r'(?P<page_label>\b(?:стр\.|страниц[аеуы])[ \t]*(?P<page>\d+)'
+    r'(?:[ \t]*[-–—][ \t]*(?P<end_page>\d+))?'
     r'(?:[ \t]+(?:договора|документа|источника))?[ \t]*[)\]]?[ \t,;:]*)'
-    r'\[(?P<reference>\d{1,3})\]', re.I)
+    r'\[(?P<reference>\d{1,3}|n)\]', re.I)
 
 
 def align_citation_pages(text: str, citations: list[dict]) -> str:
-    """Align an explicit page label with a unique indexed fragment of the same document."""
+    """Resolve explicit page labels only when the retrieved fragments identify one document."""
     def replace_page_reference(match):
-        page = int(match['page'])
-        reference = int(match['reference'])
-        if not 1 <= reference <= len(citations):
+        first = int(match['page'])
+        last = int(match['end_page'] or first)
+        if not first <= last <= first + 4:
             return match[0]
-        cited = citations[reference - 1]
-        document = cited.get('document_id')
-        if not document or cited.get('page') == page:
-            return match[0]
-        choices = [number for number, citation in enumerate(citations, 1)
-                   if citation.get('document_id') == document and citation.get('page') == page]
-        return f"{match['page_label']}[{choices[0]}]" if len(choices) == 1 else match[0]
+        document = None
+        if match['reference'].isdigit():
+            reference = int(match['reference'])
+            if not 1 <= reference <= len(citations):
+                return match[0]
+            cited = citations[reference - 1]
+            document = cited.get('document_id')
+            if not document or cited.get('page') == first == last:
+                return match[0]
+        chosen = []
+        for page in range(first, last + 1):
+            candidates = [(number, citation['document_id']) for number, citation in enumerate(citations, 1)
+                          if citation.get('document_id') and citation.get('page') == page
+                          and (document is None or citation['document_id'] == document)]
+            if len(candidates) != 1:
+                return match[0]
+            number, document = candidates[0]
+            chosen.append(f'[{number}]')
+        return match['page_label'] + ''.join(chosen)
 
     return _PAGE_CITATION.sub(replace_page_reference, text)
 

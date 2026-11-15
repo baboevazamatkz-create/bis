@@ -91,3 +91,6 @@ def test_explicit_page_label_links_to_unique_fragment_from_same_document():
     assert citation_refs(fixed) == {2}
     assert align_citation_pages('См. стр. 2 [1].', fragments) == 'См. стр. 2 [1].'
     assert align_citation_pages(text, [*fragments, fragments[1]]) == text
+    assert align_citation_pages('См. стр. 9 [n].', fragments) == 'См. стр. 9 [n].'
+    assert align_citation_pages('См. стр. 8–9 [n].', [
+        {'document_id': 'contract-a', 'page': 8}, *fragments]) == 'См. стр. 8–9 [1][3].'
