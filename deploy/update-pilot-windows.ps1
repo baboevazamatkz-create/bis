@@ -3,8 +3,8 @@ param([string]$BisRoot = '', [switch]$ConnectOpenAI)
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-$SourceCommit = 'cdd0439e1b9c45eb3f29baa9cee2240f79902e8f'
-$Expected = 'cb05d545dbcd4f909391fe8db5b24f434038ca2c16138219d1e35c5ad5774363'
+$SourceCommit = 'b69442736765c4ff69009e1b58a0aeb025b24c15'
+$Expected = 'e2179cfbc9091a7c3caf04005615228c0db7876a926baccde45670102fc8a039'
 if (-not $BisRoot) {
     $Candidates = @('C:\BIS-Pilot', 'C:\Users\Public\BIS-Pilot') | Where-Object { Test-Path (Join-Path $_ '.pilot-installation') }
     if (@($Candidates).Count -ne 1) { throw 'Specify the pilot folder with -BisRoot.' }
