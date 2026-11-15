@@ -520,7 +520,8 @@ class Agent:
 
             amount = contract_amount_answer(ctx, user_text)
             if amount:
-                return AgentResult(text=amount, agent=self.name, citations=ctx.citations, documents=ctx.documents,
+                text = self._check_citations(ctx, amount)
+                return AgentResult(text=text, agent=self.name, citations=ctx.citations, documents=ctx.documents,
                                    trace=ctx.trace, provider='contract_evidence', model='quoted-amount')
         scope = ctx.db.info.get("source_context")
         if not requests_write(user_text) and scope and scope.strict and re.search(r"норматив|\bгост\b|\bснип\b|\bсп\s*\d|допустим|требовани|по норм|толщин|расстояни|по стандарт", user_text, re.I):

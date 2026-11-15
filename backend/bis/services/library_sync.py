@@ -111,7 +111,7 @@ def scan(db, storage, embedder, gateway, connection, *, force=False, checkpoint=
                 # Unknown types stay visible for review; semantic enrichment runs separately.
                 dtype, _ = archive.detect_type(None, text, path.name)
                 kind = 'norm' if connection.level == 'knowledge' and not form else (
-                    'project_doc' if dtype == 'project_doc' else 'org_document')
+                    dtype if dtype in ('contract', 'project_doc') and not form else 'org_document')
                 versions = db.scalars(select(LibraryVersion).where(LibraryVersion.file_id == item.id)).all()
                 version = LibraryVersion(file_id=item.id, revision=max((v.revision for v in versions), default=0) + 1,
                     sha256=digest, file_key=storage.put(data, path.name, prefix=f'libraries/{connection.id}'),

@@ -238,7 +238,7 @@ def repair_archive(db: Session) -> dict[str, int]:
 
     from bis.models import KnowledgeChunk, KnowledgeSource, Organization
 
-    fixed = {"objects": 0, "dates": 0, "letters": 0}
+    fixed = {"objects": 0, "dates": 0, "letters": 0, "contracts": 0}
     for org_id in db.scalars(select(Organization.id)).all():
         fixed["objects"] += assign_single_object(db, org_id)
     docs = db.scalars(select(Document).where(Document.source == "archive", Document.date == cast(Document.created_at, Date),
@@ -259,6 +259,24 @@ def repair_archive(db: Session) -> dict[str, int]:
             doc.kind = "letter"
             fixed["letters"] += 1
         doc.data = {**(doc.data or {}), "direction_checked": True}
+    from bis.services.library_sync import is_form
+
+    candidates = db.execute(select(Document, KnowledgeSource).join(
+        KnowledgeSource, KnowledgeSource.document_id == Document.id).where(
+        Document.source == 'library', Document.kind == 'other', Document.status == 'registered',
+        Document.file_name.ilike('договор %'), KnowledgeSource.status == 'active',
+        KnowledgeSource.kind == 'org_document',
+        KnowledgeSource.organization_id == Document.organization_id)).all()
+    for doc, source in candidates:
+        meta = source.meta or {}
+        if is_form(meta.get('relative_path') or doc.file_name, meta.get('level') or 'organization'):
+            continue
+        opening = db.scalar(select(KnowledgeChunk.content).where(KnowledgeChunk.source_id == source.id)
+                            .order_by(KnowledgeChunk.ord).limit(1)) or ''
+        if detect_type(None, opening, doc.file_name)[0] == 'contract':
+            doc.kind = source.kind = 'contract'
+            doc.data = {**(doc.data or {}), 'contract_kind': contract_kind(opening)}
+            fixed['contracts'] += 1
     return fixed
 
 

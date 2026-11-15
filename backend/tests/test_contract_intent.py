@@ -45,3 +45,35 @@ def test_status_does_not_construct_or_wait_for_model_clients(client, auth, monke
     response = client.get('/api/workspace/reading-status', headers=auth)
     assert response.status_code == 200
     assert 'key_configured' in response.json()
+
+
+def test_legacy_library_contract_price_cites_the_page_with_amount(client, auth, db, demo):
+    from bis.acceptance import model_observed
+    from bis.rag.ingest import ingest_pages
+    from bis.rag.parsers import Page
+    from bis.services.archive import repair_archive
+
+    name = 'Договор субподряда 118.pdf'
+    doc = Document(organization_id=demo.id, source='library', kind='other', status='registered',
+                   title=name, file_name=name)
+    db.add(doc)
+    db.flush()
+    source = ingest_pages(db, get_embedder(), org_id=demo.id, kind='org_document',
+                          title=name, document_id=doc.id, pages=[
+                              Page(1, 'Договор субподряда № 118\nСтороны заключили настоящий договор.'),
+                              Page(8, '3.1. Цена договора составляет 42 761 950 руб. 00 копеек,\nбез учёта НДС.'),
+                              Page(17, 'По договору предусмотрены общие правила расчётов.')])
+    db.flush()
+    assert repair_archive(db)['contracts'] == 1
+    assert doc.kind == source.kind == 'contract'
+    assert repair_archive(db)['contracts'] == 0
+    db.commit()
+    response = client.post('/api/chat', headers=auth, json={
+        'message': 'Какова цена по договору и как учитывается НДС? Укажи страницу.',
+        'workspace': 'executive', 'document_id': str(doc.id)})
+    assert response.status_code == 200
+    payload = response.json()
+    assert '42 761 950' in payload['text'] and 'без учёта НДС' in payload['text']
+    assert any(c['used'] and c['page'] == 8 and c['document_id'] == str(doc.id)
+               and '42 761 950' in c['content'] for c in payload['citations'])
+    assert not model_observed(payload)

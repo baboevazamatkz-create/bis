@@ -80,7 +80,8 @@ def normalized(value):
 def model_observed(payload):
     provider = str(payload.get('provider') or '').lower()
     model = str(payload.get('model') or '').lower()
-    deterministic = {'artifact_ledger', 'executive_pipeline', 'project_facts', 'offline', 'test', 'scripted', 'local-offline'}
+    deterministic = {'artifact_ledger', 'contract_evidence', 'executive_pipeline', 'project_facts',
+                     'offline', 'test', 'scripted', 'local-offline'}
     return bool(provider and model and provider not in deterministic and
                 not any(part in model for part in ('offline', 'scripted', 'stored-file', 'evidence-')))
 

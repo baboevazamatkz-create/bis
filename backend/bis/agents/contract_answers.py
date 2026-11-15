@@ -41,7 +41,7 @@ def contract_amount_answer(ctx, question):
         start = full.rfind('\n', max(0, anchor.start() - 30), anchor.start()) + 1
         start = max(start, anchor.start() - 30)
         end = anchor.end() + value.end()
-        tail = full[end:end + 120].split('\n', 1)[0]
+        tail = re.split(r'\n\s*\d+(?:\.\d+)+\.?\s', full[end:end + 180], maxsplit=1)[0]
         quote = full[start:end].strip() + tail
         key = re.sub(r'\s+', '', value.group()).casefold()
         found.setdefault(key, (value.group().strip(), quote))
@@ -50,7 +50,9 @@ def contract_amount_answer(ctx, question):
     lines = []
     for value, quote in list(found.values())[:5]:
         source = next((chunk for chunk in chunks if quote in chunk.content or value in chunk.content), None)
-        citation = f' [{ctx.add_citation(source.to_dict())}]' if source else ''
+        citation = (f' (стр. {source.page})' if source and source.page else '')
+        if source:
+            citation += f' [{ctx.add_citation(source.to_dict())}]'
         lines.append(f'{value}{citation}\n«{quote}»')
     if len(found) == 1:
         return 'Общая сумма по договору — ' + lines[0]

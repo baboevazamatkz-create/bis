@@ -139,7 +139,7 @@ def _repair() -> None:
             db.commit()
         if any(fixed.values()):
             print(f"  Архив: привязано к объекту {fixed['objects']}, даты уточнены у {fixed['dates']}, "
-                  f"исходящих писем найдено {fixed['letters']}", flush=True)
+                  f"исходящих писем найдено {fixed['letters']}, договоров уточнено {fixed['contracts']}", flush=True)
     except Exception as e:  # noqa: BLE001 — запуску это не мешает
         print(f"  Архив: не удалось поправить ({e})", flush=True)
 

@@ -144,7 +144,7 @@ def test_explicitly_visible_word_run_is_not_mistaken_for_hidden_text():
 
 def test_project_pdf_falls_back_when_layout_extractor_fails(monkeypatch):
     from pypdf._page import PageObject
-    from test_project_reading import pdf_bytes
+    from reportlab.pdfgen import canvas
 
     from bis.services.project_reading import page_source
     original = PageObject.extract_text
@@ -155,7 +155,34 @@ def test_project_pdf_falls_back_when_layout_extractor_fails(monkeypatch):
         return original(self, *args, **kwargs)
 
     monkeypatch.setattr(PageObject, 'extract_text', extract)
-    total, get_page = page_source(pdf_bytes(['Шифр РД: ЭМ-123. Участок 123. Прокладка кабеля по проекту.']),
+    buffer = io.BytesIO()
+    pdf = canvas.Canvas(buffer)
+    pdf.drawString(36, 750, 'Drawing EM-123. Section 123. Cable installation instructions.')
+    pdf.save()
+    total, get_page = page_source(buffer.getvalue(),
                                  SimpleNamespace(file_name='project.pdf', mime='application/pdf'))
-    assert total == 1 and 'ЭМ-123' in get_page(0)['text']
+    assert total == 1 and 'EM-123' in get_page(0)['text']
     assert get_page(0)['physical_page'] == 1 and get_page(0)['origin'] == 'pdf_native'
+
+
+def test_knowledge_upload_indexes_ocr_text_from_scan(client, auth, monkeypatch):
+    scan = io.BytesIO()
+    Image.new('RGB', (240, 120), 'white').save(scan, format='PDF')
+    recognized = 'Контроль скана: идентификатор БАЗАЛЬТ473582 и заключение о приёмке.'
+
+    def recognize(data, mime):
+        assert data == scan.getvalue()
+        assert mime == 'application/pdf'
+        return [recognized]
+
+    monkeypatch.setattr(archive, '_ocr_pages', recognize)
+    upload = client.post('/api/knowledge/upload', headers=auth,
+                         files={'file': ('scan.pdf', scan.getvalue(), 'application/pdf')})
+    assert upload.status_code == 201, upload.text
+    source_id = upload.json()['id']
+    chunks = client.get(f'/api/knowledge/sources/{source_id}/chunks', headers=auth)
+    assert chunks.status_code == 200
+    assert any(row['page'] == 1 and recognized in row['content'] for row in chunks.json())
+    search = client.get('/api/knowledge/search', headers=auth, params={'q': 'БАЗАЛЬТ473582'})
+    assert search.status_code == 200
+    assert any(hit['source_id'] == source_id for hit in search.json()['results'])
