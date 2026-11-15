@@ -52,11 +52,7 @@ export default function DatabaseHub({ user }: { user: User }) {
     refreshing.current = true;
     const revision = configRevision.current;
     try {
-      const result = await api<State>('/libraries', { signal });
-      if (signal?.aborted || !mounted.current) return;
-      setState(result);
-      const jobs: Promise<unknown>[] = [
-        api<ReadingStatus>('/workspace/reading-status', { signal, timeoutMs: 8000 }).then((status) => {
+      const statusJob = api<ReadingStatus>('/workspace/reading-status', { signal, timeoutMs: 8000 }).then((status) => {
           if (signal?.aborted || !mounted.current || revision !== configRevision.current) return;
           setReading(status); setFolder((old) => old || status.folder_id || '');
           const selected: Record<string,AIProvider> = { 'anthropic-claude': 'anthropic', openai: 'openai', ollama: 'ollama', 'custom-model': 'compatible', gigachat: 'gigachat', yandexgpt: 'yandex' };
@@ -66,7 +62,13 @@ export default function DatabaseHub({ user }: { user: User }) {
             setProviderUrl(status.selected_base_url || '');
             providerHydrated.current = true;
           }
-        }),
+        });
+      const [libraryResult, statusResult] = await Promise.allSettled([api<State>('/libraries', { signal }), statusJob]);
+      if (signal?.aborted || !mounted.current) return;
+      if (libraryResult.status === 'rejected') throw libraryResult.reason;
+      const result = libraryResult.value;
+      setState(result);
+      const jobs: Promise<unknown>[] = [
         ...result.connections.filter((c) => c.level === level && (c.level !== 'project' || c.object_id === activeProject())).map(async (c) => {
           const rows = await api<FileRow[]>(`/libraries/${c.id}/files`, { signal });
           if (!signal?.aborted && mounted.current) setFiles((old) => ({ ...old, [c.id]: rows }));
@@ -82,6 +84,7 @@ export default function DatabaseHub({ user }: { user: User }) {
       const results = await Promise.allSettled(jobs);
       const failed = results.find((r) => r.status === 'rejected');
       if (failed?.status === 'rejected') throw failed.reason;
+      if (statusResult.status === 'rejected') throw statusResult.reason;
     } finally { refreshing.current = false; }
   }
   function refresh() { void load().catch((e) => { if (mounted.current) setError(`Не удалось обновить сведения: ${e.message}`); }); }
@@ -202,7 +205,7 @@ export default function DatabaseHub({ user }: { user: User }) {
     <details className="panel"><summary>ИИ и качество чтения</summary>
       {Object.entries(pending).filter(([id]) => id !== 'database').map(([id, label]) => <p role="status" key={id}>{label}</p>)}
       <p className="small">Языковая модель: {!reading ? 'получаю состояние…' : reading.text_configured ? 'настройки сохранены' : 'не настроена'} · OCR: {!reading ? 'получаю состояние…' : reading.ocr_configured ? 'настройки сохранены' : 'не настроен'} · чтение чертежей зрением: {reading?.vision_configured ? 'настроено' : 'не подключено'} · голос: {reading?.voice.stt ? 'настроен' : 'не подключён'}</p>
-      {reading && <p className="small muted">Текущая языковая модель: {reading.selected_provider || 'не выбрана'} · {reading.selected_provider === 'ollama' ? 'ключ не требуется' : `ключ ${reading.provider_key_configured ? 'сохранён' : 'не задан'}`}. OCR: {reading.ocr_provider === 'anthropic' ? 'Claude Vision' : reading.ocr_provider === 'yandex' ? 'Яндекс OCR' : 'не подключён'}.</p>}
+      {reading && <p className="small muted">Текущая языковая модель: {reading.selected_provider || 'не выбрана'} · {reading.selected_provider === 'ollama' ? 'ключ не требуется' : `ключ ${reading.provider_key_configured ? 'сохранён' : 'не задан'}`}. OCR: {reading.ocr_provider === 'anthropic' ? 'Claude Vision' : reading.ocr_provider === 'openai' ? 'OpenAI Vision' : reading.ocr_provider === 'yandex' ? 'Яндекс OCR' : 'не подключён'}.</p>}
       {reading?.last_model_attempts?.map((attempt) => <p className={attempt.ok ? 'small muted' : 'small text-bad'} key={attempt.provider}>{attempt.provider}: {attempt.ok ? 'последний запрос выполнен' : `ошибка последнего запроса — ${attempt.error}`}</p>)}
       {reading?.model_error && <p className="text-bad">{reading.model_error}</p>}
       {canWrite && <div className="row">{(pending['model-check'] || pending['ocr-check']) && <button className="btn" onClick={() => checks.current.forEach((c) => c.abort())}>Остановить проверки</button>}<button className="btn" disabled={!!pending['model-check'] || !!pending['ai-save']} onClick={() => void action(async () => setCheck(await checkCurrent((signal) => api<ModelCheck>('/ai/models/check', { method: 'POST', signal, timeoutMs: 130_000 }))), 'Проверка моделей завершена.', 'model-check', 'Проверяю языковую модель (до 130 секунд)…')}>Проверить ИИ</button>
@@ -210,20 +213,23 @@ export default function DatabaseHub({ user }: { user: User }) {
         {(!reading || reading.local_setup_available) && <button className="btn" onClick={() => setConfigure((old) => { configureOpen.current = !old; return !old; })}>Выбрать языковую модель</button>}</div>}
       {check?.providers.length === 0 && <p className="text-bad">Настроен только офлайн-режим.</p>}
       {check?.providers.map((p) => <div className="note" key={p.provider}><strong>{p.provider}: {p.ok ? 'Ответ получен' : 'Ошибка подключения'}</strong><p className="small">{p.error || p.reply}</p>{p.hint && <p className="small text-bad">{p.hint}</p>}</div>)}
-      {configure && <div className="connection-editor"><p className="small muted">Выберите языковую модель. Ключ сохранится локально в настройках BIS. Anthropic также будет использоваться для OCR сканов и чтения изображений. Распознавание голоса остаётся на отдельном STT‑сервисе.</p>
-        <label htmlFor="ai-provider">Провайдер</label><select id="ai-provider" value={provider} onChange={(e) => { const value = e.target.value as AIProvider; setProviderKey(''); setProvider(value); setProviderModel(({ anthropic: 'claude-opus-5-5', openai: 'gpt-4.1-mini', ollama: 'qwen3:8b', compatible: '', gigachat: 'GigaChat-2-Max', yandex: 'yandexgpt/latest' } as Record<AIProvider,string>)[value]); setProviderUrl(value === 'ollama' ? 'http://127.0.0.1:11434/v1' : ''); }}>
+      {configure && <div className="connection-editor"><p className="small muted">Выберите языковую модель. Ключ сохранится локально в настройках BIS. Anthropic и OpenAI также используются для OCR сканов и чтения изображений. Распознавание голоса остаётся на отдельном STT‑сервисе.</p>
+        <label htmlFor="ai-provider">Провайдер</label><select id="ai-provider" value={provider} onChange={(e) => { const value = e.target.value as AIProvider; setProvider(value); setProviderModel(({ anthropic: 'claude-opus-5-5', openai: 'gpt-4.1-mini', ollama: 'qwen3:8b', compatible: '', gigachat: 'GigaChat-2-Max', yandex: 'yandexgpt/latest' } as Record<AIProvider,string>)[value]); setProviderUrl(value === 'ollama' ? 'http://127.0.0.1:11434/v1' : ''); }}>
           <option value="anthropic">Anthropic · Claude</option><option value="openai">OpenAI</option><option value="ollama">Ollama · на этом компьютере</option><option value="compatible">Другой OpenAI‑совместимый API</option><option value="gigachat">GigaChat</option><option value="yandex">YandexGPT</option>
         </select>
         <label htmlFor="ai-model">Модель</label><input id="ai-model" value={providerModel} onChange={(e) => setProviderModel(e.target.value)} placeholder={provider === 'anthropic' ? 'claude-opus-5-5' : 'Идентификатор модели'} />
         {(provider === 'ollama' || provider === 'compatible' || provider === 'gigachat') && <><label htmlFor="ai-url">Адрес API {provider === 'ollama' ? 'Ollama' : '(если отличается от стандартного)'}</label><input id="ai-url" value={providerUrl} onChange={(e) => setProviderUrl(e.target.value)} placeholder={provider === 'ollama' ? 'http://127.0.0.1:11434/v1' : provider === 'compatible' ? 'https://api.example.com/v1' : 'Стандартный адрес GigaChat'} /></>}
         {provider === 'yandex' && <><label htmlFor="ai-folder">Folder ID</label><input id="ai-folder" value={folder} onChange={(e) => setFolder(e.target.value)} /></>}
         {provider === 'gigachat' && <><label htmlFor="gigachat-scope">Тип доступа</label><select id="gigachat-scope" value={gigachatScope} onChange={(e) => setGigachatScope(e.target.value)}><option value="GIGACHAT_API_CORP">Для бизнеса</option><option value="GIGACHAT_API_B2B">B2B</option><option value="GIGACHAT_API_PERS">Для физического лица</option></select></>}
-        {provider !== 'ollama' && <><label htmlFor="ai-provider-key">API‑ключ (пусто — оставить сохранённый)</label><input id="ai-provider-key" type="password" autoComplete="new-password" value={providerKey} onChange={(e) => { setProviderKey(e.target.value); if (e.target.value.trim().startsWith('sk-ant-') && provider !== 'anthropic') { setProvider('anthropic'); setProviderModel('claude-opus-5-5'); setProviderUrl(''); } }} /></>}
+        {provider !== 'ollama' && <><label htmlFor="ai-provider-key">API‑ключ (пусто — оставить сохранённый)</label><input id="ai-provider-key" type="password" autoComplete="new-password" value={providerKey} onChange={(e) => { setProviderKey(e.target.value); if (e.target.value.trim().startsWith('sk-ant-') && provider !== 'anthropic') { setProvider('anthropic'); setProviderModel('claude-opus-5-5'); setProviderUrl(''); } else if (e.target.value.trim().startsWith('sk-proj-') || e.target.value.trim().startsWith('sk-svcacct-')) { setProvider('openai'); setProviderModel('gpt-4.1-mini'); setProviderUrl(''); } }} /></>}
         {provider === 'yandex' && <details><summary>Модель для изображений и чертежей</summary><p className="small muted">Для визуального чтения чертежей укажите доступную вашему аккаунту модель из AI Studio. OCR распознаёт надписи отдельно.</p><input aria-label="Модель зрения" value={visionModel} onChange={(e) => setVisionModel(e.target.value)} placeholder="Идентификатор модели/версия" /></details>}
         <button className="btn primary" disabled={!!pending['ai-save'] || !providerModel.trim() || provider === 'yandex' && !folder.trim() || provider === 'compatible' && !providerUrl.trim()} onClick={() => void action(async () => {
-          await api('/workspace/ai-provider', { method: 'POST', json: { provider, model: providerModel.trim(), api_key: providerKey || null, base_url: providerUrl.trim() || null, folder_id: provider === 'yandex' ? folder.trim() : null, scope: gigachatScope } });
-          configRevision.current += 1; setProviderKey(''); configureOpen.current = false; setConfigure(false); setCheck(null);
-          setReading((old) => old ? { ...old, selected_provider: ({ anthropic: 'anthropic-claude', openai: 'openai', ollama: 'ollama', compatible: 'custom-model', gigachat: 'gigachat', yandex: 'yandexgpt' } as Record<AIProvider,string>)[provider], provider_key_configured: provider !== 'ollama' || old.provider_key_configured, ocr_provider: provider === 'anthropic' ? 'anthropic' : old.ocr_provider, ocr_configured: provider === 'anthropic' ? true : old.ocr_configured, vision_configured: provider === 'anthropic' ? true : old.vision_configured, last_model_attempts: [] } : old);
+          const result = await api<{saved: boolean; provider: string; configuration: ReadingStatus}>('/workspace/ai-provider', { method: 'POST', json: { provider, model: providerModel.trim(), api_key: providerKey || null, base_url: providerUrl.trim() || null, folder_id: provider === 'yandex' ? folder.trim() : null, scope: gigachatScope } });
+          configRevision.current += 1;
+          const confirmed = result.configuration || await api<ReadingStatus>('/workspace/reading-status', { timeoutMs: 8000 });
+          const expected = ({ anthropic: 'anthropic-claude', openai: 'openai', ollama: 'ollama', compatible: 'custom-model', gigachat: 'gigachat', yandex: 'yandexgpt' } as Record<AIProvider,string>)[provider];
+          if (confirmed.selected_provider !== expected) throw new Error('Сервер не подтвердил смену провайдера. Ключ оставлен в форме; настройки нужно проверить.');
+          setReading(confirmed); setProviderKey(''); configureOpen.current = false; setConfigure(false); setCheck(null);
         }, provider === 'anthropic' ? 'Claude выбран для ответов, задач, OCR и чтения изображений. Нажмите «Проверить ИИ».' : 'Выбор языковой модели сохранён. Нажмите «Проверить ИИ».', 'ai-save', 'Сохраняю подключение ИИ…')}>{provider === 'anthropic' ? 'Подключить Claude' : 'Сохранить и выбрать модель'}</button>
       </div>}
     </details>

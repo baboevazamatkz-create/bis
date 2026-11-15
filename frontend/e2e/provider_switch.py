@@ -32,12 +32,16 @@ async def main():
             elif path == '/workspace/ai-provider':
                 body = route.request.post_data_json
                 saved.append(body)
-                assert body['provider'] == 'anthropic' and body['model'] == 'claude-opus-5-5'
-                status.update(selected_provider='anthropic-claude', selected_model='claude-opus-5-5',
-                              ocr_provider='anthropic', vision_configured=True)
-                data = {'saved': True}
+                if body['provider'] == 'anthropic':
+                    assert body['model'] == 'claude-opus-5-5'
+                    status.update(selected_provider='anthropic-claude', selected_model=body['model'], ocr_provider='anthropic', vision_configured=True)
+                else:
+                    assert body['provider'] == 'openai' and body['model'] == 'gpt-4.1-mini'
+                    assert body['api_key'] == 'sk-fixture-old-style-key'
+                    status.update(selected_provider='openai', selected_model=body['model'], ocr_provider='openai', vision_configured=True)
+                data = {'saved': True, 'configuration': dict(status)}
             elif path == '/ai/models/check':
-                data = {'providers': [{'provider': 'anthropic-claude', 'ok': True, 'reply': 'Москва'}]}
+                data = {'providers': [{'provider': status['selected_provider'], 'ok': True, 'reply': 'Москва'}]}
             await route.fulfill(json=data)
 
         await page.route('**/api/**', api)
@@ -53,8 +57,20 @@ async def main():
         await expect(page.get_by_text('OCR: Claude Vision', exact=False)).to_be_visible()
         await page.get_by_role('button', name='Проверить ИИ', exact=True).click()
         await expect(page.get_by_text('anthropic-claude: Ответ получен', exact=True)).to_be_visible()
-        assert len(saved) == 1 and not errors, errors
-        print('PASS: Yandex form hydrates model, Claude key switches provider, polling preserves edits, save/check use Claude.')
+        await page.get_by_role('button', name='Выбрать языковую модель', exact=True).click()
+        await page.locator('#ai-provider-key').fill('sk-fixture-old-style-key')
+        await page.locator('#ai-provider').select_option('openai')
+        await expect(page.locator('#ai-provider-key')).to_have_value('sk-fixture-old-style-key')
+        await page.get_by_role('button', name='Сохранить и выбрать модель', exact=True).click()
+        await expect(page.get_by_text('Текущая языковая модель: openai', exact=False)).to_be_visible()
+        await expect(page.get_by_text('OCR: OpenAI Vision', exact=False)).to_be_visible()
+        await page.get_by_role('button', name='Проверить ИИ', exact=True).click()
+        await expect(page.get_by_text('openai: Ответ получен', exact=True)).to_be_visible()
+        await page.reload()
+        await page.get_by_text('ИИ и качество чтения', exact=True).click()
+        await expect(page.get_by_text('Текущая языковая модель: openai', exact=False)).to_be_visible()
+        assert len(saved) == 2 and not errors, errors
+        print('PASS: provider edits survive polling; typed key survives selection; Claude switches to OpenAI; confirmed state persists on reload.')
         await browser.close()
 
 

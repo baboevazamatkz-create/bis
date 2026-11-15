@@ -95,7 +95,7 @@ def _reading_status():
 
     return {'providers': providers, 'model_error': error,
             'ocr_configured': (settings.ocr_provider == 'yandex' and bool(folder and key)) or
-                              (settings.ocr_provider == 'anthropic' and bool(selected_config and
+                              (settings.ocr_provider in ('anthropic', 'openai') and bool(selected_config and
                                   'vision' in selected_config.capabilities and selected_config.resolved_api_key())),
             'text_configured': text_configured, 'vision_configured': vision_configured,
             'ocr_provider': settings.ocr_provider, 'yandex_folder_set': bool(folder),
@@ -229,6 +229,8 @@ def _save_ai_provider(body: AIProviderSetup):
     supplied_key = body.api_key.get_secret_value().strip() if body.api_key else ''
     if supplied_key.startswith('sk-ant-') and body.provider != 'anthropic':
         raise HTTPException(422, 'Это ключ Anthropic. Выберите провайдера Anthropic · Claude.')
+    if supplied_key.startswith(('sk-proj-', 'sk-svcacct-')) and body.provider != 'openai':
+        raise HTTPException(422, 'Это ключ OpenAI. Выберите провайдера OpenAI.')
     if body.api_key and not supplied_key:
         raise HTTPException(422, 'API-ключ пустой')
 
@@ -274,15 +276,15 @@ def _save_ai_provider(body: AIProviderSetup):
         previous_providers, previous_routes = [], {}
     vision_providers = [p.model_dump(exclude_none=True) for p in previous_providers
                         if 'vision' in p.capabilities and p.kind != 'offline' and p.name != provider_name]
-    if body.provider == 'anthropic':
+    if body.provider in ('anthropic', 'openai'):
         vision_providers = []  # no retired cloud providers in Claude checks or fallbacks
     vision_names = {p['name'] for p in vision_providers}
     vision_order = [n for n in previous_routes.get('vision', vision_names) if n in vision_names]
 
     selected = {'name': provider_name, 'kind': kind, 'model': model,
                 'max_sensitivity': 'internal', 'mask_pii': body.provider in ('anthropic', 'openai', 'yandex'),
-                'capabilities': ['text', 'tools', *(['vision'] if body.provider == 'anthropic' else [])],
-                'timeout': 60 if body.provider == 'anthropic' else 120, 'temperature': 0.2}
+                'capabilities': ['text', 'tools', *(['vision'] if body.provider in ('anthropic', 'openai') else [])],
+                'timeout': 60 if body.provider in ('anthropic', 'openai') else 120, 'temperature': 0.2}
     if base_url:
         selected['base_url'] = base_url.rstrip('/')
     if body.provider == 'yandex':
@@ -296,7 +298,7 @@ def _save_ai_provider(body: AIProviderSetup):
 
     config = root / 'config' / f'llm.pilot.{uuid.uuid4().hex}.json'
     config.parent.mkdir(parents=True, exist_ok=True)
-    vision_route = [provider_name, 'offline'] if body.provider == 'anthropic' else [
+    vision_route = [provider_name, 'offline'] if body.provider in ('anthropic', 'openai') else [
         provider_name, *(n for n in vision_order if n != provider_name), 'offline']
     config.write_text(json.dumps({'providers': [selected, *vision_providers,
         {'name': 'offline', 'kind': 'offline', 'max_sensitivity': 'confidential'}],
@@ -311,8 +313,8 @@ def _save_ai_provider(body: AIProviderSetup):
     else:
         if body.provider != 'ollama' and body.api_key:
             values[key_env[body.provider]] = body.api_key.get_secret_value().strip()
-        if body.provider == 'anthropic':
-            values['BIS_OCR_PROVIDER'] = 'anthropic'
+        if body.provider in ('anthropic', 'openai'):
+            values['BIS_OCR_PROVIDER'] = body.provider
             if configured.embedding_provider == 'yandex':
                 values.update(BIS_EMBEDDING_PROVIDER='hash', BIS_VECTOR_ENABLED='false')
     save(values)
@@ -324,7 +326,7 @@ def _save_ai_provider(body: AIProviderSetup):
     reset_status()
     set_embedder(None)
     invalidate_vectors()
-    return {'saved': True, 'provider': provider_name, 'label': label,
+    return {'saved': True, 'provider': provider_name, 'label': label, 'configuration': _reading_status(),
             'message': f'{label} выбран для языковой модели. OCR и голосовые настройки сохранены отдельно.'}
 
 
@@ -336,6 +338,8 @@ def ai_setup(body: AISetup, user: User = Depends(require('settings:write'))):
         # Old browser bundles submit this Yandex-only endpoint. Never send a Claude key there.
         if body.api_key and body.api_key.get_secret_value().strip().startswith('sk-ant-'):
             return _save_ai_provider(AIProviderSetup(provider='anthropic', api_key=body.api_key))
+        if body.api_key and body.api_key.get_secret_value().strip().startswith(('sk-proj-', 'sk-svcacct-')):
+            return _save_ai_provider(AIProviderSetup(provider='openai', api_key=body.api_key))
         return _save_ai_setup(body)
 
 

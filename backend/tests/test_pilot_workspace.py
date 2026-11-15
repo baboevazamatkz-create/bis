@@ -703,3 +703,43 @@ def test_key_save_completes_while_previous_client_initialization_is_blocked(clie
     assert gateway.entries['yandexgpt'].provider.model.startswith('gpt://newfolder/')
     assert gateway.entries['yandexgpt'].provider.client.headers['Authorization'] == 'Api-Key fixture-new-key'
     assert len(calls) == 2
+
+
+def test_switch_claude_to_openai_removes_previous_routes_and_confirms_disk(client, auth, local_settings):
+    from dotenv import dotenv_values
+
+    assert client.post('/api/workspace/ai-provider', headers=auth, json={
+        'provider': 'anthropic', 'api_key': 'sk-ant-fixture-old-key'}).status_code == 200
+    switched = client.post('/api/workspace/ai-provider', headers=auth, json={
+        'provider': 'openai', 'api_key': 'sk-proj-fixture-new-key'})
+    assert switched.status_code == 200, switched.text
+    status = switched.json()['configuration']
+    assert status['selected_provider'] == 'openai' and status['ocr_provider'] == 'openai'
+    assert status['ocr_configured'] and status['vision_configured'] and status['provider_key_configured']
+    assert 'sk-proj-fixture-new-key' not in switched.text
+    saved = dotenv_values(local_settings / '.env')
+    config = json.loads(get_settings().llm_config_file.read_text())
+    assert {p['name'] for p in config['providers']} == {'openai', 'offline'}
+    assert config['routes'] == {'default': ['openai', 'offline'], 'vision': ['openai', 'offline']}
+    assert saved['BIS_OPENAI_API_KEY'] == 'sk-proj-fixture-new-key'
+
+
+def test_local_openai_configuration_works_without_http_server(client, auth, local_settings):
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    from dotenv import dotenv_values
+
+    assert client.post('/api/workspace/ai-provider', headers=auth, json={
+        'provider': 'anthropic', 'api_key': 'sk-ant-fixture-old-key'}).status_code == 200
+    script = Path(__file__).resolve().parents[2] / 'deploy' / 'set-openai.py'
+    result = subprocess.run([sys.executable, str(script), str(local_settings)],
+        input='sk-proj-fixture-offline-key\n', text=True, capture_output=True, timeout=30, cwd=local_settings)
+    assert result.returncode == 0, result.stderr
+    assert 'OPENAI SAVED' in result.stdout and 'sk-proj-fixture-offline-key' not in result.stdout + result.stderr
+    saved = dotenv_values(local_settings / '.env')
+    config = json.loads(Path(saved['BIS_LLM_CONFIG_FILE']).read_text())
+    assert config['routes']['default'][0] == 'openai' and saved['BIS_OCR_PROVIDER'] == 'openai'
+    assert saved['BIS_OPENAI_API_KEY'] == 'sk-proj-fixture-offline-key'
+    assert saved['UNRELATED'] == 'preserve'

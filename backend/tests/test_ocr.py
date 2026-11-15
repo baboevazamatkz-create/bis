@@ -6,6 +6,7 @@ import json
 import threading
 
 import httpx
+import pytest
 
 
 def _pdf(pages: int) -> bytes:
@@ -56,7 +57,8 @@ def test_pdf_pages_in_parallel_in_order(monkeypatch):
     assert out.count("страница") == 6 and state["calls"] == 6 and state["max"] > 1
 
 
-def test_anthropic_ocr_routes_every_page_through_vision(monkeypatch):
+@pytest.mark.parametrize("provider", ["anthropic", "openai"])
+def test_anthropic_ocr_routes_every_page_through_vision(monkeypatch, provider):
     from bis import ocr
     from bis.config import get_settings
     from bis.llm.types import LLMResponse, Message
@@ -73,7 +75,7 @@ def test_anthropic_ocr_routes_every_page_through_vision(monkeypatch):
                                stop_reason='end', provider='anthropic-claude', model='claude-opus-5-5')
 
     gateway = Gateway()
-    monkeypatch.setattr(get_settings(), 'ocr_provider', 'anthropic')
+    monkeypatch.setattr(get_settings(), 'ocr_provider', provider)
     monkeypatch.setattr(ocr, 'available', lambda: True)
     monkeypatch.setattr(ocr, '_anthropic_images', lambda data, mime: [
         {'mime': 'image/jpeg', 'data': 'page-a'}, {'mime': 'image/jpeg', 'data': 'page-b'}])

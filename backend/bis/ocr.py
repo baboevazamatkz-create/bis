@@ -26,7 +26,7 @@ def available() -> bool:
     s = get_settings()
     if s.ocr_provider == "yandex":
         return all(s.yandex())
-    if s.ocr_provider == "anthropic":
+    if s.ocr_provider in ("anthropic", "openai"):
         try:
             from bis.llm.gateway import get_gateway
 
@@ -107,10 +107,10 @@ def _anthropic_recognize_pages(data: bytes, mime: str | None) -> list[str]:
                 task="vision", sensitivity="internal", max_tokens=8192,
             )
         except LLMError as exc:
-            raise OCRError(f"Claude Vision OCR: {exc}") from exc
+            raise OCRError(f"Vision OCR: {exc}") from exc
         text = response.message.content.strip()
         if response.stop_reason in ('max_tokens', 'refusal') or not text:
-            raise OCRError('Claude Vision OCR: страница прочитана не полностью; повторите обработку')
+            raise OCRError('Vision OCR: страница прочитана не полностью; повторите обработку')
         return text
 
     with ThreadPoolExecutor(max_workers=min(4, len(images))) as pool:
@@ -140,9 +140,9 @@ def recognize(data: bytes, mime: str | None, client: httpx.Client | None = None)
 def recognize_pages(data: bytes, mime: str | None, client: httpx.Client | None = None) -> list[str]:
     """Текст по страницам (порядок сохраняется). Многостраничный PDF — по странице на запрос (синхронный API)."""
     s = get_settings()
-    if s.ocr_provider == "anthropic":
+    if s.ocr_provider in ("anthropic", "openai"):
         if not available():
-            raise OCRError("Claude Vision не настроен: выберите Anthropic и модель с поддержкой изображений")
+            raise OCRError("Модель OCR не настроена: выберите провайдера и модель с поддержкой изображений")
         return _anthropic_recognize_pages(data, mime)
     if s.ocr_provider != "yandex":
         raise OCRError("OCR не подключён")

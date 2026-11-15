@@ -1,5 +1,5 @@
 # Update the existing local pilot, including the web interface. Preserve database and AI keys.
-param([string]$BisRoot = '')
+param([string]$BisRoot = '', [switch]$ConnectOpenAI)
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -43,6 +43,22 @@ foreach ($Name in @('backend', 'deploy', 'docs', 'README.md')) { Copy-Item (Join
 Write-Host '2/3 Updating the application and required dependencies...'
 & $Python -m pip install --upgrade (Join-Path $App 'backend')
 if ($LASTEXITCODE -ne 0) { throw 'Package update failed. Keep the error above. Settings and database were preserved.' }
+if ($ConnectOpenAI) {
+    Write-Host 'Connect OpenAI locally. Paste the OpenAI API key below; input is hidden.' -ForegroundColor Cyan
+    $SecureKey = Read-Host 'OpenAI API key (Enter keeps the saved OpenAI key)' -AsSecureString
+    $KeyPointer = [IntPtr]::Zero
+    $KeyText = ''
+    try {
+        $KeyPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecureKey)
+        $KeyText = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($KeyPointer)
+        $KeyText | & $Python (Join-Path $App 'deploy\set-openai.py') $BisRoot
+        if ($LASTEXITCODE -ne 0) { throw 'OpenAI settings were not confirmed. Keep the error above. No model request was made.' }
+    } finally {
+        $KeyText = $null
+        if ($KeyPointer -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($KeyPointer) }
+        $SecureKey.Dispose()
+    }
+}
 $Web = Join-Path $App 'deploy\web'
 $LauncherText = [regex]::Replace($LauncherText, $WebPattern, [Text.RegularExpressions.MatchEvaluator]{
     param($Match)
