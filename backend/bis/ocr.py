@@ -113,8 +113,14 @@ def _anthropic_recognize_pages(data: bytes, mime: str | None) -> list[str]:
             raise OCRError('Vision OCR: страница прочитана не полностью; повторите обработку')
         return text
 
-    with ThreadPoolExecutor(max_workers=min(4, len(images))) as pool:
-        return list(pool.map(read, images))
+    from contextvars import copy_context
+
+    from bis.runtime import is_background
+
+    workers = 3 if is_background() else 4
+    with ThreadPoolExecutor(max_workers=min(workers, len(images))) as pool:
+        futures = [pool.submit(copy_context().run, read, image) for image in images]
+        return [future.result() for future in futures]
 
 
 def _pdf_pages(data: bytes) -> list[bytes]:

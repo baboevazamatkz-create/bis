@@ -72,7 +72,7 @@ def test_background_session_setup_errors_are_returned_to_browser(monkeypatch):
 
     monkeypatch.setattr(db, "SessionLocal", unavailable)
     response = chat.chat_stream(chat.ChatIn(message="Найди документ"),
-                                db=SimpleNamespace(info={}), user=SimpleNamespace(id="fixture"))
+                                db=SimpleNamespace(info={}, close=lambda: None), user=SimpleNamespace(id="fixture"))
     events = _collect(response)
     assert events[-1]["type"] == "error" and "database unavailable" in events[-1]["detail"]
 
@@ -106,7 +106,7 @@ def test_hung_background_work_has_a_deadline_and_cancellation(monkeypatch):
     monkeypatch.setattr(chat, "STREAM_HEARTBEAT_SECONDS", 0.01)
     monkeypatch.setattr(get_settings(), "chat_timeout_seconds", 0.05)
     events = _collect(chat.chat_stream(chat.ChatIn(message="Подготовь акт"),
-                                      db=SimpleNamespace(info={}), user=me))
+                                      db=SimpleNamespace(info={}, close=lambda: None), user=me))
     assert events[-1]["type"] == "error" and "время ожидания" in events[-1]["detail"]
     assert stopped.wait(1)
 

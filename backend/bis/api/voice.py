@@ -28,7 +28,9 @@ def _read(file: UploadFile) -> bytes:
 
 
 @router.post("/transcribe")
-def transcribe(file: UploadFile = File(...), user: User = Depends(require("knowledge:read"))):
+def transcribe(file: UploadFile = File(...), user: User = Depends(require("knowledge:read")),
+               db: Session = Depends(get_db)):
+    db.close()
     try:
         text = voice.transcribe(_read(file), file.filename or "audio.webm", file.content_type)
     except voice.VoiceError as e:
@@ -40,6 +42,7 @@ def transcribe(file: UploadFile = File(...), user: User = Depends(require("knowl
 def command(file: UploadFile = File(...), session_id: str | None = Form(None), agent: str | None = Form(None),
                   db: Session = Depends(get_db), user: User = Depends(require("knowledge:read"))):
     """Голосовая команда: распознать и сразу передать агентам."""
+    db.close()  # release authentication connection during external STT; the session can reopen for chat
     try:
         text = voice.transcribe(_read(file), file.filename or "audio.webm", file.content_type)
     except voice.VoiceError as e:
@@ -55,7 +58,8 @@ class SpeakIn(BaseModel):
 
 
 @router.post("/speak")
-def speak(body: SpeakIn, user: User = Depends(require("knowledge:read"))):
+def speak(body: SpeakIn, user: User = Depends(require("knowledge:read")), db: Session = Depends(get_db)):
+    db.close()
     try:
         audio, mime = voice.speak(body.text)
     except voice.VoiceError as e:

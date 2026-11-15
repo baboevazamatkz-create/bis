@@ -56,3 +56,28 @@ def test_voice_command_runs_agent(client, auth, stt, monkeypatch):
 def test_voice_endpoints_report_unavailable(client, auth):
     r = client.post("/api/voice/transcribe", headers=auth, files={"file": ("rec.webm", b"audio", "audio/webm")})
     assert r.status_code == 503
+
+
+@pytest.mark.parametrize('status', [200, 503])
+def test_owned_voice_clients_are_closed_on_success_and_error(stt, monkeypatch, status):
+    original = httpx.Client
+    clients = []
+
+    def handler(request):
+        if request.url.path.endswith('transcriptions'):
+            return httpx.Response(status, json={'text': 'готово'})
+        return httpx.Response(status, content=b'audio')
+
+    def create(**kwargs):
+        client = original(transport=httpx.MockTransport(handler), **kwargs)
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr(httpx, 'Client', create)
+    for action in (lambda: voice.transcribe(b'audio'), lambda: voice.speak('готово')):
+        if status == 503:
+            with pytest.raises(voice.VoiceError):
+                action()
+        else:
+            action()
+    assert len(clients) == 2 and all(client.is_closed for client in clients)

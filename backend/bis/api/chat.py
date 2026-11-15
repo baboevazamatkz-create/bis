@@ -251,7 +251,24 @@ def chat_stream(body: ChatIn, db: Session = Depends(get_db), user: User = Depend
             log.exception("Ошибка фонового ответа в чате")
             events.put({"type": "error", "detail": f"Не удалось ответить: {e}"})
 
-    threading.Thread(target=work, daemon=True, name="bis-chat").start()
+    from bis.runtime import chat_workers
+
+    db.close()  # release authentication session before a potentially minutes-long SSE response
+    if not chat_workers.acquire():
+        raise HTTPException(503, 'Два ответа ещё выполняются. Дождитесь их завершения; настройки ИИ сохранены.',
+                            headers={'Retry-After': '2'})
+
+    def bounded_work():
+        try:
+            work()
+        finally:
+            chat_workers.release()  # retain capacity until the actual worker ends, even if the browser disconnects
+
+    try:
+        threading.Thread(target=bounded_work, daemon=True, name="bis-chat").start()
+    except BaseException:
+        chat_workers.release()
+        raise
 
     def stream():
         try:

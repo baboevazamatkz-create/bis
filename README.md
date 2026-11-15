@@ -15,6 +15,8 @@ irm https://raw.githubusercontent.com/baboevazamatkz-create/bis/codex/pilot-read
 irm https://raw.githubusercontent.com/baboevazamatkz-create/bis/codex/pilot-readiness/deploy/update-pilot-windows.ps1 | iex
 ```
 
+[Общие тайм-ауты: воспроизведение, ограничения ресурсов и проверка восстановления](docs/RUNTIME_STABILITY.md).
+
 Настройка ядра «Синапса»: [реестр фактов, противоречия и проверка перед ответом](docs/PROJECT_FACTS.md).
 
 Текущее рабочее пространство — **исполнительная документация для инженера ПТО**: АОСР/АООК,

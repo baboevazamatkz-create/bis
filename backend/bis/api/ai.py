@@ -246,4 +246,4 @@ def models_check(db: Session = Depends(get_db), user: User = Depends(require("se
     """Проверить подключение моделей (администратор): отвечает ли каждый провайдер, умеет ли JSON."""
     from bis.llm.check import check_providers
 
-    return {"providers": check_providers(get_gateway())}
+    return {"providers": check_providers(get_gateway(), task='chat', json_check=False)}

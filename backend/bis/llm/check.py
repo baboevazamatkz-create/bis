@@ -29,9 +29,10 @@ def hint_for(error: str) -> str | None:
     return next((h for key, h in HINTS if key in error), None)
 
 
-def check_providers(gateway: LLMGateway) -> list[dict[str, Any]]:
+def check_providers(gateway: LLMGateway, *, task: str | None = None, json_check: bool = True) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
-    active = {name for names in gateway.routes.values() for name in names} if gateway.routes else set(gateway.entries)
+    active = set(gateway.routes.get(task) or gateway.routes.get('default') or gateway.entries) if task else (
+        {name for names in gateway.routes.values() for name in names} if gateway.routes else set(gateway.entries))
     for name, entry in gateway.entries.items():
         if name not in active:
             continue
@@ -41,16 +42,17 @@ def check_providers(gateway: LLMGateway) -> list[dict[str, Any]]:
         routes = [task for task, names in gateway.routes.items() if name in names]
         started = time.monotonic()
         try:
-            r = entry.provider.complete([Message(role="user", content="Ответь одним словом: столица России?")], max_tokens=16)
+            r = gateway._call(entry.provider, [Message(role="user", content="Ответь одним словом: столица России?")], None, 16, False, False)
             seconds = round(time.monotonic() - started, 1)
             json_ok = None
-            try:
-                j = entry.provider.complete([Message(role="system", content="Отвечай только JSON."),
-                                             Message(role="user", content='Верни {"ok": true}')],
-                                            max_tokens=30, json_mode=True)
-                json_ok = parse_json(j.message.content) is not None
-            except LLMError:
-                json_ok = False
+            if json_check:
+                try:
+                    j = gateway._call(entry.provider, [Message(role="system", content="Отвечай только JSON."),
+                                                 Message(role="user", content='Верни {"ok": true}')],
+                                                tools=None, max_tokens=30, json_mode=True, mask=False)
+                    json_ok = parse_json(j.message.content) is not None
+                except LLMError:
+                    json_ok = False
             out.append({"provider": name, "model": model, "ok": True, "reply": r.message.content.strip()[:80],
                         "json": json_ok, "seconds": seconds, "routes": routes,
                         "capabilities": list(entry.capabilities)})

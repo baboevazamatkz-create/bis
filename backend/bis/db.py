@@ -38,9 +38,18 @@ class TenantMixin:
     )
 
 
-@lru_cache
 def get_engine(url: str | None = None) -> Engine:
-    return create_engine(url or get_settings().database_url, pool_pre_ping=True, future=True)
+    # Cache by the resolved URL, not by () versus (None,), which creates distinct pools.
+    return _engine_for_url(url or get_settings().database_url)
+
+
+@lru_cache
+def _engine_for_url(url: str) -> Engine:
+    settings = get_settings()
+    connection_args = {'connect_timeout': 5, 'options':
+        f'-c lock_timeout={settings.database_lock_timeout_ms} -c statement_timeout={settings.database_statement_timeout_ms}'}
+    return create_engine(url, pool_pre_ping=True, future=True,
+                         pool_timeout=settings.database_pool_timeout, connect_args=connection_args)
 
 
 @lru_cache

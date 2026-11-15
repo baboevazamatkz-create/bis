@@ -5,14 +5,13 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from bis import __version__
 from bis.api.deps import require
 from bis.api.schemas import MemoryIn, MemoryOut, OrganizationOut, OrganizationUpdate, UserIn, UserOut, partial
 from bis.db import get_db
-from bis.llm.gateway import get_gateway
 from bis.models import AuditLog, Organization, OrgMemory, User
 from bis.plugins.sdk import get_registry
 from bis.security import ROLES, hash_password
@@ -22,16 +21,19 @@ router = APIRouter(tags=["admin"])
 
 
 @router.get("/health")
-def health(db: Session = Depends(get_db)):
-    db.execute(text("SELECT 1"))
-    gw = get_gateway()
-    reg = get_registry()
+async def health():
+    """Process liveness: never acquire a DB connection, worker-thread token or model client."""
+    from bis.llm import gateway
+    from bis.plugins import sdk
+    from bis.runtime import snapshot
+
+    cached = gateway._gateway
+    registry = sdk._registry
     return {
-        "status": "ok",
-        "version": __version__,
-        "llm_providers": {n: e.max_sensitivity for n, e in gw.entries.items()},
-        "plugins": list(reg.plugins),
-        "agents": list(reg.agents),
+        'status': 'ok', 'alive': True, 'version': __version__, 'capacity': snapshot(),
+        'llm_providers': {n: e.max_sensitivity for n, e in cached.entries.items()} if cached else {},
+        'plugins': list(registry.plugins) if registry else [],
+        'agents': list(registry.agents) if registry else [],
     }
 
 

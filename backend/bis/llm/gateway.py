@@ -14,6 +14,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 
@@ -149,7 +150,16 @@ class LLMGateway:
         raise LLMError("Все провайдеры недоступны: " + "; ".join(errors))
 
     @staticmethod
-    def _call(
+    def _call(provider, messages, tools, max_tokens, json_mode, mask):
+        from bis.runtime import model_slot
+
+        if getattr(provider, 'model', '') == 'offline':
+            return LLMGateway._call_unlimited(provider, messages, tools, max_tokens, json_mode, mask)
+        with model_slot():
+            return LLMGateway._call_unlimited(provider, messages, tools, max_tokens, json_mode, mask)
+
+    @staticmethod
+    def _call_unlimited(
         provider: LLMProvider,
         messages: list[Message],
         tools: list[ToolSpec] | None,
@@ -183,47 +193,76 @@ class LLMGateway:
         return response
 
 
+@dataclass
+class _GatewayBuild:
+    revision: int
+    event: threading.Event = field(default_factory=threading.Event)
+    result: LLMGateway | None = None
+    error: Exception | None = None
+
+
 _gateway: LLMGateway | None = None
 _gateway_revision = 0
-_gateway_build_lock = threading.Lock()
+_gateway_build: _GatewayBuild | None = None
+
+
+def _construct_gateway(state: _GatewayBuild, settings: Settings):
+    global _gateway
+    from bis.runtime import model_initializers
+
+    try:
+        state.result = LLMGateway.from_settings(settings)
+        with LOCK:
+            if state.revision == _gateway_revision:
+                _gateway = state.result
+    except Exception as exc:  # noqa: BLE001 — deliver construction failures to all waiters
+        state.error = exc
+    finally:
+        model_initializers.release()
+        state.event.set()
 
 
 def get_gateway() -> LLMGateway:
-    global _gateway
+    global _gateway_build
+    from bis.config import get_settings
+    from bis.runtime import model_initializers
+
+    deadline = time.monotonic() + get_settings().model_initialization_wait_seconds
     while True:
         with LOCK:
             if _gateway is not None:
                 return _gateway
-            revision = _gateway_revision
-            build_lock = _gateway_build_lock
-        # One constructor per revision. Saving creates a new lock so an obsolete constructor
-        # cannot block new requests, even when certificate/proxy discovery never returns.
-        with build_lock:
-            with LOCK:
-                if _gateway is not None:
-                    return _gateway
-                if revision != _gateway_revision:
-                    continue
-                from bis.config import get_settings
-
-                settings = get_settings()
-            try:
-                candidate = LLMGateway.from_settings(settings)
-            except Exception:
-                with LOCK:
-                    if revision != _gateway_revision:
-                        continue
-                raise
-            with LOCK:
-                if revision != _gateway_revision:
-                    continue
-                _gateway = candidate
+            if _gateway_build is None:
+                if not model_initializers.acquire():
+                    raise LLMError('Создание клиентов моделей ещё выполняется. Настройки сохранены; повторите позже.')
+                state = _GatewayBuild(_gateway_revision)
+                _gateway_build = state
+                try:
+                    threading.Thread(target=_construct_gateway, args=(state, get_settings()),
+                                     daemon=True, name='bis-model-init').start()
+                except BaseException:
+                    _gateway_build = None
+                    model_initializers.release()
+                    raise
+            state = _gateway_build
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not state.event.wait(remaining):
+            raise LLMError('Клиент модели ещё запускается (сертификаты или настройки сети). '
+                           'BIS продолжает запуск в фоне; ключ сохранён. Повторите проверку через 30 секунд.')
+        with LOCK:
+            if state.revision != _gateway_revision:
+                continue
+            if state.error is not None:
+                if _gateway_build is state:
+                    _gateway_build = None
+                raise state.error
+            if _gateway is not None:
                 return _gateway
 
 
 def set_gateway(gateway: LLMGateway | None) -> None:
-    global _gateway, _gateway_revision, _gateway_build_lock
+    global _gateway, _gateway_revision, _gateway_build
     with LOCK:
         _gateway_revision += 1
-        _gateway_build_lock = threading.Lock()
+        _gateway_build = None
         _gateway = gateway

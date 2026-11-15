@@ -66,7 +66,11 @@ async function request<T>(path: string, options: RequestOptions, read: (response
     return await read(response);
   } catch (e) {
     if (controller.signal.aborted) throw new ApiError(timedOut ? 408 : 499, timedOut
-      ? 'Сервер не ответил вовремя. Для операции изменения проверьте результат перед повтором.'
+      ? (path === '/ai/models/check' || path === '/workspace/ocr-check'
+          ? 'BIS не завершил проверку ИИ вовремя. Это тайм-аут запроса, а не удаление ключа. Подробности записаны в logs/bis.log и logs/thread-dump.log.'
+          : (options.method && !['GET', 'HEAD'].includes(options.method.toUpperCase())
+            ? 'BIS не подтвердил выполнение операции вовремя. Проверьте результат перед повтором. Подробности: logs/bis.log и logs/thread-dump.log.'
+            : 'BIS не вернул данные вовремя. Проверьте состояние сервера; подробности: logs/bis.log и logs/thread-dump.log.'))
       : 'Ожидание запроса остановлено. Операция на сервере могла продолжиться.');
     if (e instanceof TypeError) throw new ApiError(503, 'Нет связи с BIS. Проверьте окно запуска программы и повторите запрос.');
     throw e;

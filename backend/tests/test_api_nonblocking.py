@@ -4,7 +4,10 @@
 import ast
 from pathlib import Path
 
-ALLOWED = {("telegram.py", "webhook")}  # только принимает обновление и ставит обработку в фон
+ALLOWED = {
+    ("telegram.py", "webhook"),  # accepts update and schedules work
+    ("admin.py", "health"),  # only reads in-memory counters; must remain responsive with no free worker/DB slots
+}
 
 
 def test_no_async_endpoints_with_blocking_work():

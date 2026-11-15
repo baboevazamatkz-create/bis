@@ -31,7 +31,7 @@ from bis.api import (
     workspace,
 )
 from bis.config import get_settings
-from bis.middleware import RequestLogMiddleware
+from bis.middleware import AdmissionMiddleware, RequestLogMiddleware
 
 
 def create_app() -> FastAPI:
@@ -44,7 +44,34 @@ def create_app() -> FastAPI:
                        allow_methods=["*"], allow_headers=["*"])
     app.add_middleware(GZipMiddleware, minimum_size=2048)  # предпросмотры схем (SVG) и большие списки — в 5–8 раз меньше
 
+    app.add_middleware(AdmissionMiddleware)
     app.add_middleware(RequestLogMiddleware)
+
+    from sqlalchemy.exc import OperationalError
+    from sqlalchemy.exc import TimeoutError as PoolTimeout
+
+    from bis.llm.types import LLMError
+
+    @app.exception_handler(PoolTimeout)
+    async def pool_exhausted(_: Request, exc: PoolTimeout):
+        import logging
+
+        logging.getLogger('bis.runtime').error('Database pool exhausted: %s', type(exc).__name__)
+        return JSONResponse(status_code=503, content={'detail':
+            'Все соединения с базой заняты длительными задачами. Подключение ИИ не удалено.'})
+
+    @app.exception_handler(OperationalError)
+    async def database_unavailable(_: Request, exc: OperationalError):
+        import logging
+
+        code = getattr(exc.orig, 'sqlstate', None)
+        logging.getLogger('bis.runtime').error('Database operation failed: %s', code or type(exc.orig).__name__)
+        return JSONResponse(status_code=503, content={'detail':
+            'База данных не отвечает или запрос заблокирован другой задачей. Проверьте журнал BIS.'})
+
+    @app.exception_handler(LLMError)
+    async def model_unavailable(_: Request, exc: LLMError):
+        return JSONResponse(status_code=503, content={'detail': str(exc)})
 
     api = APIRouter(prefix="/api")
     api.include_router(admin.router)

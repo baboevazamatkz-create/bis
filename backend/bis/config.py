@@ -69,6 +69,10 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="BIS_", env_file=".env", extra="ignore")
 
     env: Literal["dev", "test", "prod"] = "dev"
+    database_pool_timeout: float = Field(3, gt=0, le=30)
+    database_lock_timeout_ms: int = Field(5000, ge=100, le=60000)
+    database_statement_timeout_ms: int = Field(20000, ge=100, le=300000)
+    model_initialization_wait_seconds: float = Field(5, gt=0, le=15)
     database_url: str = "postgresql+psycopg://bis:bis@localhost:5432/bis"
     secret_key: str = "change-me-in-production"  # в prod — не короче 32 символов
     access_token_ttl_minutes: int = 60 * 12

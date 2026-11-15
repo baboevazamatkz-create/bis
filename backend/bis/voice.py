@@ -110,15 +110,19 @@ def transcribe(audio: bytes, filename: str = "audio.webm", mime: str | None = No
     headers = {"Authorization": f"Bearer {s.stt_api_key}"} if s.stt_api_key else {}
     http = client or httpx.Client(timeout=120)
     try:
-        r = http.post(s.stt_url.rstrip("/") + "/audio/transcriptions", headers=headers,
-                      files={"file": (filename, audio, mime or "application/octet-stream")},
-                      data={"model": s.stt_model, "language": s.stt_language, "response_format": "json"})
-    except httpx.HTTPError as e:
-        raise VoiceError(f"Сервер распознавания недоступен: {e}") from e
-    if r.status_code >= 400:
-        raise VoiceError(f"Ошибка распознавания: HTTP {r.status_code}")
-    text = r.json().get("text", "") if "json" in r.headers.get("content-type", "") else r.text
-    return normalize_dictation(text)
+        try:
+            r = http.post(s.stt_url.rstrip("/") + "/audio/transcriptions", headers=headers,
+                          files={"file": (filename, audio, mime or "application/octet-stream")},
+                          data={"model": s.stt_model, "language": s.stt_language, "response_format": "json"})
+        except httpx.HTTPError as e:
+            raise VoiceError(f"Сервер распознавания недоступен: {e}") from e
+        if r.status_code >= 400:
+            raise VoiceError(f"Ошибка распознавания: HTTP {r.status_code}")
+        text = r.json().get("text", "") if "json" in r.headers.get("content-type", "") else r.text
+        return normalize_dictation(text)
+    finally:
+        if client is None:
+            http.close()
 
 
 def speak(text: str, client: httpx.Client | None = None) -> tuple[bytes, str]:
@@ -128,10 +132,14 @@ def speak(text: str, client: httpx.Client | None = None) -> tuple[bytes, str]:
     headers = {"Authorization": f"Bearer {s.tts_api_key}"} if s.tts_api_key else {}
     http = client or httpx.Client(timeout=120)
     try:
-        r = http.post(s.tts_url.rstrip("/") + "/audio/speech", headers=headers,
-                      json={"model": s.tts_model, "voice": s.tts_voice, "input": text[:4000], "response_format": "mp3"})
-    except httpx.HTTPError as e:
-        raise VoiceError(f"Сервер синтеза недоступен: {e}") from e
-    if r.status_code >= 400:
-        raise VoiceError(f"Ошибка синтеза: HTTP {r.status_code}")
-    return r.content, r.headers.get("content-type", "audio/mpeg")
+        try:
+            r = http.post(s.tts_url.rstrip("/") + "/audio/speech", headers=headers,
+                          json={"model": s.tts_model, "voice": s.tts_voice, "input": text[:4000], "response_format": "mp3"})
+        except httpx.HTTPError as e:
+            raise VoiceError(f"Сервер синтеза недоступен: {e}") from e
+        if r.status_code >= 400:
+            raise VoiceError(f"Ошибка синтеза: HTTP {r.status_code}")
+        return r.content, r.headers.get("content-type", "audio/mpeg")
+    finally:
+        if client is None:
+            http.close()

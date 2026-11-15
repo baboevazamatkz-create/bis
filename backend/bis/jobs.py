@@ -120,7 +120,10 @@ def run_job(db_factory: Callable[[], Session], name: str, today: date | None = N
             db.info.pop("library_form_id", None)
             db.info.pop("used_library_form", None)
             try:
-                details[str(org.id)] = j.func(db, org, today)
+                from bis.runtime import background_work
+
+                with background_work():
+                    details[str(org.id)] = j.func(db, org, today)
                 db.commit()
             except Exception as e:  # noqa: BLE001 — сбой одной организации не останавливает остальные
                 db.rollback()
