@@ -19,6 +19,7 @@ class CorePlugin(Plugin):
 
     def tools(self) -> list[Tool]:
         from bis.agents.builtin_tools import BUILTIN_TOOLS
+        from bis.agents.tools_authoring import AUTHORING_TOOLS
         from bis.agents.tools_control import CONTROL_TOOLS
         from bis.agents.tools_facts import FACT_TOOLS
         from bis.agents.tools_id import ID_TOOLS
@@ -26,7 +27,7 @@ class CorePlugin(Plugin):
         from bis.agents.tools_project_reading import PROJECT_READING_TOOLS
         from bis.agents.tools_works import WORKS_TOOLS
 
-        return [*BUILTIN_TOOLS, *CONTROL_TOOLS, *WORKS_TOOLS, *PD_TOOLS, *ID_TOOLS, *FACT_TOOLS, *PROJECT_READING_TOOLS]
+        return [*BUILTIN_TOOLS, *AUTHORING_TOOLS, *CONTROL_TOOLS, *WORKS_TOOLS, *PD_TOOLS, *ID_TOOLS, *FACT_TOOLS, *PROJECT_READING_TOOLS]
 
     def agents(self) -> list[Agent]:
         from dataclasses import replace
@@ -35,5 +36,6 @@ class CorePlugin(Plugin):
 
         # Every specialist can inspect related records and sources; write tools stay specialized.
         return [replace(a, tools=list(dict.fromkeys([*a.tools, "*read", "delegate_to_agent",
+                *(["create_document_draft", "create_letter_draft"] if a.name in ("assistant", "secretary", "pto") else []),
                 *(["prepare_executive_package"] if a.name == "pto" else [])])))
                 for a in BUILTIN_AGENTS]

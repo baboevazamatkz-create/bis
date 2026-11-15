@@ -45,11 +45,12 @@ def test_citation_check_and_verification(client, auth):
     assert verify_call["json_mode"] and "<фрагменты>" in verify_call["messages"][1].content
 
 
-def test_sources_appended_when_answer_has_no_refs(client, auth):
+def test_unreferenced_sources_are_not_automatically_appended(client, auth):
     _gw(Message("assistant", tool_calls=[ToolCall("1", "search_knowledge", {"query": "опалубка", "scope": "norms"})]),
         "Опалубку снимают при 70 % прочности.", '{"supported": true, "issues": []}')
     data = client.post("/api/chat", headers=auth, json={"message": "Когда снимать опалубку по СП?"}).json()
-    assert "Источники: [1] ДЕМО-СП" in data["text"]
+    assert "Источники:" not in data["text"]
+    assert data["citations"] and not any(c["used"] for c in data["citations"])
 
 
 def test_delegation_assistant_to_contracts(client, auth):

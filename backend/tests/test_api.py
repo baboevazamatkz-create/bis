@@ -166,7 +166,7 @@ def test_viewer_agent_cannot_create_documents(client, auth):
     set_gateway(LLMGateway(entries={"local": ProviderEntry(llm, "confidential")}))
     data = client.post("/api/chat", headers=h, json={"message": "Подготовь письмо заказчику", "agent": "secretary"}).json()
     assert data["documents"] == []
-    calls = [t for t in data["trace"] if t.get("phase") != "retrieval"]
+    calls = [t for t in data["trace"] if t.get("tool") == "create_letter_draft"]
     assert calls[0]["tool"] == "create_letter_draft" and calls[0]["error"] is True
 
 

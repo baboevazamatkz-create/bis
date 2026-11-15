@@ -24,6 +24,16 @@ def inventory(ctx) -> str:
              f"Документов с индексированным текстом: {indexed} из {sum(counts.values())}.",
              "Отсутствие записи в реестре не означает отсутствия документа в архиве. "
              "Непрочитанный файл не означает отсутствия в нём сведений."]
+    from bis.models.libraries import LibraryConnection
+    from bis.services.library_access import connection_predicate
+
+    scope = ctx.db.info.get('source_context')
+    bases = ctx.db.scalars(select(LibraryConnection).where(LibraryConnection.enabled.is_(True),
+        connection_predicate(scope) if scope else LibraryConnection.organization_id == ctx.org_id).limit(20)).all()
+    lines.append('Подключённые базы: ' + ('; '.join(f'{base.level}: {base.name} ({base.status})' for base in bases) or 'папки не подключены; проверь также загруженные файлы'))
+    lines.append('Роли баз: знания — нормативы и формы; организация — реквизиты и образцы; проект — факты, договоры и ИД. '
+                 'Архивный документ может служить образцом, даже без регистрации пустого шаблона; используй find_document_examples. '
+                 'Охват чтения проверяется отдельно, каталог не означает полного прочтения каждого файла.')
     for kind, model in (("object", ConstructionObject), ("contract", Contract), ("document", Document)):
         value = ctx.focus.get(kind)
         if value:
@@ -149,8 +159,8 @@ def retrieve(ctx, question: str) -> str:
             else:
                 selected = found["documents"][:2]
                 focused = ctx.focus.get("document")
-                if focused and (not selected or re.search(r"\b(его|ему|него|нём|нему|этому|этого|этот|этом)\b", question, re.I)):
-                    selected = [{"id": focused}]
+                if focused and not re.search(r'№\s*[\w./-]+', question):
+                    selected = [{'id': focused}, *(item for item in selected if item['id'] != focused)]
             if ctx.selected_document and not re.search(r'№\s*[\w./-]+', question):
                 selected = [{'id': ctx.selected_document}, *(d for d in selected if d['id'] != ctx.selected_document)]
                 if is_contract:

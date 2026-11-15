@@ -435,7 +435,8 @@ def create_aosr_draft(ctx: AgentContext, args: AOSRArgs) -> dict:
 
 
 class LetterArgs(BaseModel):
-    addressee: list[str] = Field(description="Строки адресата в дательном падеже: должность, организация, ФИО")
+    sample_id: str | None = Field(None, description="Образец из find_document_examples; пусто — автоматический подбор")
+    addressee: list[str] = Field(default_factory=list, description="Строки адресата в дательном падеже: должность, организация, ФИО")
     subject: str = Field(description="Заголовок к тексту, начинается с «О/Об …»")
     greeting: str | None = Field(None, description="«Уважаемый Иван Иванович!»")
     body: list[str] = Field(description="Абзацы текста")
@@ -452,20 +453,22 @@ def create_letter_draft(ctx: AgentContext, args: LetterArgs) -> dict:
     org = ctx.db.get(Organization, ctx.org_id)
     signer = (org.settings or {}).get("default_signer") or {}
     data = LetterData(
-        sender=docsvc.party_from_org(org), in_reply_to=args.in_reply_to, addressee=args.addressee,
+        sender=docsvc.party_from_org(org), in_reply_to=args.in_reply_to, addressee=args.addressee or ['[Адресат: уточнить по договору]'],
         subject=args.subject, greeting=args.greeting, body=args.body, attachments=args.attachments,
-        signer_position=args.signer_position or signer.get("position") or (ctx.user.position or ""),
-        signer_name=args.signer_name or signer.get("name") or ctx.user.full_name,
+        signer_position=args.signer_position or signer.get("position") or "[Должность подписанта: уточнить]",
+        signer_name=args.signer_name or signer.get("name") or "[Подписант: уточнить]",
         executor=ctx.user.full_name,
     )
     doc = docsvc.create_letter(
         ctx.db, ctx.storage, org_id=ctx.org_id, data=data, created_by=f"agent:{ctx.agent_name}",
-        object_id=object_ref(ctx, args.object_id) if args.object_id else None,
-        contract_id=contract_ref(ctx, args.contract_id) if args.contract_id else None,
+        object_id=object_ref(ctx, args.object_id or ctx.focus.get("object")) if args.object_id or ctx.focus.get("object") else None,
+        contract_id=contract_ref(ctx, args.contract_id) if args.contract_id else None, sample_id=args.sample_id,
     )
-    ref = _doc_ref(doc)
+    ref = _doc_ref(doc) | {'created': True, 'basis': (doc.data or {}).get('authoring', {}).get('basis')}
     ctx.documents.append(ref)
+    ctx.created_document_ids.append(str(doc.id))
     return ref
+
 
 
 BUILTIN_TOOLS = [

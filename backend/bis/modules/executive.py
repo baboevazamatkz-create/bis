@@ -1,10 +1,10 @@
 """The first BIS workspace: executive documentation for the construction engineer."""
 
-DOCUMENT_KINDS = ("letter", "aosr", "aook", "scheme", "id_registry", "work_journal")
+DOCUMENT_KINDS = ("letter", "order", "memo", "instruction", "protocol", "administrative", "aosr", "aook", "scheme", "id_registry", "work_journal")
 SOURCE_KINDS = ("project_doc", "certificate", "test_protocol", "order", "survey", "photo", "other")
 AGENTS = ("pto", "cad", "norms", "assistant", "contracts", "secretary")
-WRITE_TOOLS = frozenset({"create_letter_draft", "create_aosr_draft", "create_aook_draft", "create_executive_scheme", "prepare_executive_package"})
-READ_TOOLS = frozenset({"read_project_document", "compare_act_with_project","query_project_facts", "investigate_project","search_knowledge", "find_documents", "list_documents", "get_document", "document_card",
+WRITE_TOOLS = frozenset({"create_document_draft", "create_letter_draft", "create_aosr_draft", "create_aook_draft", "create_executive_scheme", "prepare_executive_package"})
+READ_TOOLS = frozenset({"find_document_examples", "read_project_document", "compare_act_with_project","query_project_facts", "investigate_project","search_knowledge", "find_documents", "list_documents", "get_document", "document_card",
     "find_objects", "find_counterparties", "find_contracts", "get_contract_details", "get_organization_info",
     "get_object_participants", "find_persons", "id_registry", "work_journal", "check_id_archive", "data_coverage",
     "parse_survey_document", "find_estimate_items", "list_volumes", "find_materials", "pd_completeness", "extract_specification",
@@ -20,7 +20,7 @@ INSTRUCTIONS = """Рабочее пространство: исполнител�
 Проверяй область, элемент, марку, единицу и позицию; одинаковая марка не связывает разные линии.
 Не считай визуальное описание подтверждённой надписью и не измеряй длины по картинке.
 Противоречия не скрывай; результаты поиска передавай другим специалистам вместе с основаниями.
-Читай необходимые исходные данные из общего архива. Создавай документы ИД и письма по объекту или договору.
+Читай необходимые исходные данные из общего архива. Создавай документы ИД, письма и административные документы по объекту или договору.
 Вопросы по генподряду и субподряду входят в это рабочее пространство: сначала найдите договор,
 прочитайте полный текст нужных разделов get_document и ответьте со ссылками. Контекст выбранного
 в интерфейсе документа находится в focus; не спрашивайте его номер повторно.

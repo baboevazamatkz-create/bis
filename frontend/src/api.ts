@@ -241,6 +241,7 @@ export interface User {
 }
 
 export interface Citation {
+  used?: boolean;
   fact_snapshot_id?: string;
   object_id?: string;
   source_id?: string;
@@ -255,6 +256,7 @@ export interface Citation {
 }
 
 export interface DocRef {
+  created?: boolean;
   id: string;
   kind: string;
   title: string;

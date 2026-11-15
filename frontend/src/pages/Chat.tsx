@@ -27,29 +27,37 @@ const SUGGESTIONS = [
   "Подготовь письмо заказчику о направлении исполнительной документации",
 ];
 
-function Citations({ items, onError }: { items: Citation[]; onError: (message: string) => void }) {
-  if (!items?.length) return null;
-  return (
-    <div className="citations">
-      <div className="muted">Источники:</div>
-      {items.map((c, i) => (
-        <details key={c.chunk_id}>
-          <summary>
-            [{i + 1}] {c.citation}
-            {(c.fact_snapshot_id || c.document_id || c.source_id) && (
-              <button className="link small" onClick={(e) => { e.preventDefault(); void openFile(c.fact_snapshot_id ? `/brain/facts/snapshots/${c.fact_snapshot_id}/file${c.object_id ? `?object_id=${c.object_id}` : ""}` : c.document_id ? `/documents/${c.document_id}/file` : `/knowledge/sources/${c.source_id}/file`, c.title, c.page).catch((e) => onError(e.message)); }}>
-                {c.page ? `открыть стр. ${c.page}` : "открыть"}
-              </button>
-            )}
-          </summary>
-          <div className="small" style={{ whiteSpace: "pre-wrap", marginTop: 6 }}>
-            {c.section_path && <div className="muted">{c.section_path}</div>}
-            {c.content}
-          </div>
-        </details>
-      ))}
-    </div>
-  );
+function Citations({ items, text, onError }: { items: Citation[]; text: string; onError: (message: string) => void }) {
+  const refs = new Set<number>();
+  for (const match of text.matchAll(/\[([0-9][0-9,;\s]*(?:стр\.\s*\d+)?)\]/g)) {
+    for (const number of (match[1].split('стр')[0].match(/\d+/g) ?? [])) refs.add(Number(number));
+  }
+  const groups = new Map<string, { title: string; pages: Map<string, { item: Citation; numbers: number[]; content: string[] }> }>();
+  items.forEach((item, index) => {
+    if (!refs.has(index + 1) && !item.used) return;
+    const key = item.document_id || item.fact_snapshot_id || item.source_id || item.title;
+    if (!groups.has(key)) groups.set(key, { title: item.title, pages: new Map() });
+    const group = groups.get(key)!;
+    const page = String(item.page ?? 'text');
+    if (!group.pages.has(page)) group.pages.set(page, { item, numbers: [], content: [] });
+    const part = group.pages.get(page)!;
+    part.numbers.push(index + 1);
+    if (!part.content.includes(item.content)) part.content.push(item.content);
+  });
+  if (!groups.size) return null;
+  const n = groups.size;
+  const label = n % 10 === 1 && n % 100 !== 11 ? 'документ' : n % 10 >= 2 && n % 10 <= 4 && !(n % 100 >= 12 && n % 100 <= 14) ? 'документа' : 'документов';
+  return <details className="citations"><summary className="muted">Основания · {n} {label}</summary>
+    {[...groups].map(([key, group]) => <div key={key} className="citation-document"><strong className="small">{group.title}</strong>
+      {[...group.pages].map(([page, {item, numbers, content}]) => <details key={page}>
+        <summary>[{numbers.join(', ')}] {item.page ? `Страница ${item.page}` : 'Фрагмент'}
+          {(item.fact_snapshot_id || item.document_id || item.source_id) && <button className="link small" onClick={(event) => {
+            event.preventDefault(); void openFile(item.fact_snapshot_id ? `/brain/facts/snapshots/${item.fact_snapshot_id}/file${item.object_id ? `?object_id=${item.object_id}` : ''}` : item.document_id ? `/documents/${item.document_id}/file` : `/knowledge/sources/${item.source_id}/file`, item.title, item.page).catch((error) => onError(error.message));
+          }}>Открыть{item.page ? ` стр. ${item.page}` : ''}</button>}
+        </summary><div className="small" style={{whiteSpace: 'pre-wrap', marginTop: 6}}>{content.join('\n\n')}</div>
+      </details>)}
+    </div>)}
+  </details>;
 }
 
 function Docs({ items, onError }: { items: DocRef[]; onError: (message: string) => void }) {
@@ -58,7 +66,7 @@ function Docs({ items, onError }: { items: DocRef[]; onError: (message: string) 
     <div className="doc-cards">
       {items.map((d) => (
         <span className="doc-chip" key={d.id}>
-          <span className="doc-chip-title" title={d.title}>{d.title}</span>
+          <span className="doc-chip-title" title={d.title}>{d.created && <small>Черновик · </small>}{d.title}</span>
           <button className="btn small" onClick={() => void openFile(`/documents/${d.id}/file`, d.title).catch((e) => onError(e.message))}>Открыть</button>
           <button className="btn small" onClick={() => void download(`/documents/${d.id}/file`, d.title).catch((e) => onError(e.message))} title="Скачать">⬇</button>
         </span>
@@ -296,11 +304,11 @@ export default function Chat({ workspace = "platform" }: { workspace?: "platform
           )}
           {messages.map((m, i) => (
             <div key={i} className={`msg ${m.role}`}>
-              <div className="bubble">{m.role === "assistant" ? <Rich onError={setError} text={m.content} /> : m.content}</div>
+              <div className="bubble">{m.role === "assistant" ? <Rich onError={setError} text={m.content.replace(/^Источники:\s*\[\d[^\n]*$/gm, '').trim() || m.content} /> : m.content}</div>
               {m.role === "assistant" && (
                 <>
                   <Docs items={m.meta?.documents ?? []} onError={setError} />
-                  <Citations items={m.meta?.citations ?? []} onError={setError} />
+                  <Citations items={m.meta?.citations ?? []} text={m.content} onError={setError} />
                   {(m.meta?.provider === "offline" || m.meta?.model === "offline") && <p className="small text-bad">Ответ получен без языковой модели. Проверьте подключение ИИ; поиск по документам доступен отдельно в разделе «Синапс».</p>}
                   <div className="meta">{agentTitle(m.agent) || "Синапс"}
                     {(m.meta?.provider || !!m.meta?.trace?.length) && <details className="chat-tech"><summary>Детали ответа</summary><p>{m.meta?.provider}{m.meta?.routed_by ? ` · ${m.meta.routed_by}` : ""}</p>{m.meta?.trace?.map((t, n) => <span key={n}>{t.tool}{t.error ? " · ошибка" : ""}<br /></span>)}</details>}

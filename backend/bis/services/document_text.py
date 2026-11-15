@@ -29,3 +29,31 @@ def document_text(db, doc, storage=None):
         with contextlib.suppress(UnsupportedFormat):
             text = parse_file(storage.get(doc.file_key), doc.file_name or "file", doc.mime).text
     return text
+
+
+def query_windows(chunks, query, max_chars=1500):
+    """Scan the entire available index, weighting rare terms over document-wide boilerplate."""
+    import math
+    import re
+    from collections import Counter
+
+    stop = {'какой', 'какая', 'какие', 'какое', 'сколько', 'найди', 'покажи', 'скажи', 'этого', 'этому', 'данному', 'пожалуйста'}
+    terms = list(dict.fromkeys(word[:5] for word in re.findall(r'[а-яёa-z0-9]{3,}', query.lower()) if word not in stop))
+    patterns = {term: re.compile(r'\b' + re.escape(term), re.I) for term in terms}
+    matches = [(hit, {term: pattern.search(hit.content) for term, pattern in patterns.items()}) for hit in chunks]
+    frequency = Counter(term for _, found in matches for term, match in found.items() if match)
+    weights = {term: 1 + math.log(1 + len(chunks) / (frequency[term] + 1)) for term in terms}
+    ranked = []
+    for hit, found in matches:
+        present = [term for term, match in found.items() if match]
+        if not present:
+            continue
+        best = max(present, key=lambda term: weights[term])
+        start = max(0, found[best].start() - 300)
+        ranked.append((sum(weights[term] for term in present), hit, hit.content[start:start + max_chars]))
+    ranked.sort(key=lambda row: -row[0])
+    return [(hit, text) for _, hit, text in ranked], {
+        'searched_chunks': len(chunks), 'full_available_index_searched': True,
+        'matched_terms': [term for term in terms if frequency[term]],
+        'unmatched_terms': [term for term in terms if not frequency[term]],
+        'note': 'Охват индексированного текста, не гарантия полного OCR оригинала. Выдержки не доказывают отсутствие других условий.'}

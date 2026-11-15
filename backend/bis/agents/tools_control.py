@@ -303,7 +303,7 @@ class GetDocumentArgs(BaseModel):
 def get_document(ctx: AgentContext, args: GetDocumentArgs) -> dict:
     from bis.agents.builtin_tools import share_document
     from bis.rag.search import hybrid_search
-    from bis.services.document_text import document_chunks, document_text
+    from bis.services.document_text import document_chunks, document_text, query_windows
 
     ref = args.document_id or ctx.focus.get("document")
     if not ref:
@@ -337,7 +337,7 @@ def get_document(ctx: AgentContext, args: GetDocumentArgs) -> dict:
         out["sources"] = []
         for h in chunks:
             if pos < end and pos + len(h.content) > args.offset:
-                out["sources"].append({"n": ctx.add_citation(h.to_dict()), "page": h.page})
+                out["sources"].append({"n": ctx.add_citation(h.to_dict()), "page": h.page, "start": pos, "end": pos + len(h.content)})
             pos += len(h.content) + 1
     else:
         out["beginning"] = full[:1200]
@@ -350,11 +350,16 @@ def get_document(ctx: AgentContext, args: GetDocumentArgs) -> dict:
             sources = list({uuid.UUID(h.source_id) for h in chunks})
             hits = hybrid_search(ctx.db, ctx.embedder, args.query, org_id=ctx.org_id, include_global=False,
                                  source_ids=list(sources), k=6) if sources else []
-            remaining = args.limit_chars - 3000
+            literal, out['search_coverage'] = query_windows(chunks, args.query)
+            windows = {h.chunk_id: text for h, text in literal}
+            ordered = {h.chunk_id: h for h, _ in literal}
             for h in hits:
+                ordered.setdefault(h.chunk_id, h)
+            remaining = args.limit_chars - 3000
+            for h in list(ordered.values())[:6]:
                 if remaining <= 0:
                     break
-                text = h.content[:min(1500, remaining)]
+                text = windows.get(h.chunk_id, h.content)[:min(1500, remaining)]
                 out["found"].append({"n": ctx.add_citation(h.to_dict()), "page": h.page, "text": text})
                 remaining -= len(text)
         out["sources"] = [{"n": ctx.add_citation(h.to_dict()), "page": h.page}

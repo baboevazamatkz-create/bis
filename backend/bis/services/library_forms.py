@@ -12,6 +12,11 @@ from bis.llm.extract import extract
 from bis.models.libraries import LibraryConnection, LibraryFile, LibraryVersion
 from bis.services.library_access import active_versions, bind_context
 
+
+class MissingFormError(ValueError):
+    pass
+
+
 FIELDS = {
     'number': 'Номер', 'date': 'Дата составления', 'object_name': 'Объект строительства',
     'works': 'Выполненные работы', 'project_docs': 'Рабочая документация', 'materials': 'Материалы',
@@ -256,12 +261,14 @@ def filled(data, filename, mapping, values):
 
 def select_form(db, org_id, kind, object_id=None):
     scope = bind_context(db, org_id, object_id) if object_id else db.info.get('source_context') or bind_context(db, org_id)
+    if scope.organization_id != org_id:
+        scope = bind_context(db, org_id, object_id)
     choices = db.execute(select(LibraryVersion, LibraryConnection.level).join(LibraryFile,
         LibraryFile.id == LibraryVersion.file_id).join(LibraryConnection, LibraryConnection.id == LibraryFile.connection_id)
         .where(LibraryVersion.id.in_(active_versions(scope)), LibraryVersion.form_kind == kind,
                LibraryVersion.approved_at.is_not(None))).all()
     if not choices:
-        raise ValueError('Нет подтверждённой формы ' + kind.upper() + ' в подключённых библиотеках')
+        raise MissingFormError('Нет подтверждённой формы ' + kind.upper() + ' в подключённых библиотеках')
     rank = {'project': 0, 'organization': 1, 'knowledge': 2}
     best = min(rank[level] for _, level in choices)
     found = [v for v, level in choices if rank[level] == best]

@@ -22,7 +22,7 @@ def documents(category: Literal['documents', 'schemes', 'project', 'contracts'],
               offset: int = 0, q: str | None = Query(None, max_length=300), db: Session = Depends(get_db), user: User = Depends(require('documents:read'))):
     scope = db.info.get('source_context')
     project = scope.object_id if scope else None
-    kinds = {'documents': ['letter', 'aosr', 'aook', 'id_registry', 'work_journal'], 'schemes': ['scheme', 'survey'],
+    kinds = {'documents': ['letter', 'order', 'memo', 'instruction', 'protocol', 'administrative', 'aosr', 'aook', 'id_registry', 'work_journal'], 'schemes': ['scheme', 'survey'],
              'project': ['project_doc', 'other'], 'contracts': ['contract']}[category]
     stmt = select(Document).where(Document.organization_id == user.organization_id, Document.kind.in_(kinds),
         Document.status != 'replaced', or_(Document.object_id == project if project else False,

@@ -155,9 +155,16 @@ def _answer(db: Session, user: User, body: ChatIn, progress=None, on_route=None,
         ctx.focus['document'] = str(selected_document.id)
         ctx.selected_document = str(selected_document.id)
     ctx.progress = progress
+    ctx.agent_name = agent_name
+    ctx.db.info['request_created_documents'] = []
+    from bis.agents.authoring_tasks import finalize, prepare
+
+    effective_request, artifact_result = prepare(ctx, body.message, previous, rows)
     from bis.services.executive_pipeline import is_work_report
 
-    if body.workspace == "executive" and agent_name in ("pto", "assistant") and is_work_report(body.message):
+    if artifact_result is not None:
+        result = artifact_result
+    elif body.workspace == "executive" and agent_name in ("pto", "assistant") and is_work_report(body.message):
         import json
 
         from bis.agents.base import AgentResult
@@ -176,8 +183,9 @@ def _answer(db: Session, user: User, body: ChatIn, progress=None, on_route=None,
         ctx.trace.append({"tool": "prepare_executive_package", "arguments": {"text": body.message}, "error": error})
         result = AgentResult(text=text, agent="pto", documents=ctx.documents, trace=ctx.trace, provider="executive_pipeline", model="evidence-v1")
     else:
-        result = agent.run(ctx, reg.tools, history, body.message)
+        result = agent.run(ctx, reg.tools, history, effective_request)
 
+    result = finalize(ctx, result, effective_request)
     now = datetime.now(UTC)
     db.add(ChatMessage(session_id=session.id, role="user", content=body.message, created_at=now))
     db.add(ChatMessage(
@@ -185,7 +193,7 @@ def _answer(db: Session, user: User, body: ChatIn, progress=None, on_route=None,
         created_at=now + timedelta(microseconds=1),
         meta={"citations": result.citations, "documents": result.documents, "trace": result.trace,
               "provider": result.provider, "model": result.model, "routed_by": routed_by,
-              "context": {"focus": ctx.focus, "selected_document": ctx.selected_document}, "workspace": body.workspace},
+              "context": {"focus": ctx.focus, "selected_document": ctx.selected_document, "draft_task": ctx.draft_task}, "workspace": body.workspace},
     ))
     ctx.check_cancelled()
     db.commit()

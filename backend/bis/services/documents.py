@@ -118,6 +118,8 @@ def save_document(
         data = {**data, "library_form": used_form}
         file_name = Path(file_name).stem + Path(used_form["file_name"]).suffix
         mime = used_form["mime"] or mime
+    if object_id is None and kind in ('letter', 'order', 'memo', 'instruction', 'protocol', 'administrative'):
+        data = {**data, 'library_scope': 'organization'}
     key = storage.put(file_bytes, file_name, prefix=f"documents/{org_id}")
     doc = Document(
         organization_id=org_id, kind=kind, title=title, number=number, date=doc_date, status="draft",
@@ -126,6 +128,8 @@ def save_document(
     )
     db.add(doc)
     db.flush()
+    if 'request_created_documents' in db.info:
+        db.info['request_created_documents'].append(str(doc.id))
     actor_type, _, actor = created_by.partition(":")
     audit(db, org_id, actor_type=actor_type or "system", actor=actor or created_by, action="document.create",
           entity_type="document", entity_id=doc.id, details={"kind": kind, "title": title})
@@ -155,7 +159,7 @@ def create_aosr(
 
 def create_letter(
     db: Session, storage: Storage, *, org_id: uuid.UUID, data: LetterData, created_by: str,
-    object_id: uuid.UUID | None = None, contract_id: uuid.UUID | None = None,
+    object_id: uuid.UUID | None = None, contract_id: uuid.UUID | None = None, sample_id: str | None = None,
 ) -> Document:
     data.date = data.date or date.today()
     if not data.number:
@@ -163,10 +167,25 @@ def create_letter(
         org = db.get(Organization, org_id)
         pattern = (org.settings or {}).get("letter_number_format", "{seq}/{yy}") if org else "{seq}/{yy}"
         data.number = pattern.format(seq=seq, yy=f"{data.date.year % 100:02d}", yyyy=data.date.year)
-    file_bytes = render_with_org_template(db, storage, org_id, "letter", data) or render_letter(data)
+    from bis.documents.templates import default_template, render_template, template_context
+    from bis.services.document_authoring import adapt_layout
+    from bis.services.library_forms import MissingFormError
+
+    basis = {'mode': 'approved_template', 'review_required': True}
+    try:
+        file_bytes = render_with_org_template(db, storage, org_id, 'letter', data) if not sample_id else None
+    except MissingFormError:
+        file_bytes = None
+    if file_bytes is None:
+        default = default_template(db, org_id, 'letter')
+        if default is not None and not sample_id:
+            file_bytes = render_template(storage.get(default.file_key), template_context(data))
+        else:
+            file_bytes, basis = adapt_layout(db, storage, org_id, 'letter', render_letter(data), data.subject, sample_id)
+
     title = f"Исх. № {data.number}: {data.subject[:200]}"
     return save_document(
-        db, storage, org_id=org_id, kind="letter", title=title, data=data.model_dump(mode="json"),
+        db, storage, org_id=org_id, kind="letter", title=title, data={**data.model_dump(mode="json"), "authoring": {"document_type": "letter", "basis": basis}},
         file_bytes=file_bytes, file_name=f"Письмо_{data.number.replace('/', '-')}.docx", created_by=created_by,
         number=data.number, doc_date=data.date, object_id=object_id, contract_id=contract_id,
     )
