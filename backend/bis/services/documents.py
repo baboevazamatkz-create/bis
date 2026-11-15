@@ -160,6 +160,7 @@ def create_aosr(
 def create_letter(
     db: Session, storage: Storage, *, org_id: uuid.UUID, data: LetterData, created_by: str,
     object_id: uuid.UUID | None = None, contract_id: uuid.UUID | None = None, sample_id: str | None = None,
+    require_organization_form: bool = False,
 ) -> Document:
     data.date = data.date or date.today()
     if not data.number:
@@ -169,12 +170,19 @@ def create_letter(
         data.number = pattern.format(seq=seq, yy=f"{data.date.year % 100:02d}", yyyy=data.date.year)
     from bis.documents.templates import default_template, render_template, template_context
     from bis.services.document_authoring import adapt_layout
-    from bis.services.library_forms import MissingFormError
+    from bis.services.library_forms import MissingFormError, render as render_library_form
 
     basis = {'mode': 'approved_template', 'review_required': True}
     try:
-        file_bytes = render_with_org_template(db, storage, org_id, 'letter', data) if not sample_id else None
+        if require_organization_form:
+            file_bytes = render_library_form(db, storage, org_id, 'letter', data, organization_only=True)
+            form = db.info['used_library_form']
+            basis['library_form'] = form
+        else:
+            file_bytes = render_with_org_template(db, storage, org_id, 'letter', data) if not sample_id else None
     except MissingFormError:
+        if require_organization_form:
+            raise
         file_bytes = None
     if file_bytes is None:
         default = default_template(db, org_id, 'letter')

@@ -8,6 +8,7 @@ from bis.services.library_access import assert_document
 
 CONTINUE = re.compile(r'^(да[.! ]*$|сделай[.! ]*$|созда[йт].*(?:из того|что есть)|.*(?:где|покажи|скачай).*(?:файл|черновик)|(?:продолж|додел|оформ|остальн|используй|по нашей форме))', re.I)
 FILE = re.compile(r'(?:где|покажи|скачай|открой).*(?:файл|черновик|письм|приказ)', re.I)
+ORGANIZATION_FORM = re.compile(r'\bпо\s+(?:(?:нашей|нашему|утвержд[её]нной|утвержд[её]нному)\s+)*(?:форме|бланку|шаблону)\b', re.I)
 
 
 def intent(text):
@@ -48,6 +49,8 @@ def prepare(ctx, user_text, previous, rows):
     else:
         state = {}
     ctx.draft_task = state
+    ctx.db.info['require_organization_letter_form'] = (
+        state.get('kind') == 'letter' and bool(ORGANIZATION_FORM.search(state.get('request', ''))))
     if not state:
         return user_text, None
     if FILE.search(user_text) and state.get('document_ids'):

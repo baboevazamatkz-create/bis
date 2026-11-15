@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { api, download, openFile, STATUS_LABELS, type DocumentRow } from '../../api';
+import { api, download, openFile, setActiveProject, STATUS_LABELS, type DocumentRow } from '../../api';
 import { PageHead } from '../../components';
 import { navigate } from '../navigation';
 import TaskComposer from './TaskComposer';
@@ -22,6 +22,9 @@ export default function WorkspaceDocuments({ category, canWrite = false }: { cat
   const [data, setData] = useState<Result | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [projectName, setProjectName] = useState('');
+  const [projectCode, setProjectCode] = useState('');
+  const [creatingProject, setCreatingProject] = useState(false);
   const [checking, setChecking] = useState(false);
   const request = useRef<AbortController | null>(null);
   const [filter, setFilter] = useState('all');
@@ -55,6 +58,24 @@ export default function WorkspaceDocuments({ category, canWrite = false }: { cat
     try { setCheck(await api('/archive/id-check')); } catch (e) { setError((e as Error).message); } finally { setChecking(false); }
   }
   function searchNow() { if (busy) return; if (query === appliedQuery) void load(); else setAppliedQuery(query); }
+  async function createProject() {
+    setCreatingProject(true);
+    setError('');
+    try {
+      const project = await api<{ id: string }>('/objects', {
+        method: 'POST', json: { name: projectName.trim(), code: projectCode.trim() || null },
+      });
+      setProjectName('');
+      setProjectCode('');
+      setActiveProject(project.id);
+      window.dispatchEvent(new Event('bis:objects'));
+      void load();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setCreatingProject(false);
+    }
+  }
   return <>
     <PageHead title={TITLES[category]} hint={category === 'project' ? 'Рабочие чертежи, спецификации и состояние их чтения. Вопрос можно задать по любому документу.' :
       category === 'contracts' ? 'Генподряд и субподряд выбранного проекта. Условия и ответы — с привязкой к оригиналам.' :
@@ -63,6 +84,14 @@ export default function WorkspaceDocuments({ category, canWrite = false }: { cat
       <button className="btn" onClick={() => navigate('id', 'libraries')}>Подключить документы</button>
     </PageHead>
     {error && <div role="alert" className="alert error">{error}</div>}
+    {category === 'project' && canWrite && <details className="panel compact-panel">
+      <summary>Добавить проект</summary>
+      <form className="row" onSubmit={(e) => { e.preventDefault(); if (projectName.trim() && !creatingProject) void createProject(); }}>
+        <label className="field">Название<input required maxLength={300} value={projectName} onChange={(e) => setProjectName(e.target.value)} /></label>
+        <label className="field">Шифр<input maxLength={60} value={projectCode} onChange={(e) => setProjectCode(e.target.value)} /></label>
+        <button className="btn primary" disabled={creatingProject || !projectName.trim()}>Создать проект</button>
+      </form>
+    </details>}
     {data?.needs_project && <div className="note">Выберите объект вверху страницы, чтобы видеть его документы и задавать вопросы по проекту.</div>}
     <TaskComposer placeholder={PLACEHOLDERS[category]} documentId={selected?.id} title={selected?.title} />
     {selected && <button className="btn small" onClick={() => setSelected(null)}>Снять выбор документа</button>}

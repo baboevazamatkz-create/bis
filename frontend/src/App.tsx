@@ -23,9 +23,10 @@ export default function App() {
   async function loadObjects() {
     setProjectError('');
     try {
-      const rows = await api<typeof objects>('/objects'); setObjects(rows);
+      const rows = (await api<(typeof objects[number] & { status: string })[]>('/objects'))
+        .filter((row) => row.status !== 'archived');
+      setObjects(rows);
       if (activeProject() && !rows.some((r) => r.id === activeProject())) setActiveProject('');
-      if (rows.length === 1 && !activeProject()) setActiveProject(rows[0].id);
     } catch (e) { setProjectError((e as Error).message); }
   }
   useEffect(() => {
@@ -51,7 +52,11 @@ export default function App() {
     void loadObjects();
     const changed = () => { setProject(activeProject()); setPreview(undefined); };
     window.addEventListener("bis:project", changed);
-    return () => window.removeEventListener("bis:project", changed);
+    window.addEventListener("bis:objects", loadObjects);
+    return () => {
+      window.removeEventListener("bis:project", changed);
+      window.removeEventListener("bis:objects", loadObjects);
+    };
   }, [user?.organization_id]);
   useEffect(() => {
     document.title = route.workspace === "id" ? "BIS · Исполнительная документация" : "BIS · Платформа";

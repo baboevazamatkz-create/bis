@@ -78,7 +78,7 @@ def test_archive_dates_and_single_object(client, db):
 
     obj = client.post("/api/objects", headers=auth, json={"name": "Жилой дом по ул. Ленина, 10"}).json()
     db.expire_all()
-    assert db.get(Document, r["document_id"]).object_id is not None  # архив отнесён к единственному объекту
+    assert db.get(Document, r["document_id"]).object_id is None  # создание проекта не меняет его старые привязки
     later = _upload(client, auth, "Исх 45.txt", "ООО Пилот\nИсх. № 45 от 18.03.2026\nО поставке".encode())
     assert later["object_id"] == obj["id"]
 

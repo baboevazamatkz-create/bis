@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -92,7 +93,7 @@ def _transcribe_yandex(audio: bytes, client: httpx.Client | None) -> str:
             except httpx.HTTPError as e:
                 raise VoiceError(f"SpeechKit недоступен: {e}") from e
             if r.status_code >= 400:
-                raise VoiceError(f"SpeechKit: HTTP {r.status_code}: {r.text.replace(key, '[ключ скрыт]')[:200]}")
+                raise VoiceError(f"SpeechKit отклонил запрос (HTTP {r.status_code}). Проверьте настройку распознавания речи.")
             parts.append(r.json().get("result", ""))
         return " ".join(p for p in parts if p).strip()
     finally:
@@ -107,7 +108,10 @@ def transcribe(audio: bytes, filename: str = "audio.webm", mime: str | None = No
         return normalize_dictation(_transcribe_yandex(audio, client))
     if not s.stt_url:
         raise VoiceError("Распознавание речи не настроено (BIS_STT_URL)")
-    headers = {"Authorization": f"Bearer {s.stt_api_key}"} if s.stt_api_key else {}
+    key = s.stt_api_key
+    if not key and s.stt_url.rstrip("/") == "https://api.openai.com/v1":
+        key = os.environ.get("BIS_OPENAI_API_KEY")
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
     http = client or httpx.Client(timeout=120)
     try:
         try:

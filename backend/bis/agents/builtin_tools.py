@@ -463,6 +463,7 @@ def create_letter_draft(ctx: AgentContext, args: LetterArgs) -> dict:
         ctx.db, ctx.storage, org_id=ctx.org_id, data=data, created_by=f"agent:{ctx.agent_name}",
         object_id=object_ref(ctx, args.object_id or ctx.focus.get("object")) if args.object_id or ctx.focus.get("object") else None,
         contract_id=contract_ref(ctx, args.contract_id) if args.contract_id else None, sample_id=args.sample_id,
+        require_organization_form=bool(ctx.db.info.get('require_organization_letter_form')),
     )
     ref = _doc_ref(doc) | {'created': True, 'basis': (doc.data or {}).get('authoring', {}).get('basis')}
     ctx.documents.append(ref)

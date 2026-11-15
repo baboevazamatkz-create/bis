@@ -82,7 +82,7 @@ def model_observed(payload):
     model = str(payload.get('model') or '').lower()
     deterministic = {'artifact_ledger', 'contract_evidence', 'executive_pipeline', 'project_facts',
                      'offline', 'test', 'scripted', 'local-offline'}
-    return bool(provider and model and provider not in deterministic and
+    return bool(provider and model and provider not in deterministic and model != 'form-validation' and
                 not any(part in model for part in ('offline', 'scripted', 'stored-file', 'evidence-')))
 
 

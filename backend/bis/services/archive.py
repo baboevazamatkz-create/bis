@@ -232,15 +232,13 @@ def assign_single_object(db: Session, org_id: uuid.UUID) -> int:
 
 
 def repair_archive(db: Session) -> dict[str, int]:
-    """Поправить загруженное раньше: объект (если он один) и дату документа из текста вместо даты загрузки."""
+    """Уточнить даты и типы старых архивных документов по проиндексированному тексту."""
     from sqlalchemy import cast
     from sqlalchemy.types import Date
 
-    from bis.models import KnowledgeChunk, KnowledgeSource, Organization
+    from bis.models import KnowledgeChunk, KnowledgeSource
 
-    fixed = {"objects": 0, "dates": 0, "letters": 0, "contracts": 0}
-    for org_id in db.scalars(select(Organization.id)).all():
-        fixed["objects"] += assign_single_object(db, org_id)
+    fixed = {"dates": 0, "letters": 0, "contracts": 0}
     docs = db.scalars(select(Document).where(Document.source == "archive", Document.date == cast(Document.created_at, Date),
                                              Document.data["date_checked"].astext.is_(None)).limit(5000)).all()
     for doc in docs:

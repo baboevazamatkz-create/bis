@@ -100,7 +100,7 @@ def test_false_created_claim_does_not_turn_into_a_file_and_yes_continues_task(cl
         ToolCall('letter', 'create_letter_draft', {'subject': 'О прекращении работ', 'body': ['Уведомляем о прекращении работ.']})]),
         'Черновик создан.'])
     set_gateway(LLMGateway(entries={'test': ProviderEntry(llm, 'confidential')}))
-    first = client.post('/api/chat', headers=auth, json={'message': 'Подготовь письмо о прекращении работ по нашей форме', 'workspace': 'executive'})
+    first = client.post('/api/chat', headers=auth, json={'message': 'Подготовь письмо о прекращении работ', 'workspace': 'executive'})
     assert first.status_code == 200, first.text
     assert 'Файл пока не создан' in first.json()['text'] and not first.json()['documents']
     session = first.json()['session_id']
@@ -113,6 +113,20 @@ def test_false_created_claim_does_not_turn_into_a_file_and_yes_continues_task(cl
     third = client.post('/api/chat', headers=auth, json={'message': 'где файл письма?', 'session_id': session, 'workspace': 'executive'})
     assert third.status_code == 200 and third.json()['documents'][0]['id'] == created_id
     assert third.json()['provider'] == 'artifact_ledger' and len(llm.calls) == calls
+
+
+def test_required_organization_letter_form_does_not_fall_back(client, auth, db, demo):
+    original = sample(db, demo)
+    db.commit()
+    response = client.post('/api/chat', headers=auth, json={
+        'message': 'Сделай письмо по форме, которая есть в базе организации',
+        'workspace': 'executive',
+    })
+    assert response.status_code == 200
+    result = response.json()
+    assert not result['documents']
+    assert 'нет подтверждённой формы письма' in result['text']
+    assert db.get(Document, original.id).file_key
     assert client.get(f'/api/documents/{created_id}/file', headers=auth).status_code == 200
 
 

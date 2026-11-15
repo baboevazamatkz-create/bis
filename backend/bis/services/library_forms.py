@@ -259,7 +259,7 @@ def filled(data, filename, mapping, values):
     return out.getvalue()
 
 
-def select_form(db, org_id, kind, object_id=None):
+def select_form(db, org_id, kind, object_id=None, *, organization_only=False):
     scope = bind_context(db, org_id, object_id) if object_id else db.info.get('source_context') or bind_context(db, org_id)
     if scope.organization_id != org_id:
         scope = bind_context(db, org_id, object_id)
@@ -267,7 +267,11 @@ def select_form(db, org_id, kind, object_id=None):
         LibraryFile.id == LibraryVersion.file_id).join(LibraryConnection, LibraryConnection.id == LibraryFile.connection_id)
         .where(LibraryVersion.id.in_(active_versions(scope)), LibraryVersion.form_kind == kind,
                LibraryVersion.approved_at.is_not(None))).all()
+    if organization_only:
+        choices = [(version, level) for version, level in choices if level == 'organization']
     if not choices:
+        if organization_only:
+            raise MissingFormError('В базе организации нет подтверждённой формы письма.')
         raise MissingFormError('Нет подтверждённой формы ' + kind.upper() + ' в подключённых библиотеках')
     rank = {'project': 0, 'organization': 1, 'knowledge': 2}
     best = min(rank[level] for _, level in choices)
@@ -280,8 +284,8 @@ def select_form(db, org_id, kind, object_id=None):
     return found[0]
 
 
-def render(db, storage, org_id, kind, data, object_id=None):
-    version = select_form(db, org_id, kind, object_id)
+def render(db, storage, org_id, kind, data, object_id=None, *, organization_only=False):
+    version = select_form(db, org_id, kind, object_id, organization_only=organization_only)
     item = db.get(LibraryFile, version.file_id)
     mapping = Mapping.model_validate(version.mapping)
     original = storage.get(version.file_key)

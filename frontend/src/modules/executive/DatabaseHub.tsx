@@ -173,10 +173,12 @@ export default function DatabaseHub({ user }: { user: User }) {
         <details><summary>Файлы и ошибки чтения · {files[c.id]?.length ?? 0}</summary><div className="database-files">{files[c.id]?.map((f) => <div key={f.id}><strong className="small">{f.path}</strong><span className={f.state === 'error' ? 'text-bad small' : 'muted small'}>{STATES[f.state] ?? f.state}</span>{f.error && <p className="small text-bad">{f.error}</p>}
           {canWrite && (c.level !== 'knowledge' || state?.platform_admin) && <div className="row">
             {f.source_kind === 'norm' && f.source_status === 'unknown' && <button className="btn small" disabled={busy} onClick={() => void action(() => api(`/knowledge/sources/${f.source_id}`, { method: 'PATCH', json: { status: 'active' } }), 'Редакция норматива подтверждена.')}>Подтвердить действующую редакцию</button>}
-            {f.versions?.filter((v) => v.id === f.active_version_id && v.form_kind).map((v) => <button key={v.id} className="btn small" disabled={busy} onClick={() => void action(async () => {
+            {f.versions?.filter((v) => v.id === f.active_version_id && !v.approved_at &&
+              (v.form_kind || c.level === 'organization' && /\.docx$/i.test(f.path))).map((v) => <button key={v.id} className="btn small" disabled={busy} onClick={() => void action(async () => {
               const mapping = await api<Record<string,unknown>>(`/libraries/versions/${v.id}/prepare`, { method: 'POST' });
-              setFormReview({ id: v.id, kind: v.form_kind!, mapping, format: String(mapping.format), previewed: false });
-            }, 'Откройте пробное заполнение и проверьте форму.')}>{v.approved_at ? 'Проверить форму' : 'Подтвердить форму'}</button>)}
+              setFormReview({ id: v.id, kind: v.form_kind ?? 'letter', mapping, format: String(mapping.format), previewed: false });
+            }, 'Откройте пробное заполнение и проверьте форму.')}>{v.form_kind ? 'Подтвердить форму' : 'Подготовить как форму письма'}</button>)}
+            {f.versions?.some((v) => v.id === f.active_version_id && v.approved_at) && <span className="small muted">Форма подтверждена</span>}
           </div>}
         </div>)}</div></details>
       </div>)}

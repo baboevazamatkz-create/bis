@@ -92,17 +92,17 @@ BIS_EMBEDDING_PROVIDER=hash
 Write-Host '4/5 Starting the bundled PostgreSQL and applying migrations...'
 $Bootstrap = @'
 import sys
+import secrets
 from pathlib import Path
 from bis.local import prepare
 from bis.cli import main
 root = Path(sys.argv[1])
 prepare(root)
 if not (root / '.pilot-initialized').exists():
-    if main(['seed-demo']) != 0:
+    if main(['create-org', '--name', 'Организация BIS', '--admin-email', 'admin@bis.local',
+             '--admin-password', secrets.token_urlsafe(32), '--platform-admin']) != 0:
         raise SystemExit(1)
-    if main(['grant-platform-admin', '--email', 'admin@demo.bis']) != 0:
-        raise SystemExit(1)
-    (root / '.pilot-initialized').write_text('Synthetic pilot initialized', encoding='utf-8')
+    (root / '.pilot-initialized').write_text('Pilot initialized', encoding='utf-8')
 '@
 & $VenvPython -c $Bootstrap $BisRoot
 if ($LASTEXITCODE -ne 0) { throw 'Database preparation failed. Keep the error text shown above.' }
