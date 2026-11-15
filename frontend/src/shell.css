@@ -465,3 +465,58 @@ td { padding-top: 14px; padding-bottom: 14px; }
   .chat-main .composer > .btn.primary { grid-column: 3; }
   .chat-main .composer-keyboard { display: none; }
 }
+
+/* Registry controls and document rows share the same scan line. */
+.workspace-id .nav-item { font-size: 13px; min-height: 44px; }
+.project-switcher select { min-height: 42px; font-size: 13px; }
+.workspace-search {
+  gap: 8px;
+  margin-block: 0 20px;
+  align-items: stretch;
+}
+.workspace-search input {
+  min-width: 0;
+  flex: 1 1 18rem;
+  min-height: 44px;
+  font-size: 14px;
+}
+.workspace-search input::placeholder { color: var(--muted); opacity: 1; }
+.workspace-search .btn { min-height: 44px; }
+.section-list-header { gap: 12px; margin-bottom: 8px; }
+.section-list-header h2 { margin: 0; font-size: 18px; }
+.section-list-header .tabs { display: flex; flex-wrap: wrap; gap: 4px; margin: 0; }
+.section-list-header .tab { min-height: 40px; padding-inline: 12px; }
+.workspace-document {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  padding-block: 18px;
+}
+.workspace-document.selected {
+  background: var(--accent-soft);
+  border-color: var(--border-strong);
+}
+.workspace-document-copy > strong { font-size: 15px; line-height: 1.45; }
+.workspace-document-copy .small { font-size: 12px; line-height: 1.5; }
+.workspace-document .document-actions { align-self: start; margin: 0; gap: 8px; }
+.workspace-document .document-actions .btn { min-height: 40px; }
+.workspace-document .document-actions .primary {
+  background: var(--accent-soft);
+  border-color: var(--border-strong);
+  color: var(--accent);
+}
+.workspace-document .document-actions .primary:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+@media (max-width: 760px) {
+  .workspace-document { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .workspace-document .document-actions { justify-content: flex-start; }
+  .workspace-document .document-actions .btn, .section-list-header .tab { min-height: 44px; }
+}
+@media (max-width: 600px) {
+  .project-switcher select, .workspace-id .app-header .icon-button { min-height: 44px; }
+  .workspace-search input { flex-basis: 100%; font-size: 16px; }
+  .workspace-search .btn { flex: 1 0 auto; }
+}
