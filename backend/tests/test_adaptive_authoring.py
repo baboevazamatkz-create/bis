@@ -129,6 +129,13 @@ def test_required_organization_letter_form_does_not_fall_back(client, auth, db, 
     assert 'нет подтверждённой формы письма' in result['text']
 
 
+def test_customer_letter_requires_organization_form_by_default():
+    from bis.agents.authoring_tasks import prepare
+    ctx = SimpleNamespace(db=SimpleNamespace(info={}), org_id='org', draft_task={})
+    prepare(ctx, 'Напиши письмо заказчику о выполненных работах', None, [])
+    assert ctx.db.info['require_organization_letter_form']
+
+
 def test_example_discovery_does_not_expand_project_access(db, demo):
     from bis.models import ConstructionObject
     from bis.services.library_access import bind_context
