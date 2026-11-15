@@ -310,6 +310,30 @@ def citation_refs(text: str) -> set[int]:
     return refs
 
 
+_PAGE_CITATION = re.compile(
+    r'(?P<page_label>\b(?:стр\.|страниц[аеуы])[ \t]*(?P<page>\d+)'
+    r'(?:[ \t]+(?:договора|документа|источника))?[ \t]*[)\]]?[ \t,;:]*)'
+    r'\[(?P<reference>\d{1,3})\]', re.I)
+
+
+def align_citation_pages(text: str, citations: list[dict]) -> str:
+    """Align an explicit page label with a unique indexed fragment of the same document."""
+    def replace_page_reference(match):
+        page = int(match['page'])
+        reference = int(match['reference'])
+        if not 1 <= reference <= len(citations):
+            return match[0]
+        cited = citations[reference - 1]
+        document = cited.get('document_id')
+        if not document or cited.get('page') == page:
+            return match[0]
+        choices = [number for number, citation in enumerate(citations, 1)
+                   if citation.get('document_id') == document and citation.get('page') == page]
+        return f"{match['page_label']}[{choices[0]}]" if len(choices) == 1 else match[0]
+
+    return _PAGE_CITATION.sub(replace_page_reference, text)
+
+
 def claims_action(text: str, request: str = "") -> bool:
     """Просили сделать, а модель лишь написала «создан» — без вызова инструмента."""
     return bool(text and ASK_ACT.search(request) and CLAIM.search(text))
@@ -642,6 +666,7 @@ class Agent:
 
     def _check_citations(self, ctx: AgentContext, text: str) -> str:
         """Ссылки [n] должны указывать на реально найденные источники; неиспользованные не добавляются."""
+        text = align_citation_pages(text, ctx.citations)
         refs = citation_refs(text)
         bad = sorted(n for n in refs if n < 1 or n > len(ctx.citations))
         for i, c in enumerate(ctx.citations, 1):

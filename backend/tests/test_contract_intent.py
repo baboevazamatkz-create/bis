@@ -77,3 +77,17 @@ def test_legacy_library_contract_price_cites_the_page_with_amount(client, auth, 
     assert any(c['used'] and c['page'] == 8 and c['document_id'] == str(doc.id)
                and '42 761 950' in c['content'] for c in payload['citations'])
     assert not model_observed(payload)
+
+
+def test_explicit_page_label_links_to_unique_fragment_from_same_document():
+    from bis.agents.base import align_citation_pages, citation_refs
+
+    fragments = [{'document_id': 'contract-a', 'page': 1},
+                 {'document_id': 'contract-a', 'page': 9},
+                 {'document_id': 'contract-b', 'page': 9}]
+    text = 'Пять календарных дней [пункт на странице 9 договора][1].'
+    fixed = align_citation_pages(text, fragments)
+    assert fixed == 'Пять календарных дней [пункт на странице 9 договора][2].'
+    assert citation_refs(fixed) == {2}
+    assert align_citation_pages('См. стр. 2 [1].', fragments) == 'См. стр. 2 [1].'
+    assert align_citation_pages(text, [*fragments, fragments[1]]) == text
