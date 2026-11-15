@@ -138,7 +138,7 @@ async def main():
             ).to_be_enabled()
             await page.get_by_label("Задание помощнику").fill("Проверь документы")
             await expect(
-                page.get_by_role("button", name="Поручить Синапсу", exact=True)
+                page.get_by_role("button", name="Поручить Оркестратору", exact=True)
             ).to_be_enabled()
         assert not errors, errors
         checks.update(

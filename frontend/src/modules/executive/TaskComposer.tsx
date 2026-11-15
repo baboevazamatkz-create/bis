@@ -8,7 +8,7 @@ export default function TaskComposer({ placeholder, documentId, title }: { place
     {title && <p className="small muted">По документу: {title}</p>}
     <div className="row"><textarea aria-label="Задание помощнику" rows={2} placeholder={placeholder} value={text} onChange={(e) => setText(e.target.value)} />
       <VoiceButton onText={setText} label="Надиктовать задание" />
-      <button className="btn primary" disabled={!text.trim()} onClick={() => askAssistant(text, documentId, title)}>Поручить Синапсу</button>
+      <button className="btn primary" disabled={!text.trim()} onClick={() => askAssistant(text, documentId, title)}>Поручить Оркестратору</button>
     </div>
   </div>;
 }

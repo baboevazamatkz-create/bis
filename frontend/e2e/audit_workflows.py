@@ -74,7 +74,7 @@ async def main():
         await expect(page.locator(".msg.assistant")).to_contain_text(
             "История другого диалога"
         )
-        await page.get_by_label("Сообщение Синапсу").fill("Продолжи этот диалог")
+        await page.get_by_label("Сообщение Оркестратору").fill("Продолжи этот диалог")
         await page.get_by_role("button", name="Отправить сообщение", exact=True).click()
         await expect(
             page.get_by_role("button", name="Остановить запрос", exact=True)

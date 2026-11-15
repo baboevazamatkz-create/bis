@@ -8,7 +8,7 @@ from bis.models import ConstructionObject
 from bis.services.project_facts import refresh_project
 
 
-@job('project_facts', 'Синапс: реестр фактов проектов', every_minutes=1)
+@job('project_facts', 'Оркестратор: реестр фактов проектов', every_minutes=1)
 def refresh(db, org, today):
     from bis.llm.gateway import get_gateway
     from bis.rag.embeddings import get_embedder

@@ -53,7 +53,7 @@ export default function Libraries({ user }: { user: User }) {
     const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url;
     link.download = `Проверка_формы.${mapping.format.startsWith("pdf") ? "pdf" : mapping.format}`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 10000);
   }
-  return <div className="libraries"><PageHead title="Библиотеки Синапса" />
+  return <div className="libraries"><PageHead title="Библиотеки Оркестратора" />
     <p className="muted">Нормативы и общие формы → документы организации → отдельная база выбранного проекта. Оригиналы в папках остаются без изменений.</p>
     {error && <div className="alert error">{error}</div>}{message && <div className="note">{message}</div>}
     <div className="panel"><h2>Источники ответов и форм</h2>

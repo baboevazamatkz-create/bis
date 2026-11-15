@@ -133,7 +133,7 @@ export default function DatabaseHub({ user }: { user: User }) {
   const connections = state?.connections.filter((c) => c.level === level && (level !== 'project' || c.object_id === activeProject())) ?? [];
   const allFiles = connections.flatMap((c) => files[c.id] ?? []);
   return <>
-    <PageHead title="Базы данных" hint="Подключите свои папки. Синапс читает эти документы и использует их в ответах и заданиях." />
+    <PageHead title="Базы данных" hint="Подключите свои папки. Оркестратор читает эти документы и использует их в ответах и заданиях." />
     {(error || message) && <div className="workspace-feedback">{error && <div className="alert error" role="alert">{error}</div>}{message && <div className="note" role="status">{message}</div>}</div>}
     <div className="row"><p className="small muted">{state?.strict ? 'Ответы и формы — только из подключённых баз и документов активного проекта.' : 'Строгий режим источников выключен.'}</p>
       {canWrite && state && <button className="btn small" disabled={busy} onClick={() => void action(() => api('/libraries/policy', { method: 'PUT', json: { strict: !state.strict } }), 'Режим источников обновлён.')}>{state.strict ? 'Изменить режим источников' : 'Использовать только мои базы'}</button>}</div>

@@ -57,14 +57,14 @@ async def main():
             )
 
         await page.route("**/api/chat/stream", stream_error)
-        await page.get_by_label("Сообщение Синапсу").fill(
+        await page.get_by_label("Сообщение Оркестратору").fill(
             "Подготовь АООК по имеющимся актам"
         )
         await page.get_by_role("button", name="Отправить сообщение", exact=True).click()
         await expect(page.locator(".alert.error")).to_have_text(
             "Тест: каталог модели не совпадает"
         )
-        await page.get_by_label("Сообщение Синапсу").fill("Следующий запрос")
+        await page.get_by_label("Сообщение Оркестратору").fill("Следующий запрос")
         await expect(
             page.get_by_role("button", name="Отправить сообщение", exact=True)
         ).to_be_enabled()
@@ -77,11 +77,11 @@ async def main():
                 await route.abort()
 
         await page.route("**/api/chat/stream", pending)
-        await page.get_by_label("Сообщение Синапсу").fill("Проверка остановки")
+        await page.get_by_label("Сообщение Оркестратору").fill("Проверка остановки")
         await page.get_by_role("button", name="Отправить сообщение", exact=True).click()
         await page.get_by_role("button", name="Остановить запрос", exact=True).click()
         await expect(page.locator(".alert.error")).to_contain_text("Запрос остановлен")
-        await page.get_by_label("Сообщение Синапсу").fill("Следующий запрос")
+        await page.get_by_label("Сообщение Оркестратору").fill("Следующий запрос")
         await expect(
             page.get_by_role("button", name="Отправить сообщение", exact=True)
         ).to_be_enabled()

@@ -254,7 +254,7 @@ export default function Chat({ workspace = "platform" }: { workspace?: "platform
         >
           <Icon name="plus" size={16} /> Новый диалог
         </button>
-        {sessions.length === 0 && <p className="history-empty">Здесь будут ваши<br />диалоги с Синапсом.</p>}
+        {sessions.length === 0 && <p className="history-empty">Здесь будут ваши<br />диалоги с Оркестратором.</p>}
         {sessions.map((s) => (
           <button key={s.id} className={`session-item ${s.id === sessionId ? "selected" : ""}`} disabled={busy} title={s.title} onClick={() => { void openSession(s.id); setShowHistory(false); }}>
             {s.title}
@@ -263,7 +263,7 @@ export default function Chat({ workspace = "platform" }: { workspace?: "platform
       </div>
       <div className="chat-main">
         <div className="chat-toolbar">
-          <div className="chat-identity"><span className="synapse-avatar"><Icon name="spark" size={18} /></span><div><strong>Синапс</strong><span>Помощник {executive ? "инженера ПТО" : "по проекту"}</span></div></div>
+          <div className="chat-identity"><span className="synapse-avatar"><Icon name="spark" size={18} /></span><div><strong>Оркестратор</strong><span>Помощник {executive ? "инженера ПТО" : "по проекту"}</span></div></div>
           <button className="btn small chat-history-toggle" aria-expanded={showHistory} onClick={() => setShowHistory(!showHistory)}><Icon name="chat" size={15} />{showHistory ? "Закрыть историю" : "История"}</button>
           {!executive && <div className="field agent-picker">
             <label className="sr-only" htmlFor="chat-agent">Специалист</label>
@@ -309,8 +309,8 @@ export default function Chat({ workspace = "platform" }: { workspace?: "platform
                 <>
                   <Docs items={m.meta?.documents ?? []} onError={setError} />
                   <Citations items={m.meta?.citations ?? []} text={m.content} onError={setError} />
-                  {(m.meta?.provider === "offline" || m.meta?.model === "offline") && <p className="small text-bad">Ответ получен без языковой модели. Проверьте подключение ИИ; поиск по документам доступен отдельно в разделе «Синапс».</p>}
-                  <div className="meta">{agentTitle(m.agent) || "Синапс"}
+                  {(m.meta?.provider === "offline" || m.meta?.model === "offline") && <p className="small text-bad">Ответ получен без языковой модели. Проверьте подключение ИИ; поиск по документам доступен отдельно в разделе «Оркестратор».</p>}
+                  <div className="meta">{agentTitle(m.agent) || "Оркестратор"}
                     {(m.meta?.provider || !!m.meta?.trace?.length) && <details className="chat-tech"><summary>Детали ответа</summary><p>{m.meta?.provider}{m.meta?.routed_by ? ` · ${m.meta.routed_by}` : ""}</p>{m.meta?.trace?.map((t, n) => <span key={n}>{t.tool}{t.error ? " · ошибка" : ""}<br /></span>)}</details>}
                   </div>
                 </>
@@ -332,7 +332,7 @@ export default function Chat({ workspace = "platform" }: { workspace?: "platform
         {error && <div className="alert error">{error}</div>}
         <div className="chat-compose-area"><div className="composer">
           <textarea
-            aria-label="Сообщение Синапсу"
+            aria-label="Сообщение Оркестратору"
             rows={2}
             value={text}
             placeholder="Спросите о проекте или опишите выполненную работу…"

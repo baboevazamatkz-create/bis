@@ -16,7 +16,7 @@ interface Run {
   plan?: { act_kind: string; works: string; location: string; project_docs: string; planned_materials: string[]; materials: string[];
     work_start: string | null; work_end: string | null; next_works: string | null; requirements: string[]; project_alignment?: Alignment };
 }
-const STATUS: Record<string, string> = { queued: "Задание сохранено", running: "Синапс собирает комплект", needs_data: "Нужны конкретные уточнения", ready_for_review: "Черновик готов к проверке", error: "Обработка не завершена" };
+const STATUS: Record<string, string> = { queued: "Задание сохранено", running: "Оркестратор собирает комплект", needs_data: "Нужны конкретные уточнения", ready_for_review: "Черновик готов к проверке", error: "Обработка не завершена" };
 const FIELDS: Record<string, string> = { work_start: "Начало работ", work_end: "Окончание работ", actual_material: "Фактический материал", project_ref: "Рабочая документация", quality: "Документ качества", protocol_result: "Заключение испытаний", journal_entry: "Запись журнала", next_work: "Последующие работы", batch: "Партия", element: "Линия / элемент" };
 
 export default function ExecutivePipeline({ user }: { user: User }) {
@@ -130,7 +130,7 @@ export default function ExecutivePipeline({ user }: { user: User }) {
         <option value="">Определить автоматически, если объект один</option>{objects.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
       </select></div>}
       <div className="field"><label htmlFor="pipeline-report">Что выполнено и где</label><textarea id="pipeline-report" value={text} disabled={!!audio} onChange={(e) => setText(e.target.value)}
-        placeholder="Например: на участке 123 проложен кабель. Синапс найдёт РД, даты в журнале, документы качества и необходимые приложения." /></div>
+        placeholder="Например: на участке 123 проложен кабель. Оркестратор найдёт РД, даты в журнале, документы качества и необходимые приложения." /></div>
       <div className="row" style={{ alignItems: "center" }}><VoiceButton onText={(value) => setText((old) => `${old} ${value}`.trim())} />
         <details className="audio-upload"><summary>{audio ? audio.name : "Загрузить аудиозапись"}</summary><div className="field" style={{ margin: 0 }}><label htmlFor="pipeline-audio">Или загрузите голосовое сообщение</label><input ref={audioInput} id="pipeline-audio" type="file" accept="audio/*,.ogg,.opus,.webm,.mp3,.wav,.m4a" onChange={(e) => setAudio(e.target.files?.[0] ?? null)} /></div></details>
         <button className="btn primary" disabled={busy || processing || !canWrite || (!audio && text.trim().length < 3)} onClick={() => void submit()}>{busy ? "Сохраняю…" : "Собрать комплект ИД"}</button>

@@ -145,7 +145,7 @@ def find_documents(ctx: AgentContext, args: FindDocumentsArgs) -> dict:
                     Document.number.icontains(literal, autoescape=True),
                     Document.file_name.icontains(literal, autoescape=True))).limit(50)).all():
                 ranked.setdefault(d.id, {"doc": d, "score": 2.5, "excerpt": None, "n": None})
-        # 0. по карточке «Синапса»: марки (B25, А500С), оси, конструкции (Фм1), номера ссылок, шифр РД
+        # 0. по карточке «Оркестратора»: марки (B25, А500С), оси, конструкции (Фм1), номера ссылок, шифр РД
         tokens = [t for t in re.findall(r"[A-Za-zА-Яа-яЁё]*\d[\w.\-/]*|[А-ЯA-Z]{2,4}\d?", args.query) if len(t) >= 2]
         if tokens:
             for d in ctx.db.scalars(allowed(select(Document)).where(
@@ -235,7 +235,7 @@ class CardArgs(BaseModel):
     document_id: str
 
 
-@tool("document_card", "Карточка документа из «Синапса»: вид, №, дата, стороны, РД (шифр, листы, изм.), конструкции, "
+@tool("document_card", "Карточка документа из «Оркестратора»: вид, №, дата, стороны, РД (шифр, листы, изм.), конструкции, "
       "материалы и марки, оси, отметки, нормы, суть — и связи: на какие документы ссылается (найдены ли в архиве) "
       "и какие документы ссылаются на него.", scopes=("documents:read",))
 def document_card(ctx: AgentContext, args: CardArgs) -> dict:

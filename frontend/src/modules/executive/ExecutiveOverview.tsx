@@ -64,8 +64,8 @@ export default function ExecutiveOverview({ checkOnly = false }: { checkOnly?: b
     {error && <div role="alert" className="alert error">{error}</div>}
     {!checkOnly && <>
       <div className="pto-hero panel">
-        <div className="hero-copy"><span className="pto-eyebrow"><span className="hero-status-dot" /> СИНАПС · ИНЖЕНЕР ПТО</span><h2>От выполненных работ<br />к готовому комплекту.</h2>
-          <p>Опишите, что сделано на объекте.<br />Основания, даты и приложения соберёт Синапс.</p><div className="hero-buttons">
+        <div className="hero-copy"><span className="pto-eyebrow"><span className="hero-status-dot" /> ОРКЕСТРАТОР · ИНЖЕНЕР ПТО</span><h2>От выполненных работ<br />к готовому комплекту.</h2>
+          <p>Опишите, что сделано на объекте.<br />Основания, даты и приложения соберёт Оркестратор.</p><div className="hero-buttons">
           <button className="btn primary" onClick={() => navigate("id", "pipeline")}>Сообщить о работе <Icon name="arrow" size={17} /></button>
           <button className="btn hero-secondary" onClick={() => navigate("id", "archive")}>Загрузить документы</button></div></div>
         <div className="hero-documents" aria-hidden="true"><div className="hero-sheet sheet-back" /><div className="hero-sheet sheet-mid" /><div className="hero-sheet sheet-front"><div className="sheet-top"><Icon name="documents" size={21} /><span>ИСПОЛНИТЕЛЬНАЯ<br />ДОКУМЕНТАЦИЯ</span></div><div className="sheet-title">Каждая деталь<br />на своём месте.</div><div className="sheet-lines"><i /><i /><i /></div><div className="sheet-bottom">РД <span>→</span> АКТ <span>→</span> КОМПЛЕКТ</div></div></div>
@@ -76,7 +76,7 @@ export default function ExecutiveOverview({ checkOnly = false }: { checkOnly?: b
         <Stat label="С замечаниями" value={loading ? "…" : issues.length} tone={issues.length ? "bad" : undefined} />
       </div>
       <div className="pto-actions">
-        {[["pipeline", "01", "Сообщить о работе", "Синапс соберёт черновик ИД по РД, журналу и документам качества"],
+        {[["pipeline", "01", "Сообщить о работе", "Оркестратор соберёт черновик ИД по РД, журналу и документам качества"],
           ["chat", "02", "Поручить помощнику", "Подготовить ИД по имеющимся данным и документам"],
           ["schemes", "03", "Исполнительная схема", "Подготовить схему по съёмке и замерам"]].map(([page, n, title, text]) =>
           <button key={page} className="pto-action" onClick={() => navigate("id", page)}><span className="action-card-top"><Icon name={page} size={22} /><span>{n}</span></span><strong>{title}<Icon name="arrow" size={17} /></strong><small>{text}</small></button>)}

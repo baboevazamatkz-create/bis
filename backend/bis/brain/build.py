@@ -1,4 +1,4 @@
-"""Построение «Синапса»: карточка и связи документа при загрузке; фоновый досчёт для уже загруженного архива."""
+"""Построение «Оркестратора»: карточка и связи документа при загрузке; фоновый досчёт для уже загруженного архива."""
 
 from __future__ import annotations
 
@@ -76,7 +76,7 @@ def build_missing(db: Session, gateway, embedder, org_id: uuid.UUID, limit: int 
             done += 1
         except Exception as e:  # noqa: BLE001 — один документ не останавливает остальные
             failed += 1
-            log.warning("Синапс: карточка документа %s не построена: %s", doc.id, e)
+            log.warning("Оркестратор: карточка документа %s не построена: %s", doc.id, e)
     return {"cards": done, "failed": failed, "left": len(missing(db, org_id, 1000))}
 
 
@@ -105,7 +105,7 @@ def index_missing(db: Session, gateway, embedder, storage, org_id: uuid.UUID, li
                 build_document(db, gateway, embedder, doc, "\n".join(p.text for p in pages))
             done += 1
         except Exception as e:  # noqa: BLE001
-            log.warning("Синапс: файл %s не проиндексирован: %s", doc.id, e)
+            log.warning("Оркестратор: файл %s не проиндексирован: %s", doc.id, e)
             doc.data = {**(doc.data or {}), "reading_error": str(e)[:300]}
     return {"indexed": done}
 
@@ -179,7 +179,7 @@ def reread_missing(db: Session, gateway, embedder, storage, org_id: uuid.UUID, l
                 reread_scan(db, gateway, embedder, storage, doc)
             done += 1
         except Exception as e:  # noqa: BLE001
-            log.warning("Синапс: скан %s не перечитан: %s", doc.id, e)
+            log.warning("Оркестратор: скан %s не перечитан: %s", doc.id, e)
             doc.data = {**(doc.data or {}), "pages_checked": -1}
     return {"reread": done, "reread_left": len(unread_scans(db, org_id, 1000))}
 
@@ -308,7 +308,7 @@ def coverage(db: Session, org_id: uuid.UUID) -> dict[str, Any]:
             "vision_status": vis.status(get_gateway())}
 
 
-@job("brain", "Синапс: карточки и связи документов", every_minutes=10)
+@job("brain", "Оркестратор: карточки и связи документов", every_minutes=10)
 def brain_job(db: Session, org: Organization, today: dt.date) -> dict[str, Any]:
     from bis.llm.gateway import get_gateway
     from bis.rag.embeddings import get_embedder

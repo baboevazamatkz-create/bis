@@ -7,7 +7,7 @@ from bis.models.libraries import LibraryConnection
 from bis.services.library_sync import execute
 
 
-@job('libraries', 'Синапс: синхронизация библиотек', every_minutes=1)
+@job('libraries', 'Оркестратор: синхронизация библиотек', every_minutes=1)
 def synchronize(db, org, today):
     first = db.scalar(select(Organization.id).order_by(Organization.id).limit(1))
     ids = db.scalars(select(LibraryConnection.id).where(LibraryConnection.enabled.is_(True),

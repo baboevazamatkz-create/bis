@@ -81,7 +81,7 @@ async def main():
         await page.get_by_label("Задание помощнику").fill(
             "Какой срок окончания работ по этому договору?"
         )
-        await page.get_by_role("button", name="Поручить Синапсу", exact=True).click()
+        await page.get_by_role("button", name="Поручить Оркестратору", exact=True).click()
         await expect(page.locator(".msg.assistant")).to_contain_text(
             "17 ноября 2026", timeout=30000
         )

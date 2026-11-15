@@ -1,4 +1,4 @@
-// «Синапс» — мозг объекта: что BIS знает о документах, как они связаны, что прочитано зрением.
+// «Оркестратор» — мозг объекта: что BIS знает о документах, как они связаны, что прочитано зрением.
 import { useEffect, useState } from "react";
 import { api, openFile } from "../api";
 import { Hint, PageHead, VoiceButton } from "../components";
@@ -57,13 +57,13 @@ function SelfCheck() {
   return (
     <div className="panel">
       <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-        <h2 style={{ margin: 0 }}>Самопроверка <Hint>«Синапс» сам составляет вопросы по вашему архиву (правильный ответ берётся
+        <h2 style={{ margin: 0 }}>Самопроверка <Hint>«Оркестратор» сам составляет вопросы по вашему архиву (правильный ответ берётся
           из карточки и сверяется с текстом документа), отвечает на них как ассистент и считает процент верных. Свои вопросы —
           «вопрос → ответ», по одному на строку. Проверка ничего не меняет в данных; 40 вопросов — несколько минут.</Hint></h2>
         <div className="row">
           <button className="btn small" onClick={() => setShowOwn(!showOwn)}>{showOwn ? "Скрыть свои вопросы" : "+ Свои вопросы"}</button>
           <button className="btn primary" disabled={!!st?.running} onClick={() => void start()}>
-            {st?.running ? `Проверяю… ${st.done ?? 0} из ${st.total || "…"}` : "Проверить «Синапса»"}
+            {st?.running ? `Проверяю… ${st.done ?? 0} из ${st.total || "…"}` : "Проверить «Оркестратора»"}
           </button>
         </div>
       </div>
@@ -152,8 +152,8 @@ export default function Brain({ executive = false }: { executive?: boolean }) {
 
   return (
     <>
-      <PageHead title="Синапс" hint={<>Мозг объекта: для каждого документа — карточка (вид, номер, дата, РД, конструкции, марки,
-        оси, отметки, суть), связи с другими документами и описание листов, прочитанных зрением. На «Синапсе» держатся ответы
+      <PageHead title="Оркестратор" hint={<>Мозг объекта: для каждого документа — карточка (вид, номер, дата, РД, конструкции, марки,
+        оси, отметки, суть), связи с другими документами и описание листов, прочитанных зрением. На «Оркестраторе» держатся ответы
         ассистента и Telegram-бота.</>}>
         <button className="btn" disabled={busy} onClick={() => void buildNow()}>{busy ? "Досчитываю…" : "Досчитать сейчас"}</button>
       </PageHead>

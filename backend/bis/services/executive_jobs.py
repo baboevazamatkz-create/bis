@@ -8,7 +8,7 @@ from bis.jobs import job
 from bis.models import IntakeEvent
 
 
-@job("executive", "Синапс: восстановление заданий ИД", every_minutes=1)
+@job("executive", "Оркестратор: восстановление заданий ИД", every_minutes=1)
 def recover(db, org, today):
     from bis.api.executive import execute
 

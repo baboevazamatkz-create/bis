@@ -11,7 +11,7 @@ from bis.services.project_facts import SourceInProgress
 from bis.services.project_reading import current, read
 
 
-@job('project_reading', 'Синапс: постраничное чтение проектов', every_minutes=1)
+@job('project_reading', 'Оркестратор: постраничное чтение проектов', every_minutes=1)
 def refresh(db, org, today):
     from bis.llm.gateway import get_gateway
     from bis.services.storage import get_storage
