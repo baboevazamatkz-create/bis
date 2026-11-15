@@ -76,6 +76,9 @@ def prepare(ctx, user_text, previous, rows):
 def finalize(ctx, result, effective_request):
     from bis.agents.builtin_tools import _doc_ref
 
+    if result.provider == 'library' and result.model == 'form-validation':
+        return result
+
     refs = []
     for ref in ctx.db.info.get('request_created_documents', []):
         doc = ctx.db.get(Document, uuid.UUID(ref))

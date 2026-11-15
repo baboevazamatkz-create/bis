@@ -132,6 +132,31 @@ def test_ordinary_form_requires_review_and_original_is_unchanged(db, demo, libra
     assert db.info['used_library_form']['version_id'] == str(version.id)
 
 
+def test_letter_uses_confirmed_organization_original(db, demo, library):
+    connection, root = library
+    connection.level, connection.organization_id = 'organization', demo.id
+    word = Word()
+    word.sections[0].header.paragraphs[0].text = 'Контрольный фирменный бланк'
+    word.add_paragraph('Текст письма:')
+    buffer = io.BytesIO()
+    word.save(buffer)
+    path = root / 'Форма письма.docx'
+    path.write_bytes(buffer.getvalue())
+    synchronize(db, connection)
+    version = db.scalar(select(LibraryVersion))
+    mapping = forms.prepare(buffer.getvalue(), path.name, None)
+    version.form_kind, version.mapping, version.approved_at = 'letter', mapping.model_dump(), dt.datetime.now(dt.UTC)
+    db.flush()
+    bind_context(db, demo.id)
+    output = forms.render(db, get_storage(), demo.id, 'letter', {'body': 'Контрольный текст'},
+                          organization_only=True)
+    actual = Word(io.BytesIO(output))
+    assert actual.sections[0].header.paragraphs[0].text == 'Контрольный фирменный бланк'
+    assert any('Контрольный текст' in p.text for p in actual.paragraphs)
+    assert db.info['used_library_form']['version_id'] == str(version.id)
+    assert path.read_bytes() == buffer.getvalue()
+
+
 def test_no_builtin_fallback_in_strict_mode(db, demo):
     from bis.documents.templates import render_with_org_template
     strict(db, demo)
