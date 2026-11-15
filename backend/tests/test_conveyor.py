@@ -366,3 +366,23 @@ def test_scan_photo_and_voice_via_yandex_services(db, demo, monkeypatch):
     ev2, acts2 = run(env, data=b"OggS voice", name="voice.ogg", mime="audio/ogg")
     assert ev2.result["transcript"].endswith("120 м3")
     assert by_kind(acts2, "report_volume")[0].payload["quantity"] == 120
+
+
+def test_document_intake_indexes_embedded_scan_and_preserves_extraction_coverage(db, demo, monkeypatch):
+    from test_reading_integrity import mixed_word
+
+    from bis.models import KnowledgeChunk, KnowledgeSource
+    from bis.services import archive
+    monkeypatch.setattr(archive, '_ocr_pages', lambda *args: ['Спецификация: кабель ВВГнг-LS 3х2,5, количество 125 метров.'])
+    env = make_env(db, demo)
+    event, actions = run(env, data=mixed_word(), name='project.docx', mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+    register = next(action for action in actions if action.kind == 'register_document')
+    if register.status != 'applied':
+        cv.apply_action(env, register, auto=True)
+    assert register.status == 'applied', register.result
+    indexed = db.scalar(select(KnowledgeSource).where(KnowledgeSource.document_id == event.document_id))
+    texts = db.scalars(select(KnowledgeChunk.content).where(KnowledgeChunk.source_id == indexed.id)).all()
+    assert any('125 метров' in text for text in texts)
+    assert indexed.meta['original_sha256'] and indexed.meta['reading']['complete']
+    assert indexed.meta['reading']['method'] == 'parsed+ocr_docx'
+    assert db.get(Document, event.document_id).data['reading']['complete']

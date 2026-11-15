@@ -13,7 +13,8 @@ from bis.rag.search import _hit
 def document_chunks(db, doc):
     rows = db.execute(select(KnowledgeChunk, KnowledgeSource).join(
         KnowledgeSource, KnowledgeSource.id == KnowledgeChunk.source_id).where(
-        KnowledgeSource.organization_id == doc.organization_id, KnowledgeSource.document_id == doc.id)
+        KnowledgeSource.organization_id == doc.organization_id, KnowledgeSource.document_id == doc.id,
+        KnowledgeSource.status.notin_(['cancelled', 'replaced']))
         .order_by(KnowledgeSource.created_at, KnowledgeSource.id, KnowledgeChunk.ord)).all()
     # Text and vision are separate sources: never interleave their chunk ordinals.
     rows.sort(key=lambda row: bool((row[1].meta or {}).get("vision")))
@@ -57,3 +58,22 @@ def query_windows(chunks, query, max_chars=1500):
         'matched_terms': [term for term in terms if frequency[term]],
         'unmatched_terms': [term for term in terms if not frequency[term]],
         'note': 'Охват индексированного текста, не гарантия полного OCR оригинала. Выдержки не доказывают отсутствие других условий.'}
+
+
+def extraction_coverage(db, doc):
+    """A full text window is independent of whether the original was fully extracted."""
+    sources = db.scalars(select(KnowledgeSource).where(KnowledgeSource.organization_id == doc.organization_id,
+        KnowledgeSource.document_id == doc.id, KnowledgeSource.status.notin_(['cancelled', 'replaced']))).all()
+    reports = []
+    current = (doc.data or {}).get('reading')
+    if current:
+        reports.append({'origin': 'document', **current})
+    for source in sources:
+        reading = (source.meta or {}).get('reading')
+        if reading:
+            reports.append({'origin': 'source', 'source_id': str(source.id), **reading})
+    complete = False if any(r.get('complete') is False for r in reports) else (
+        True if reports and all(r.get('complete') is True for r in reports) else None)
+    return {'complete': complete, 'status': 'partial' if complete is False else 'reported_complete' if complete else 'unknown',
+            'reports': reports, 'scope': 'Полнота извлечения оценивается отдельно от объёма возвращённого текста. '
+            'Reported complete относится к извлечённым сегментам, не ко всему смыслу оригинала.'}

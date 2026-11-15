@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import uuid
 
 from sqlalchemy import delete, select
@@ -32,7 +33,8 @@ def process(document_id):
             doc.data = {**doc.data, 'read_state': 'running', 'read_started_at': dt.datetime.now(dt.UTC).isoformat()}
             db.commit()
             try:
-                pages, method = archive._pages(get_storage().get(key), doc.file_name or 'file', doc.mime)
+                original = get_storage().get(key)
+                pages, method = archive._pages(original, doc.file_name or 'file', doc.mime)
                 text = '\n'.join(p.text for p in pages)
                 if not text.strip():
                     raise ValueError(next((p.warning for p in pages if p.warning), 'Из файла не извлечён текст'))
@@ -48,7 +50,7 @@ def process(document_id):
                     kind=archive.KNOWLEDGE.get(dtype, 'org_document'), title=doc.title, document_id=doc.id)
                 src.file_key, src.file_name, src.mime = key, doc.file_name, doc.mime
                 reading = archive.reading_report(pages, method)
-                src.meta = {**(src.meta or {}), 'reading': reading}
+                src.meta = {**(src.meta or {}), 'reading': reading, 'original_sha256': hashlib.sha256(original).hexdigest()}
                 if old_ids:
                     db.execute(delete(KnowledgeSource).where(KnowledgeSource.id.in_(old_ids)))
                 apply_card(db, embedder, doc, rules_card(text, doc.kind, doc.title), reembed=False)

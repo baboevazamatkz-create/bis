@@ -358,3 +358,57 @@ def test_worker_does_not_wait_to_write_failure_on_locked_project(context):
         assert time.monotonic() - started < 4
         assert result['failed'] == 1 and result['documents'] == 0
         assert 'project_reading_error' not in context.db.get(Document, doc.id).data
+
+
+def test_docx_with_unread_drawing_stays_partial_even_with_typed_project_text(context):
+    from test_reading_integrity import mixed_word
+    obj = context.db.scalar(select(ConstructionObject).where(ConstructionObject.organization_id == context.org_id))
+    doc = save_document(context.db, context.storage, org_id=context.org_id, object_id=obj.id, kind='project_doc',
+        title='Смешанный проект', data={}, file_bytes=mixed_word(), file_name='mixed.docx', created_by='test:project')
+    result = reader.read(context, doc.id)
+    assert result.state == 'partial' and result.payload['coverage']['review']
+    assert any('изображени' in warning for page in result.payload['pages'] for warning in page['warnings'])
+
+
+def test_docx_ocr_index_is_used_only_when_tied_to_exact_original(context):
+    import hashlib
+
+    from test_reading_integrity import mixed_word
+
+    from bis.rag.ingest import ingest_pages
+    from bis.rag.parsers import Page
+    from bis.rag.reading import reading_report
+    obj = context.db.scalar(select(ConstructionObject).where(ConstructionObject.organization_id == context.org_id))
+    raw = mixed_word()
+    doc = save_document(context.db, context.storage, org_id=context.org_id, object_id=obj.id, kind='project_doc',
+        title='Смешанный проект', data={}, file_bytes=raw, file_name='mixed.docx', created_by='test:project')
+    pages = [Page(None, TABLE)]
+    indexed = ingest_pages(context.db, context.embedder, org_id=context.org_id, pages=pages,
+        kind='project_doc', title=doc.title, document_id=doc.id)
+    indexed.meta = {**indexed.meta, 'original_sha256': 'wrong-original', 'reading': reading_report(pages, 'parsed+ocr_docx')}
+    context.db.flush()
+    initial = reader.read(context, doc.id)
+    assert initial.state == 'partial'
+    indexed.meta = {**indexed.meta, 'original_sha256': hashlib.sha256(raw).hexdigest()}
+    context.db.flush()
+    current = reader.read(context, doc.id)
+    assert current.id != initial.id and current.state == 'ready'
+    assert current.payload['pages'][0]['origin'] == 'indexed_docx_ocr'
+    assert {item['quantity'] for item in alignment.design_items([current])} == {'100', '250'}
+
+
+def test_uncached_excel_formula_cannot_be_treated_as_a_fully_read_specification(context):
+    import openpyxl
+    book = openpyxl.Workbook()
+    sheet = book.active
+    sheet.title = 'Спецификация'
+    sheet.append(['Поз.', 'Наименование', 'Марка', 'Ед.', 'Кол-во'])
+    sheet.append(['1', 'Кабель', 'ВВГнг-LS 3х2,5', 'м', '=100+25'])
+    buffer = io.BytesIO()
+    book.save(buffer)
+    obj = context.db.scalar(select(ConstructionObject).where(ConstructionObject.organization_id == context.org_id))
+    doc = save_document(context.db, context.storage, org_id=context.org_id, object_id=obj.id, kind='project_doc',
+        title='Спецификация', data={}, file_bytes=buffer.getvalue(), file_name='spec.xlsx', created_by='test:project')
+    result = reader.read(context, doc.id)
+    assert result.state == 'partial' and result.payload['coverage']['review']
+    assert any('формул без сохранённого результата' in warning for page in result.payload['pages'] for warning in page['warnings'])

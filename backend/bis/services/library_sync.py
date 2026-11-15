@@ -125,7 +125,8 @@ def scan(db, storage, embedder, gateway, connection, *, force=False, checkpoint=
                 src.status = 'unknown' if kind == 'norm' else 'active'
                 src.designation = detect_designation(text, path.name) if kind == "norm" else None
                 src.meta = {**(src.meta or {}), 'library_version_id': str(version.id), 'relative_path': relative,
-                            'level': connection.level, 'text_from': method, 'reading': archive.reading_report(pages, method)}
+                            'level': connection.level, 'text_from': method, 'original_sha256': digest,
+                            'reading': archive.reading_report(pages, method)}
                 version.source_id = src.id
                 if connection.organization_id:
                     doc = save_document(db, storage, org_id=connection.organization_id,

@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import base64
 import datetime as dt
+import hashlib
+import json
 import logging
 import mimetypes
 import re
@@ -195,14 +197,18 @@ def _process(env: Env, event: IntakeEvent) -> None:
                 return _dispatch(env, event, text, None, (dtype, conf, f"{by}+ocr"))
     elif event.kind == "document":
         try:
-            parsed = parse_file(data, event.file_name or "file", event.mime)
-            text = (parsed.text + "\n" + (event.text or "")).strip()
-            if parsed.meta.get("needs_ocr") or not parsed.text.strip():
-                scanned = _ocr(event, data)
-                if scanned:
-                    text = (parsed.text + "\n" + scanned + "\n" + (event.text or "")).strip()
-                else:
-                    event.result = {**event.result, "needs_ocr": True}
+            from bis.services.archive import _pages, reading_report
+
+            pages, method = _pages(data, event.file_name or "file", event.mime)
+            extracted = '\n'.join(page.text for page in pages)
+            text = (extracted + "\n" + (event.text or "")).strip()
+            event.result = {**event.result, 'reading': reading_report(pages, method), 'text_from': method}
+            if pages:
+                payload = [{'number': page.number, 'text': page.text, 'warning': page.warning} for page in pages]
+                event.result = {**event.result, 'perception_pages_key': env.storage.put(
+                    json.dumps(payload, ensure_ascii=False).encode('utf-8'), 'pages.json', prefix=f'intake-text/{env.org_id}')}
+            else:
+                event.result = {**event.result, 'unsupported': 'Из файла не извлечены читаемые сегменты'}
         except UnsupportedFormat as e:
             event.result = {**event.result, "unsupported": str(e)}
     if event.object_id is None:
@@ -923,7 +929,7 @@ def _event(env: Env, a: AIAction) -> IntakeEvent | None:
 
 
 def _apply_register(env: Env, a: AIAction) -> dict:
-    from bis.rag.ingest import ingest_bytes, ingest_text
+    from bis.rag.ingest import ingest_bytes, ingest_pages, ingest_text
 
     ev = _event(env, a)
     p = a.payload
@@ -939,10 +945,20 @@ def _apply_register(env: Env, a: AIAction) -> dict:
     env.db.flush()
     ev.document_id = doc.id
     perceived = (ev.result or {}).get("perception_text_key")
-    if perceived or ev.kind in ("document", "text"):
+    perceived_pages = (ev.result or {}).get("perception_pages_key")
+    if perceived_pages or perceived or ev.kind in ("document", "text"):
         try:
             with env.db.begin_nested():
-                if perceived:
+                if perceived_pages:
+                    from bis.rag.parsers import Page
+
+                    pages = [Page(**page) for page in json.loads(env.storage.get(perceived_pages))]
+                    indexed = ingest_pages(env.db, env.embedder, org_id=env.org_id, pages=pages,
+                        kind=p.get('knowledge_kind', 'org_document'), title=doc.title, document_id=doc.id)
+                    indexed.meta = {**(indexed.meta or {}), 'reading': ev.result['reading'],
+                                    'original_sha256': hashlib.sha256(env.storage.get(ev.file_key)).hexdigest()}
+                    doc.data = {**(doc.data or {}), 'reading': ev.result['reading'], 'text_from': ev.result['text_from']}
+                elif perceived:
                     ingest_text(env.db, env.embedder, org_id=env.org_id, text=env.storage.get(perceived).decode("utf-8"),
                                 kind=p.get("knowledge_kind", "org_document"), title=doc.title, document_id=doc.id)
                     doc.data = {**(doc.data or {}), "text_from": "ocr"}

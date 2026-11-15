@@ -114,58 +114,120 @@ def parse_pdf(data: bytes) -> ParsedDocument:
 
 def parse_docx(data: bytes) -> ParsedDocument:
     import docx
+    from docx.oxml.ns import qn
     from docx.table import Table
-    from docx.text.paragraph import Paragraph
 
     d = docx.Document(io.BytesIO(data))
-    lines: list[str] = []
-    body = d.element.body
+    omitted = {qn('w:del'), qn('w:moveFrom'), qn('w:instrText')}
 
-    def cell_text(cell):
-        content = []
-        for child in cell._tc.iterchildren():
-            tag = child.tag.rsplit('}', 1)[-1]
-            if tag == 'p':
-                content.append(Paragraph(child, cell).text)
-            elif tag == 'tbl':
-                content.extend(' | '.join(cell_text(c) for c in row.cells) for row in Table(child, cell).rows)
-        return '\n'.join(content).strip()
+    def visible_nodes(node):
+        if node.tag in omitted:
+            return
+        if node.tag == qn('w:r'):
+            properties = node.find(qn('w:rPr'))
+            hidden = properties.find(qn('w:vanish')) if properties is not None else None
+            if hidden is not None and hidden.get(qn('w:val')) not in ('0', 'false', 'off'):
+                return
+        if node.tag.rsplit('}', 1)[-1] == 'AlternateContent':
+            # Choice and Fallback represent the same content, not two independent text blocks.
+            choices = list(node)
+            if choices:
+                yield from visible_nodes(choices[0])
+            return
+        yield node
+        for child in node:
+            yield from visible_nodes(child)
 
-    for child in body.iterchildren():
-        tag = child.tag.rsplit("}", 1)[-1]
-        if tag == "p":
-            text = Paragraph(child, d).text
-            if text.strip():
-                lines.append(text)
-        elif tag == "tbl":
-            for row in Table(child, d).rows:
-                cells = [cell_text(c) for c in row.cells]
-                if any(cells):
-                    lines.append(" | ".join(cells))
-    seen = set()
+    def paragraph_text(node):
+        parts = []
+        for item in visible_nodes(node):
+            if item.tag == qn('w:p') and item is not node:
+                parts.append('\n')
+            if item.tag == qn('w:t'):
+                parts.append(item.text or '')
+            elif item.tag in (qn('w:tab'),):
+                parts.append('\t')
+            elif item.tag in (qn('w:br'), qn('w:cr')):
+                parts.append('\n')
+        return ''.join(parts)
+
+    def blocks(node):
+        # Structured content controls and inserted blocks may wrap paragraphs or tables.
+        for child in node:
+            if child.tag in omitted:
+                continue
+            if child.tag in (qn('w:p'), qn('w:tbl')):
+                yield child
+            elif child.tag in (qn('w:sdt'), qn('w:sdtContent'), qn('w:ins'), qn('w:moveTo'), qn('w:customXml')):
+                yield from blocks(child)
+
+    def table_lines(node, parent):
+        seen_cells = set()
+        for row in Table(node, parent).rows:
+            values = []
+            for cell in row.cells:
+                if cell._tc in seen_cells:
+                    values.append('')  # merged cells must not multiply their quantities
+                else:
+                    seen_cells.add(cell._tc)
+                    values.append('\n'.join(block_lines(cell._tc, cell)))
+            if any(values):
+                yield ' | '.join(values)
+
+    def block_lines(node, parent):
+        for child in blocks(node):
+            if child.tag == qn('w:p'):
+                text = paragraph_text(child)
+                if text.strip():
+                    yield text
+            else:
+                yield from table_lines(child, parent)
+
+    lines = list(block_lines(d.element.body, d))
+    seen_parts = set()
     for section in d.sections:
         for part in (section.header, section.first_page_header, section.even_page_header,
                      section.footer, section.first_page_footer, section.even_page_footer):
-            if part.part.partname in seen:
+            if part.part.partname in seen_parts:
                 continue
-            seen.add(part.part.partname)
-            extra = [p.text for p in part.paragraphs if p.text.strip()]
-            extra += [' | '.join(c.text for c in row.cells) for table in part.tables for row in table.rows]
+            seen_parts.add(part.part.partname)
+            extra = list(block_lines(part._element, part))
             if extra:
                 lines.append('Колонтитул: ' + '\n'.join(extra))
-    title = d.core_properties.title or None
-    boxes = d.element.xpath('.//w:txbxContent//w:t')
-    if boxes:
-        lines.append('Текстовые блоки: ' + ' '.join(node.text or '' for node in boxes))
     import xml.etree.ElementTree as ET
 
     for part in d.part.package.parts:
         if str(part.partname).endswith(('/footnotes.xml', '/endnotes.xml')):
             note = ET.fromstring(part.blob)
-            text = ' '.join(t.text for t in note.iter() if t.tag.endswith('}t') and t.text)
+            text = ' '.join(t.text for t in visible_nodes(note) if t.tag == qn('w:t') and t.text)
             if text:
                 lines.append('Сноски: ' + text)
-    return ParsedDocument(pages=[Page(None, "\n".join(lines))], title=title)
+    images, external, unsupported = [], 0, set()
+    for node in visible_nodes(d.element.body):
+        local = node.tag.rsplit('}', 1)[-1]
+        if local in ('blip', 'imagedata'):
+            ref = node.get(qn('r:embed')) or node.get(qn('r:id'))
+            relation = d.part.rels.get(ref) if ref else None
+            if node.get(qn('r:link')) or (relation and relation.is_external):
+                external += 1
+            elif relation and relation.target_part.content_type.startswith('image/'):
+                path = str(relation.target_part.partname).lstrip('/')
+                if path not in images:
+                    images.append(path)
+        elif local in ('altChunk', 'chart', 'OLEObject', 'relIds'):
+            unsupported.add(local)
+    warnings = []
+    revisions = sum(node.tag in (qn('w:ins'), qn('w:del'), qn('w:moveTo'), qn('w:moveFrom')) for node in d.element.iter())
+    if revisions:
+        warnings.append('В DOCX есть отслеживаемые исправления; текущий вид текста не подтверждает согласованную редакцию')
+    if external:
+        warnings.append('Внешние изображения не загружались: ' + str(external))
+    if unsupported:
+        warnings.append('Нужна отдельная проверка встроенных объектов DOCX: ' + ', '.join(sorted(unsupported)))
+    unresolved = [*warnings, *(['Встроенные изображения DOCX ещё не распознаны: ' + str(len(images))] if images else [])]
+    return ParsedDocument(pages=[Page(None, "\n".join(lines), '; '.join(unresolved) or None)],
+        title=d.core_properties.title or None,
+        meta={'embedded_images': images, 'external_images': external, 'tracked_changes': revisions, 'content_warnings': warnings})
 
 
 def parse_xlsx(data: bytes) -> ParsedDocument:
@@ -178,6 +240,7 @@ def parse_xlsx(data: bytes) -> ParsedDocument:
     truncated = []
     try:
         for ws in wb.worksheets:
+            first_missing = len(missing_formulas)
             lines = [f"Лист: {ws.title}"]
             if ws.max_row and ws.max_row > 100000 or ws.max_column and ws.max_column > 1000:
                 truncated.append(ws.title)
@@ -192,8 +255,14 @@ def parse_xlsx(data: bytes) -> ParsedDocument:
                     cells.append(str(value).strip() if value is not None else '')
                 if any(cells):
                     lines.append(" | ".join(cells))
-            pages.append(Page(None, "\n".join(lines) if len(lines) > 1 else '',
-                              None if len(lines) > 1 else f'Лист «{ws.title}» не содержит данных'))
+            warnings = []
+            if len(lines) == 1:
+                warnings.append(f'Лист «{ws.title}» не содержит данных')
+            if len(missing_formulas) > first_missing:
+                warnings.append(f'Лист «{ws.title}»: формул без сохранённого результата: {len(missing_formulas) - first_missing}')
+            if ws.title in truncated:
+                warnings.append(f'Лист «{ws.title}» прочитан не полностью')
+            pages.append(Page(None, "\n".join(lines) if len(lines) > 1 else '', '; '.join(warnings) or None))
     finally:
         wb.close()
         formulas.close()

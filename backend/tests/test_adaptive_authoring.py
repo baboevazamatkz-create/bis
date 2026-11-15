@@ -213,3 +213,31 @@ def test_disabled_base_is_not_used_as_an_example_even_outside_strict_mode(db, de
     base.enabled = False
     db.flush()
     assert str(original.id) not in {item['id'] for item in authoring.examples(db, demo.id, 'letter')}
+
+
+def test_whole_available_text_does_not_mean_complete_original_extraction(db, demo):
+    from bis.agents.tools_control import GetDocumentArgs, get_document
+    from bis.rag.ingest import ingest_pages
+    from bis.rag.parsers import Page
+    doc = sample(db, demo)
+    indexed = ingest_pages(db, get_embedder(), org_id=demo.id,
+        pages=[Page(1, 'Читаемая страница договора. Цена договора составляет 40 485 945 рублей.'), Page(2, '', 'OCR не подключён')],
+        kind='contract', title=doc.title, document_id=doc.id)
+    ctx = context(db, demo)
+    result = get_document.handler(ctx, GetDocumentArgs(document_id=str(doc.id)))
+    assert result['complete'] is True and result['extraction_complete'] is False
+    assert indexed.meta['reading']['unread_segments'] == [2]
+    assert 'отсутствие' in result['extraction_note']
+
+
+def test_cancelled_index_is_not_reused_as_current_document_text(db, demo):
+    from bis.rag.ingest import ingest_text
+    from bis.services.document_text import document_chunks
+    doc = sample(db, demo)
+    old = ingest_text(db, get_embedder(), org_id=demo.id, kind='contract', title='Старая редакция',
+        text='Устаревшая сумма 999 рублей', document_id=doc.id)
+    old.status = 'replaced'
+    ingest_text(db, get_embedder(), org_id=demo.id, kind='contract', title='Текущая редакция',
+        text='Текущая сумма 200 рублей', document_id=doc.id)
+    chunks = document_chunks(db, doc)
+    assert chunks and all('999' not in chunk.content for chunk in chunks)

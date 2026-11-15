@@ -16,6 +16,8 @@ from bis.services import project_structure as structure
 from bis.services.library_access import SourceContext, document_predicate
 from bis.services.project_facts import SourceInProgress, digest, scope
 
+READER_VERSION = 2
+
 
 def owned(ctx, document_id):
     doc = ctx.db.get(Document, uuid.UUID(str(document_id)))
@@ -31,13 +33,14 @@ def owned(ctx, document_id):
 
 def inputs(ctx, doc):
     rows = ctx.db.execute(select(KnowledgeChunk, KnowledgeSource).join(KnowledgeSource, KnowledgeSource.id == KnowledgeChunk.source_id)
-        .where(KnowledgeSource.document_id == doc.id, KnowledgeSource.organization_id == ctx.org_id)
+        .where(KnowledgeSource.document_id == doc.id, KnowledgeSource.organization_id == ctx.org_id,
+               KnowledgeSource.status.notin_(['cancelled', 'replaced']))
         .order_by(KnowledgeSource.id, KnowledgeChunk.ord)).all()
     raw = ctx.storage.get(doc.file_key) if doc.file_key else b''
     models = [(name, e.provider.model, e.capabilities) for name, e in ctx.gateway.entries.items()] if ctx.gateway else []
     routes = ctx.gateway.routes if ctx.gateway else {}
-    signature = digest([structure.VERSION, hashlib.sha256(raw).hexdigest(), str(doc.date), str(doc.object_id), doc.file_name, doc.mime,
-        [(str(s.id), c.page, c.content, bool((s.meta or {}).get('vision'))) for c, s in rows], models, routes])
+    signature = digest([READER_VERSION, structure.VERSION, hashlib.sha256(raw).hexdigest(), str(doc.date), str(doc.object_id), doc.file_name, doc.mime,
+        [(str(s.id), c.page, c.content, s.meta) for c, s in rows], models, routes])
     return raw, rows, signature
 
 
@@ -46,35 +49,50 @@ def page_source(raw, doc):
     ext = Path(doc.file_name or '').suffix.lower()
     if ext == '.pdf' or doc.mime == 'application/pdf':
         from pypdf import PdfReader
+
+        from bis.rag.parsers import parse_pdf, text_quality
+
         pdf = PdfReader(io.BytesIO(raw))
-        return len(pdf.pages), lambda i: {'physical_page': i + 1, 'label': f'PDF · страница {i + 1}',
-            'text': pdf.pages[i].extract_text(extraction_mode='layout') or '', 'origin': 'pdf_layout'}
+        native = parse_pdf(raw)
+        def pdf_page(i):
+            try:
+                layout = pdf.pages[i].extract_text(extraction_mode='layout') or ''
+            except Exception:  # noqa: BLE001 — one broken layout extractor must not discard an otherwise readable page
+                layout = ''
+            fallback = native.pages[i].text
+            text, origin = (layout, 'pdf_layout') if layout.strip() and text_quality(layout) >= text_quality(fallback) - .05 else (fallback, 'pdf_native')
+            if text_quality(text) < .5:
+                text = ''  # indexed OCR or page vision must resolve unreadable glyphs
+            return {'physical_page': i + 1, 'label': f'PDF · страница {i + 1}', 'text': text, 'origin': origin}
+        return len(pdf.pages), pdf_page
     if ext in ('.xlsx', '.xlsm'):
-        import openpyxl
-        workbook = openpyxl.load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
-        units = [(name, start, min(start + 199, workbook[name].max_row)) for name in workbook.sheetnames
-                 for start in range(1, max(1, workbook[name].max_row) + 1, 200)]
-        def get(i):
-            name, start, end = units[i]
-            lines = []
-            for values in workbook[name].iter_rows(min_row=start, max_row=end, values_only=True):
-                if any(v is not None for v in values):
-                    lines.append(' | '.join('' if v is None else str(v) for v in values))
+        from bis.rag.parsers import parse_xlsx
+
+        parsed = parse_xlsx(raw)
+        units = []
+        for page in parsed.pages:
+            lines = page.text.splitlines()
+            name = lines[0].removeprefix('Лист: ') if lines else 'Пустой лист'
+            rows = lines[1:]
             header = None
-            if start > 1:
-                for values in workbook[name].iter_rows(min_row=1, max_row=20, values_only=True):
-                    candidate = ' | '.join('' if v is None else str(v) for v in values)
-                    found = {field for value in structure.cells(candidate) for field, pattern in structure.HEADER.items() if re.search(pattern, value, re.I)}
-                    if {'name', 'unit', 'quantity'} <= found:
-                        header = candidate
-            label = name if workbook[name].max_row <= 200 else f'{name} · строки {start}–{end}'
-            return {'physical_page': None, 'label': label, 'text': '\n'.join(lines), 'origin': 'xlsx_table', 'header_context': header}
-        return len(units), get
+            for candidate in rows[:20]:
+                found = {field for value in structure.cells(candidate) for field, pattern in structure.HEADER.items()
+                         if re.search(pattern, value, re.I)}
+                if {'name', 'unit', 'quantity'} <= found:
+                    header = candidate
+                    break
+            for start in range(0, max(1, len(rows)), 200):
+                units.append({'physical_page': None, 'label': name if len(rows) <= 200 else f'{name} · блок {start // 200 + 1}',
+                    'text': '\n'.join(rows[start:start + 200]), 'origin': 'xlsx_table',
+                    'header_context': header if start else None, 'extraction_warnings': [page.warning] if page.warning else []})
+        return len(units), lambda i: units[i]
     if ext in ('.png', '.jpg', '.jpeg', '.tif', '.tiff'):
         return 1, lambda i: {'physical_page': None, 'label': doc.file_name, 'text': '', 'origin': 'image'}
     from bis.rag.parsers import parse_file
     parsed = parse_file(raw, doc.file_name or 'project.txt', doc.mime)
-    return len(parsed.pages), lambda i: {'physical_page': None, 'label': 'Документ', 'text': parsed.pages[i].text, 'origin': 'native_text'}
+    return len(parsed.pages), lambda i: {'physical_page': None, 'label': 'Документ', 'text': parsed.pages[i].text,
+        'origin': 'native_text', 'extraction_warnings': [parsed.pages[i].warning] if parsed.pages[i].warning else [],
+        'embedded_images': parsed.meta.get('embedded_images') or [], 'content_warnings': parsed.meta.get('content_warnings') or []}
 
 
 def images_for_page(raw, doc, index):
@@ -142,6 +160,18 @@ def read(ctx, document_id, *, budget=8, with_vision=False, force=False):
         page_chunks = [c.content for c, s in chunks if not (s.meta or {}).get('vision')
                        and ((source['physical_page'] is not None and c.page == source['physical_page'])
                             or (count == 1 and c.page is None))]
+        if count == 1 and source.get('embedded_images'):
+            # Only an OCR index tied to these exact original bytes may resolve native image warnings.
+            original_hash = hashlib.sha256(raw).hexdigest()
+            verified = [(c, s) for c, s in chunks if not (s.meta or {}).get('vision')
+                        and (s.meta or {}).get('original_sha256') == original_hash
+                        and ((s.meta or {}).get('reading') or {}).get('method', '').endswith('ocr_docx')]
+            if verified:
+                text = '\n'.join(dict.fromkeys(c.content for c, _ in verified))
+                source['origin'] = 'indexed_docx_ocr'
+                reports = [(s.meta or {}).get('reading') or {} for _, s in verified]
+                if all(report.get('complete') is True for report in reports):
+                    source['extraction_warnings'] = source['content_warnings']
         if len(text.strip()) < 30 and page_chunks:
             text = '\n'.join(dict.fromkeys(page_chunks))
             source['origin'] = 'indexed_text'
@@ -175,6 +205,9 @@ def read(ctx, document_id, *, budget=8, with_vision=False, force=False):
             for item in result['items']:
                 if item.get('header_quote'):
                     item['header_page'] = source['physical_page'] if item['header_quote'] in text else header_page
+        if source.get('extraction_warnings'):
+            result['complete'] = False
+            result['warnings'] = list(dict.fromkeys([*(result.get('warnings') or []), *source['extraction_warnings']]))
         done[index] = {**source, **result, 'ordinal': index, 'text_sha256': hashlib.sha256(text.encode()).hexdigest()}
         done[index].pop('text', None)
     pages = [done[i] for i in sorted(done)]

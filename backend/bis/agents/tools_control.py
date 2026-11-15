@@ -303,7 +303,7 @@ class GetDocumentArgs(BaseModel):
 def get_document(ctx: AgentContext, args: GetDocumentArgs) -> dict:
     from bis.agents.builtin_tools import share_document
     from bis.rag.search import hybrid_search
-    from bis.services.document_text import document_chunks, document_text, query_windows
+    from bis.services.document_text import document_chunks, document_text, extraction_coverage, query_windows
 
     ref = args.document_id or ctx.focus.get("document")
     if not ref:
@@ -329,6 +329,11 @@ def get_document(ctx: AgentContext, args: GetDocumentArgs) -> dict:
                  "complete": args.offset == 0 and len(full) <= args.limit_chars,
                  "indexed": bool(chunks), "extraction": (doc.data or {}).get("text_from"),
                  "reading": (doc.data or {}).get("reading"), "reading_error": (doc.data or {}).get("reading_error")}
+    out['extraction_coverage'] = extraction_coverage(ctx.db, doc)
+    out['extraction_complete'] = out['extraction_coverage']['complete']
+    if out['extraction_complete'] is not True:
+        out['extraction_note'] = ('Весь доступный текст не равен всему исходному файлу. '
+                                  'Извлечение неполно или не проверено; отсутствие найденных сведений не доказывает их отсутствие в оригинале.')
     end = min(args.offset + args.limit_chars, len(full))
     out["next_offset"] = end if end < len(full) else None
     if len(full) <= args.limit_chars or args.offset:

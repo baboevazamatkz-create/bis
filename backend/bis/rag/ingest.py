@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import mimetypes
 import uuid
 from datetime import date
@@ -13,6 +14,7 @@ from bis.models import KnowledgeChunk, KnowledgeSource
 from bis.rag.chunking import GenericChunker, NormativeChunker, detect_designation
 from bis.rag.embeddings import Embedder
 from bis.rag.parsers import Page, parse_file
+from bis.rag.reading import reading_report
 from bis.services.storage import Storage
 
 NORMATIVE_KINDS = {"norm"}
@@ -69,7 +71,8 @@ def ingest_bytes(
         file_name=filename,
         mime=mime,
         document_id=document_id,
-        meta=parsed.meta,
+        meta={**parsed.meta, "original_sha256": hashlib.sha256(data).hexdigest(),
+              "reading": reading_report(parsed.pages, "parsed")},
     )
     db.add(source)
     db.flush()
@@ -81,6 +84,8 @@ def index_pages(db: Session, embedder: Embedder, source: KnowledgeSource, pages:
     from bis.services.project_facts import invalidate_document
 
     invalidate_document(db, source.document_id)
+    source.meta = {**(source.meta or {}), "reading": reading_report(pages,
+        ((source.meta or {}).get("reading") or {}).get("method", "indexed_text"))}
     db.execute(delete(KnowledgeChunk).where(KnowledgeChunk.source_id == source.id))
     if source.kind in NORMATIVE_KINDS:
         chunks = NormativeChunker().chunk(pages, source.designation)

@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from bis.ai import understanding as und
 from bis.models import ConstructionObject, Contract, Document
 from bis.rag.parsers import Page, UnsupportedFormat, parse_file
+from bis.rag.reading import reading_report as reading_report
 from bis.services.documents import save_document
 from bis.services.storage import Storage
 
@@ -71,14 +72,6 @@ def _pages(data: bytes, name: str, mime: str | None) -> tuple[list[Page], str]:
     return [Page(p.number, split_columns(p.text), p.warning) for p in pages], how
 
 
-def reading_report(pages, method):
-    empty = [p.number for p in pages if p.number is not None and not p.text.strip()]
-    sparse = [p.number for p in pages if p.number is not None and len(p.text.strip()) < 50]
-    return {'segments': len(pages), 'with_text': sum(bool(p.text.strip()) for p in pages), 'sparse_pages': sparse,
-            'empty_pages': empty, 'complete': bool(pages) and not sparse and not any(p.warning for p in pages) and any(p.text.strip() for p in pages),
-            'method': method, 'warnings': list(dict.fromkeys(p.warning for p in pages if p.warning))}
-
-
 def _raw_pages(data: bytes, name: str, mime: str | None) -> tuple[list[Page], str]:
     """Текст по страницам и как получен: parsed | ocr | dxf | none. Номер страницы — для ссылок «стр. N»."""
     ext = Path(name).suffix.lower()
@@ -106,28 +99,34 @@ def _raw_pages(data: bytes, name: str, mime: str | None) -> tuple[list[Page], st
     except UnsupportedFormat:
         return [], "none"
     if ext in ('.xlsx', '.xlsm'):
-        warnings = []
-        if parsed.meta.get('uncached_formulas'):
-            warnings.append(f"Формул без сохранённых результатов: {len(parsed.meta['uncached_formulas'])}")
-        if parsed.meta.get('truncated_sheets'):
-            warnings.append('Не полностью прочитаны листы: ' + ', '.join(parsed.meta['truncated_sheets']))
-        if warnings:
-            for page in parsed.pages:
-                page.warning = '; '.join(warnings)
         return parsed.pages, 'parsed'
-    if ext == '.docx' and not parsed.text.strip():
+    if ext == '.docx':
+        import io
         import zipfile
 
-        with zipfile.ZipFile(__import__('io').BytesIO(data)) as package:
-            images = [n for n in package.namelist() if n.startswith('word/media/') and
-                      Path(n).suffix.lower() in ('.png', '.jpg', '.jpeg', '.tif', '.tiff', '.bmp')]
-            pages = []
-            for image in images:
-                recognized = _ocr_pages(package.read(image), mimetypes.guess_type(image)[0])
-                pages.extend(Page(None, text) for text in recognized)
-                if not recognized:
-                    pages.append(Page(None, '', getattr(recognized, 'error', None) or f'Не прочитано изображение {image}'))
-        return pages or [Page(None, '', 'В DOCX нет извлечённого текста; преобразуйте скан в PDF')], 'ocr_docx'
+        images = parsed.meta.get('embedded_images') or []
+        if images:
+            # Typed text and scanned annexes coexist. A readable header must not suppress image OCR.
+            warning = '; '.join(parsed.meta.get('content_warnings') or []) or None
+            pages = [Page(p.number, p.text, warning) for p in parsed.pages if p.text.strip() or warning]
+            with zipfile.ZipFile(io.BytesIO(data)) as package:
+                for image in images[:40]:
+                    try:
+                        recognized = _ocr_pages(package.read(image), mimetypes.guess_type(image)[0])
+                    except Exception as error:  # noqa: BLE001 — preserve the typed part when a drawing cannot be decoded
+                        pages.append(Page(None, '', 'Не прочитано изображение ' + image + ': ' + type(error).__name__))
+                        continue
+                    if recognized:
+                        pages.extend(Page(None, text, None if text.strip() else 'Не прочитана часть изображения ' + image)
+                                     for text in recognized)
+                    else:
+                        pages.append(Page(None, '', getattr(recognized, 'error', None) or 'Не прочитано изображение ' + image))
+            if len(images) > 40:
+                pages.append(Page(None, '', 'Достигнут лимит распознавания DOCX; не прочитано изображений: ' + str(len(images) - 40)))
+            return pages, 'parsed+ocr_docx' if parsed.text.strip() else 'ocr_docx'
+        if not parsed.text.strip():
+            return [Page(None, '', parsed.pages[0].warning or 'В DOCX нет извлечённого текста; преобразуйте скан в PDF')], 'parsed'
+        return parsed.pages, 'parsed'
     if ext in ('.doc', '.rtf') and not parsed.text.strip():
         return [Page(None, '', 'В DOC/RTF нет текстового содержимого. Для распознавания встроенных сканов сохраните документ в PDF.')], 'parsed'
     if parsed.meta.get("needs_ocr") or not parsed.text.strip():
@@ -339,9 +338,10 @@ def import_file(db: Session, storage: Storage, gateway, embedder, org_id: uuid.U
 
         try:
             with db.begin_nested():
-                ingest_pages(db, embedder, org_id=org_id, pages=[p for p in pages if p.text.strip()], title=doc.title,
+                indexed = ingest_pages(db, embedder, org_id=org_id, pages=pages, title=doc.title,
                              kind=KNOWLEDGE.get(dtype, "org_document"), document_id=doc.id,
                              context=card.title if card else None)
+                indexed.meta = {**(indexed.meta or {}), "original_sha256": digest, "reading": reading_report(pages, how)}
             result["knowledge"] = True
         except Exception as e:  # noqa: BLE001 — документ в реестре есть, поиск по нему — нет
             result["knowledge_error"] = str(e)[:200]
