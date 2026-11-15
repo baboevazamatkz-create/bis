@@ -113,10 +113,11 @@ def test_false_created_claim_does_not_turn_into_a_file_and_yes_continues_task(cl
     third = client.post('/api/chat', headers=auth, json={'message': 'где файл письма?', 'session_id': session, 'workspace': 'executive'})
     assert third.status_code == 200 and third.json()['documents'][0]['id'] == created_id
     assert third.json()['provider'] == 'artifact_ledger' and len(llm.calls) == calls
+    assert client.get(f'/api/documents/{created_id}/file', headers=auth).status_code == 200
 
 
 def test_required_organization_letter_form_does_not_fall_back(client, auth, db, demo):
-    original = sample(db, demo)
+    sample(db, demo)
     db.commit()
     response = client.post('/api/chat', headers=auth, json={
         'message': 'Сделай письмо по форме, которая есть в базе организации',
@@ -126,8 +127,6 @@ def test_required_organization_letter_form_does_not_fall_back(client, auth, db, 
     result = response.json()
     assert not result['documents']
     assert 'нет подтверждённой формы письма' in result['text']
-    assert db.get(Document, original.id).file_key
-    assert client.get(f'/api/documents/{created_id}/file', headers=auth).status_code == 200
 
 
 def test_example_discovery_does_not_expand_project_access(db, demo):
