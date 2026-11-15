@@ -181,15 +181,16 @@ def create_letter(
         else:
             file_bytes = render_with_org_template(db, storage, org_id, 'letter', data) if not sample_id else None
     except MissingFormError:
-        if require_organization_form:
-            raise
         file_bytes = None
     if file_bytes is None:
         default = default_template(db, org_id, 'letter')
         if default is not None and not sample_id:
             file_bytes = render_template(storage.get(default.file_key), template_context(data))
         else:
-            file_bytes, basis = adapt_layout(db, storage, org_id, 'letter', render_letter(data), data.subject, sample_id)
+            file_bytes, basis = adapt_layout(db, storage, org_id, 'letter', render_letter(data), data.subject, sample_id,
+                                            organization_only=require_organization_form)
+            if require_organization_form and basis['mode'] != 'sender_brand_and_styles':
+                raise ValueError('Не удалось перенести бланк из доступных писем организации. ' + basis['note'])
 
     title = f"Исх. № {data.number}: {data.subject[:200]}"
     return save_document(

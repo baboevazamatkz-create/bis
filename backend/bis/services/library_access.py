@@ -34,9 +34,20 @@ def bind_context(db, org_id, object_id=None):
     return scope
 
 
+def organization_documents(scope):
+    """The active connection owns scope, including imports with a legacy project id."""
+    return select(LibraryVersion.document_id).join(LibraryFile,
+        LibraryFile.active_version_id == LibraryVersion.id).join(LibraryConnection,
+        LibraryConnection.id == LibraryFile.connection_id).where(
+            LibraryConnection.organization_id == scope.organization_id,
+            LibraryConnection.level == 'organization', LibraryConnection.enabled.is_(True),
+            LibraryFile.state == 'ready', LibraryVersion.state == 'ready')
+
+
 def document_predicate(scope):
     return and_(Document.organization_id == scope.organization_id, or_(
         Document.object_id == scope.object_id if scope.object_id else false(),
+        Document.id.in_(organization_documents(scope)),
         and_(Document.object_id.is_(None), func.jsonb_extract_path_text(Document.data, "library_scope") == "organization")),
         or_(func.jsonb_extract_path_text(Document.data, "library_version_id").is_(None),
             Document.id.in_(select(LibraryVersion.document_id).where(LibraryVersion.id.in_(active_versions(scope))))))

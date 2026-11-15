@@ -162,17 +162,6 @@ def _answer(db: Session, user: User, body: ChatIn, progress=None, on_route=None,
     effective_request, artifact_result = prepare(ctx, body.message, previous, rows)
     from bis.services.executive_pipeline import is_work_report
 
-    if artifact_result is None and ctx.db.info.get('require_organization_letter_form'):
-        from bis.agents.base import AgentResult
-        from bis.services.library_forms import select_form
-
-        try:
-            select_form(db, ctx.org_id, 'letter', organization_only=True)
-        except ValueError as exc:
-            artifact_result = AgentResult(
-                text=f'Файл письма не создан. {exc} Откройте «Базы данных» → «Организация» и проверьте форму.',
-                agent=agent_name, provider='library', model='form-validation')
-
     if artifact_result is not None:
         result = artifact_result
     elif body.workspace == "executive" and agent_name in ("pto", "assistant") and is_work_report(body.message):

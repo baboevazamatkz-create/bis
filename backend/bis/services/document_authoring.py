@@ -13,7 +13,7 @@ from sqlalchemy import and_, func, or_, select
 
 from bis.models import Document, KnowledgeChunk, KnowledgeSource, Organization
 from bis.models.libraries import LibraryConnection, LibraryFile, LibraryVersion
-from bis.services.library_access import active_versions, bind_context
+from bis.services.library_access import active_versions, bind_context, organization_documents
 
 TYPES = {'letter': ('письмо', 'письма', 'исх.'), 'order': ('приказ',),
          'memo': ('служебная записка', 'докладная'), 'instruction': ('инструкция',),
@@ -21,6 +21,7 @@ TYPES = {'letter': ('письмо', 'письма', 'исх.'), 'order': ('пр�
 REGULATED = {'aosr', 'aook', 'scheme', 'ks2', 'ks3', 'm29', 'writeoff'}
 VARIABLE = re.compile(r'исх\.?|вх\.?|уважаем|генеральному|руководителю|директору|получател|подпис|№|\d{2}\.\d{2}\.\d{4}', re.I)
 CONTACT = re.compile(r'инн|кпп|огрн|тел\.?|@|www\.|адрес|ул\.|проспект', re.I)
+OUTGOING = re.compile(r'(?:^|[\\/\s])(?:исх\.?|исходящ\w*|outgoing)(?:$|[\\/\s])', re.I)
 
 
 def canonical_type(value):
@@ -41,6 +42,12 @@ def examples(db, org_id, document_type, purpose='', limit=5):
         scope = bind_context(db, org_id)
     terms = TYPES.get(kind, (document_type,))
     predicates = [Document.kind == kind, *(Document.title.icontains(term, autoescape=True) for term in terms)]
+    library_paths = dict(db.execute(select(LibraryVersion.document_id, LibraryFile.relative_path)
+        .join(LibraryFile, LibraryFile.id == LibraryVersion.file_id)
+        .where(LibraryVersion.id.in_(active_versions(scope)))).all())
+    if kind == 'letter':
+        outgoing_ids = [doc_id for doc_id, path in library_paths.items() if OUTGOING.search(path)]
+        predicates.append(Document.id.in_(outgoing_ids))
     lookup_terms = (*terms, 'уважаемый') if kind == 'letter' else terms
     matching = select(KnowledgeSource.document_id).join(KnowledgeChunk, KnowledgeChunk.source_id == KnowledgeSource.id).where(
         KnowledgeSource.organization_id == org_id, or_(*(KnowledgeChunk.tsv.op('@@')(
@@ -51,13 +58,15 @@ def examples(db, org_id, document_type, purpose='', limit=5):
         or_(Document.data['library_version_id'].astext.is_(None), Document.id.in_(
             select(LibraryVersion.document_id).where(LibraryVersion.id.in_(active_versions(scope))))),
         or_(Document.source != 'generated', Document.status.in_(['approved', 'signed'])),
-        or_(Document.object_id.is_(None), Document.object_id == scope.object_id if scope.object_id else False))
+        or_(Document.id.in_(organization_documents(scope)), Document.object_id.is_(None),
+            Document.object_id == scope.object_id if scope.object_id else False))
         .order_by(Document.created_at.desc()).limit(60)).all()
     found = []
     for doc in docs:
         level = (doc.data or {}).get('library_scope') or ('project' if doc.object_id else 'organization')
         found.append({'id': str(doc.id), 'reference_type': 'document', 'title': doc.title, 'kind': doc.kind,
             'level': level, 'file_name': doc.file_name or '', '_file_key': doc.file_key,
+            'outgoing': bool(OUTGOING.search(library_paths.get(doc.id, '') + ' ' + doc.title)),
             'reading': (doc.data or {}).get('reading') or {}, 'source': doc.source})
     # Global library forms have no organization Document; still honor active versions and allowed connections.
     versions = db.execute(select(LibraryVersion, LibraryFile, LibraryConnection.level).join(LibraryFile,
@@ -73,6 +82,7 @@ def examples(db, org_id, document_type, purpose='', limit=5):
         title = item['title'].lower()
         item['score'] = (40 if item['kind'] == kind else 15) + {'organization': 30, 'project': 20, 'knowledge': 5}.get(item['level'], 0)
         item['score'] += 10 if item['file_name'].lower().endswith('.docx') else 0
+        item['score'] += 100 if item.get('outgoing') and item['level'] == 'organization' else 0
         item['score'] += sum(3 for word in query_words if word in title)
         item['role'] = 'example'  # an example is not a pre-approved empty regulatory form
     found.sort(key=lambda item: (-item['score'], item['id']))
@@ -93,14 +103,15 @@ def _same_sender(text, org):
     return bool((org.inn and org.inn in text) or (len(name) > 5 and name in clean))
 
 
-def _copy_brand(nodes, source_part, target, org):
+def _copy_brand(nodes, source_part, target, org, *, preserve_spacing=False):
     """Copy only sender branding, not original body, signatures, comments or external relationships."""
     copied = 0
     for node in nodes:
         text = _plain(node)
         if VARIABLE.search(text):
             continue
-        if not (_same_sender(text, org) or CONTACT.search(text) or node.xpath('.//w:drawing')):
+        if not (_same_sender(text, org) or CONTACT.search(text) or node.xpath('.//w:drawing') or
+                (preserve_spacing and not text.strip() and node.tag == qn('w:p'))):
             continue
         paragraphs = [node] if node.tag == qn('w:p') else list(node.xpath('.//w:p'))
         known = {value for value in (org.address, org.phone, org.email) if value}
@@ -122,14 +133,20 @@ def _copy_brand(nodes, source_part, target, org):
                 new_id, _ = target.part.get_or_add_image(io.BytesIO(part.blob))
                 element.set(qn('r:embed'), new_id)
         if valid:
-            target._element.append(clone)
+            if preserve_spacing:
+                target.element.body.insert(copied, clone)
+            else:
+                target._element.append(clone)
             copied += 1
     return copied
 
 
-def adapt_layout(db, storage, org_id, kind, content, purpose='', sample_id=None):
+def adapt_layout(db, storage, org_id, kind, content, purpose='', sample_id=None, *, organization_only=False):
     """Use a new DOCX package: never carry old body/attachments/hidden comments into the result."""
     choices = examples(db, org_id, kind, purpose, limit=10)
+    if organization_only:
+        choices = [item for item in choices if item['level'] == 'organization']
+    choices.sort(key=lambda item: not item['file_name'].lower().endswith('.docx'))
     if sample_id:
         choices = [item for item in choices if item['id'] == str(sample_id)]
         if not choices:
@@ -164,25 +181,31 @@ def adapt_layout(db, storage, org_id, kind, content, purpose='', sample_id=None)
                     run.font.name = normal.font.name
         # Only the leading sender area may supply branding. Stop before a recipient/date/body block.
         prefix = []
-        for node in list(sample.element.body)[:10]:
+        for node in list(sample.element.body)[:60]:
             text = _plain(node)
             if VARIABLE.search(text) or (text.strip() and not (_same_sender(text, org) or CONTACT.search(text))):
                 break
             prefix.append(node)
         header_nodes = list(source_section.header._element)
         sender_confirmed = any(_same_sender(_plain(node), org) for node in [*header_nodes, *prefix])
+        outgoing_archive = kind == 'letter' and item['level'] == 'organization' and item.get('outgoing', False)
         copied = 0
-        if sender_confirmed:
+        if sender_confirmed or outgoing_archive:
             copied += _copy_brand(header_nodes, source_section.header.part, target_section.header, org)
-            copied += _copy_brand(prefix, sample.part, target_section.header, org)
-        if copied:
+            if not outgoing_archive:
+                copied += _copy_brand(prefix, sample.part, target_section.header, org)
+        has_prefix_brand = any(_plain(n).strip() or n.xpath('.//w:drawing') for n in prefix)
+        if copied or (outgoing_archive and has_prefix_brand):
             for node in list(result.element.body)[:4]:
                 text = _plain(node)
                 if node.tag != qn('w:p') or (text.strip() and not (_same_sender(text, org) or CONTACT.search(text))):
                     break
                 result.element.body.remove(node)
+        if outgoing_archive and has_prefix_brand:
+            copied += _copy_brand(prefix, sample.part, result, org, preserve_spacing=True)
         basis.update(mode='sender_brand_and_styles' if copied else 'styles_only',
             sender_confirmed=sender_confirmed,
+            selection_reason='outgoing_organization_archive' if outgoing_archive else 'sender_identity',
             note='Оформление адаптировано из архивного образца. Старый текст, адресат, даты, номера и подписи не переносились; проверьте черновик.')
         output = io.BytesIO()
         result.save(output)
