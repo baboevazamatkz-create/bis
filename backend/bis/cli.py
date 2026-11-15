@@ -17,7 +17,7 @@ def _alembic_upgrade() -> None:
 
 
 # команды, которым база не нужна (или которые сами её поднимают)
-NO_DB = {"local", "cad-mcp", "cad-check", "llm-check", "doctor", "serve", "executive-fixtures"}
+NO_DB = {"local", "cad-mcp", "cad-check", "llm-check", "doctor", "serve", "executive-fixtures", "acceptance"}
 
 
 def _local_home() -> Path | None:
@@ -81,6 +81,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--k", type=int, default=5)
     p.add_argument("--answers", action="store_true", help="Проверять ответы агентов (нужна модель)")
 
+    p = sub.add_parser('acceptance', help='Сквозная проверка диалогов и созданных файлов через работающий API BIS')
+    p.add_argument('suite', type=Path)
+    p.add_argument('--url', required=True, help='Адрес запущенного тестового BIS, например http://localhost:8081')
+    p.add_argument('--report', required=True, type=Path)
+    p.add_argument('--timeout', type=float, default=180)
+
     p = sub.add_parser("local", help="Локальный запуск без Docker: встроенная БД, API, веб, фоновые задачи, Telegram")
     p.add_argument("--dir", type=Path, default=Path.cwd(), help="Папка с .env и данными")
     p.add_argument("--host", default="0.0.0.0")
@@ -107,6 +113,24 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     _auto_local(args.cmd)
+
+    if args.cmd == 'acceptance':
+        import json
+        import os
+
+        import httpx
+
+        from bis.acceptance import Suite, run_suite
+
+        suite = Suite.model_validate_json(args.suite.read_text(encoding='utf-8'))
+        tokens = {context.token_env: os.environ.get(context.token_env, '')
+                  for context in suite.contexts.values() if context.token_env}
+        with httpx.Client(base_url=args.url.rstrip('/'), timeout=args.timeout) as client:
+            report = run_suite(client, suite, tokens=tokens)
+        args.report.parent.mkdir(parents=True, exist_ok=True)
+        args.report.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
+        print(f"Сценарии: {report['cases_passed']}/{report['cases_total']}. Отчёт: {args.report}")
+        return 0 if report['passed'] else 1
 
     if args.cmd == 'executive-fixtures':
         from bis.demo.executive_fixtures import generate

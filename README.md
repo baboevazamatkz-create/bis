@@ -87,3 +87,5 @@ docker compose -f deploy/docker-compose.yml exec api bis seed-demo   # вход:
 Текущий интерфейс пилота: [рабочее место ПТО](docs/PILOT_WORKSPACE.md).
 
 Подготовка документов по подключённым базам: [механизм, проверки и ограничения](docs/ADAPTIVE_AUTHORING.md).
+
+План развития ядра и приёмки: [BRAIN_ROADMAP.md](docs/BRAIN_ROADMAP.md).
