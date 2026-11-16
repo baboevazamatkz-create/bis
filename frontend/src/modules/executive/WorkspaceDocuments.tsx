@@ -18,7 +18,7 @@ const PLACEHOLDERS = {
 };
 const READ: Record<string, string> = { indexed: 'Текст доступен', partial: 'Прочитано частично', unread: 'Текст не прочитан', reading: 'Перечитывается…' };
 
-export default function WorkspaceDocuments({ category, canWrite = false }: { category: Category; canWrite?: boolean }) {
+export default function WorkspaceDocuments({ category, canWrite = false, openProjectForm = false }: { category: Category; canWrite?: boolean; openProjectForm?: boolean }) {
   const [data, setData] = useState<Result | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -84,10 +84,10 @@ export default function WorkspaceDocuments({ category, canWrite = false }: { cat
       <button className="btn" onClick={() => navigate('id', 'libraries')}>Подключить документы</button>
     </PageHead>
     {error && <div role="alert" className="alert error">{error}</div>}
-    {category === 'project' && canWrite && <details className="panel compact-panel">
+    {category === 'project' && canWrite && <details className="panel compact-panel" open={openProjectForm || undefined}>
       <summary>Добавить проект</summary>
       <form className="row" onSubmit={(e) => { e.preventDefault(); if (projectName.trim() && !creatingProject) void createProject(); }}>
-        <label className="field">Название<input required maxLength={300} value={projectName} onChange={(e) => setProjectName(e.target.value)} /></label>
+        <label className="field">Название<input autoFocus={openProjectForm} required maxLength={300} value={projectName} onChange={(e) => setProjectName(e.target.value)} /></label>
         <label className="field">Шифр<input maxLength={60} value={projectCode} onChange={(e) => setProjectCode(e.target.value)} /></label>
         <button className="btn primary" disabled={creatingProject || !projectName.trim()}>Создать проект</button>
       </form>

@@ -3,7 +3,7 @@ import { api, DEMO, setToken, setOrganizationScope, activeProject, setActiveProj
 import { previewFor } from "./demo/mock";
 import Icon from "./components/Icon";
 import ExecutiveWorkspace from "./modules/executive/ExecutiveWorkspace";
-import { ID_NAV, parseRoute } from "./modules/navigation";
+import { ID_NAV, navigate, parseRoute } from "./modules/navigation";
 
 export default function App() {
   const [mobile, setMobile] = useState(() => matchMedia("(max-width: 960px)").matches);
@@ -117,8 +117,10 @@ export default function App() {
             <span className="header-workspace">{route.workspace === "id" ? "Рабочее пространство" : "Платформа"}</span><span className="header-divider">/</span><span className="header-page">{groups.flatMap((g) => g.items).find(([id]) => id === route.page)?.[1] ?? "Обзор"}</span></div>
           <div className="header-tools"><div className="project-switcher"><Icon name="project" size={17} /><label className="sr-only" htmlFor="active-project">Активный проект</label>
             <select id="active-project" value={project} onChange={(e) => setActiveProject(e.target.value)} title={objects.find((o) => o.id === project)?.name ?? "Выбрать проект"}>
-              <option value="">Выбрать проект</option>{objects.map((o) => <option key={o.id} value={o.id}>{o.code ? o.code + " · " : ""}{o.name}</option>)}
+              <option value="">Без проекта</option>{objects.map((o) => <option key={o.id} value={o.id}>{o.code ? o.code + " · " : ""}{o.name}</option>)}
             </select><Icon name="down" size={13} /></div>
+            {project && <button className="icon-button" aria-label="Сбросить выбор проекта" title="Сбросить выбор проекта" onClick={() => setActiveProject("")}><Icon name="close" size={17} /></button>}
+            {user.role !== "viewer" && <button className="icon-button" aria-label="Добавить проект" title="Добавить проект" onClick={() => navigate("id", "project/new")}><Icon name="plus" size={18} /></button>}
             <button className="icon-button theme-toggle" aria-label={theme === "dark" ? "Светлая тема" : "Тёмная тема"} title={theme === "dark" ? "Светлая тема" : "Тёмная тема"} onClick={() => setTheme(theme === "dark" ? "light" : "dark")}><Icon name={theme === "dark" ? "sun" : "moon"} size={18} /></button>
           </div>
         </header>
