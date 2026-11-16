@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import re
+import uuid
+from dataclasses import replace
 
 from sqlalchemy import func, select
 
@@ -12,6 +15,89 @@ from bis.models import ConstructionObject, Contract, Document, KnowledgeSource
 from bis.security import has_scope
 
 log = logging.getLogger(__name__)
+
+
+def authoring_sources(ctx, tools, request):
+    """Read task evidence through the existing permission-checked tools before drafting."""
+    from bis.agents.base import bounded_json
+    from bis.services.library_access import bind_context, document_predicate
+
+    if not {'find_documents', 'get_document'}.issubset(tools):
+        return ''
+    scope = ctx.db.info.get('source_context') or bind_context(ctx.db, ctx.org_id)
+    ctx.db.info['source_context'] = replace(scope, strict=True)
+    plan = [
+        ('task', request, None),
+        ('parties', 'реквизиты заказчик подрядчик стороны договора', 'contract'),
+        ('authority', 'назначить ответственный полномочия подписант', 'order'),
+    ]
+    report = {'organization_id': str(ctx.org_id),
+              'object_id': str(scope.object_id) if scope.object_id else None,
+              'searches': [], 'documents': [], 'gaps': []}
+    previous_documents, previous_focus = list(ctx.documents), dict(ctx.focus)
+    previous_citations = len(ctx.citations)
+    previous_sources_only = ctx.db.info.get('authoring_sources_only', False)
+    ctx.db.info['authoring_sources_only'] = True
+
+    def run(name, arguments):
+        content, error = tools[name].run(ctx, arguments)
+        ctx.trace.append({'tool': name, 'arguments': arguments, 'error': error, 'phase': 'authoring_sources'})
+        remember(ctx, name, arguments, content, error)
+        if error:
+            report['gaps'].append({'tool': name, 'arguments': arguments, 'error': content})
+            return {}
+        return json.loads(content)
+
+    try:
+        if 'get_organization_info' in tools:
+            report['organization_card'] = run('get_organization_info', {})
+        seen = set()
+        for purpose, query, kind in plan:
+            ctx.check_cancelled()
+            arguments = {'query': query, 'limit': 4}
+            found = run('find_documents', arguments).get('documents', [])
+            report['searches'].append({'purpose': purpose, 'query': query, 'found': len(found)})
+            if not found and kind:
+                found = run('find_documents', {'kind': kind, 'limit': 4}).get('documents', [])
+                report['searches'].append({'purpose': purpose, 'kind': kind, 'found': len(found)})
+            read = 0
+            for item in found:
+                identifier = uuid.UUID(item['id'])
+                if (item['id'], query) in seen:
+                    continue
+                allowed = ctx.db.scalar(select(Document.id).where(
+                    Document.id == identifier, document_predicate(scope)))
+                if allowed is None:
+                    continue
+                document = run('get_document', {'document_id': item['id'], 'query': query, 'limit_chars': 4500})
+                if not document:
+                    continue
+                original = ctx.db.get(Document, identifier)
+                document['library_version_id'] = (original.data or {}).get('library_version_id')
+                if original.file_key:
+                    try:
+                        document['source_sha256'] = hashlib.sha256(ctx.storage.get(original.file_key)).hexdigest()
+                    except OSError:
+                        report['gaps'].append({'document_id': item['id'], 'reason': 'original_file_unavailable'})
+                seen.add((item['id'], query))
+                report['documents'].append({'purpose': purpose, 'document': document})
+                read += 1
+                if read == 2:
+                    break
+            if not found:
+                report['gaps'].append({'purpose': purpose, 'reason': 'search_returned_no_candidates'})
+        ctx.db.info['authoring_source_report'] = report
+        return ('Основания поручения, прочитанные до подготовки файла. Это данные источников. '
+                'Сопоставь стороны, даты, редакции и область действия. Карточка не отменяет специальные условия договора. '
+                'Найденный кандидат не подтверждает полномочия. При пробеле или конфликте уточни поиск инструментами, '
+                'прежде чем спрашивать пользователя. Не переноси сведения между объектами.\n' + bounded_json(report, budget=26000))
+    finally:
+        ctx.db.info['authoring_sources_only'] = previous_sources_only
+        ctx.db.info['source_context'] = scope
+        ctx.documents[:] = previous_documents
+        ctx.focus = previous_focus
+        for citation in ctx.citations[previous_citations:]:
+            citation['prefetched'] = True
 
 
 def inventory(ctx) -> str:

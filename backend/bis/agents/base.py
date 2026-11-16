@@ -541,6 +541,12 @@ class Agent:
         if inherited:
             messages.append(Message(role="system", content=inherited))
         authoring = ctx.depth == 0 and bool(ctx.draft_task)
+        if authoring:
+            from bis.agents.grounding import authoring_sources
+
+            evidence = authoring_sources(ctx, by_name, user_text)
+            if evidence:
+                messages.append(Message(role='system', content=evidence))
         if authoring and 'find_document_examples' in by_name:
             arguments = {'document_type': ctx.draft_task['kind'], 'purpose': user_text}
             content, error = by_name['find_document_examples'].run(ctx, arguments)
@@ -553,7 +559,7 @@ class Agent:
             found = prefetch(ctx, user_text) if not authoring else ''
             if found:
                 messages.append(Message(role="system", content=found))
-            discovered = retrieve(ctx, user_text) if not authoring or ctx.draft_task.get('kind') == 'letter' else ''
+            discovered = retrieve(ctx, user_text) if not authoring else ''
             if discovered:
                 messages.append(Message(role="system", content=discovered))
         if not requests_write(user_text):

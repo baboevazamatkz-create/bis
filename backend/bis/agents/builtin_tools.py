@@ -112,6 +112,9 @@ class FindDocumentsArgs(BaseModel):
 def find_documents(ctx: AgentContext, args: FindDocumentsArgs) -> dict:
     def allowed(stmt):
         stmt = stmt.where(Document.organization_id == ctx.org_id)
+        if ctx.db.info.get('authoring_sources_only'):
+            stmt = stmt.where(Document.status.notin_(['replaced', 'cancelled', 'rejected']),
+                              or_(Document.source != 'generated', Document.status.in_(['approved', 'signed'])))
         if ctx.workspace == "executive" or args.workspace == "executive":
             from bis.modules.executive import DOCUMENT_KINDS, SOURCE_KINDS
 

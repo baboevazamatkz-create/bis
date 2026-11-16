@@ -120,6 +120,10 @@ def save_document(
         mime = used_form["mime"] or mime
     if object_id is None and kind in ('letter', 'order', 'memo', 'instruction', 'protocol', 'administrative'):
         data = {**data, 'library_scope': 'organization'}
+    discovery = db.info.get('authoring_source_report')
+    if (discovery and discovery['organization_id'] == str(org_id)
+            and discovery['object_id'] == (str(object_id) if object_id else None)):
+        data = {**data, 'source_discovery': discovery}
     key = storage.put(file_bytes, file_name, prefix=f"documents/{org_id}")
     doc = Document(
         organization_id=org_id, kind=kind, title=title, number=number, date=doc_date, status="draft",
@@ -189,7 +193,7 @@ def create_letter(
         else:
             file_bytes, basis = adapt_layout(db, storage, org_id, 'letter', render_letter(data), data.subject, sample_id,
                                             organization_only=require_organization_form)
-            if require_organization_form and basis['mode'] != 'sender_brand_and_styles':
+            if require_organization_form and basis.get('sample') and basis['mode'] != 'sender_brand_and_styles':
                 raise ValueError('Не удалось перенести бланк из доступных писем организации. ' + basis['note'])
             revised = reconcile_archive_identity(data, basis)
             if revised is not data:
