@@ -9,7 +9,7 @@ irm https://raw.githubusercontent.com/baboevazamatkz-create/bis/codex/pilot-read
 Устанавливает Python при необходимости и отдельный BIS-Pilot на http://localhost:8081.
 Вход в локальном пилоте автоматический. [Первый запуск, папки документов и подключение ИИ](docs/PILOT_WINDOWS.md).
 
-Уже установленный BIS-Pilot обновляется вместе с интерфейсом (сначала остановить через Ctrl+C):
+Уже установленный BIS-Pilot обновляется вместе с интерфейсом (сначала закройте его окно):
 
 ```powershell
 irm https://raw.githubusercontent.com/baboevazamatkz-create/bis/codex/pilot-readiness/deploy/update-pilot-windows.ps1 | iex

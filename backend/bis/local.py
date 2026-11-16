@@ -13,6 +13,7 @@ import threading
 from pathlib import Path
 
 log = logging.getLogger("bis.local")
+_windows_shutdown_callback = None
 
 
 def load_env(path: Path, *, prefer_file: bool = False) -> None:
@@ -71,12 +72,15 @@ def start_database(data_dir: Path) -> str:
     log_file = data_dir / "postgres.log"  # вне папки данных: её файлы блокирует антивирус
     data_dir.mkdir(parents=True, exist_ok=True)
     quiet = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+    if os.name == "nt":
+        quiet["creationflags"] = subprocess.CREATE_NO_WINDOW
     if not (pg_dir / "PG_VERSION").exists():
         pg_dir.mkdir(parents=True, exist_ok=True)
         print("  Создаю базу данных…", flush=True)
         subprocess.run([_pg_bin("initdb"), "-D", str(pg_dir), "-U", "postgres", "--auth=trust", "--encoding=UTF8"],
                        check=True, **quiet)
     port = _running_port(pg_dir)
+    owns_database = port is None
     if port is None:
         port = _free_port()
         opts = f'-h 127.0.0.1 -p {port}' + ("" if os.name == "nt" else f" -k {tempfile.gettempdir()}")
@@ -86,7 +90,31 @@ def start_database(data_dir: Path) -> str:
         if r.returncode != 0:
             tail = log_file.read_text(errors="ignore")[-3000:] if log_file.exists() else ""
             raise RuntimeError(f"База данных не запустилась. Журнал ({log_file}):\n{tail}")
-        atexit.register(lambda: subprocess.run([_pg_bin("pg_ctl"), "-D", str(pg_dir), "stop", "-m", "fast", "-w"], **quiet))
+    def stop_database() -> None:
+        status = subprocess.run([_pg_bin("pg_ctl"), "-D", str(pg_dir), "status"], **quiet)
+        if status.returncode == 0:
+            subprocess.run([_pg_bin("pg_ctl"), "-D", str(pg_dir), "stop", "-m", "fast", "-w"], **quiet)
+
+    if owns_database:
+        atexit.register(stop_database)
+    if owns_database and os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        console_handler = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)
+
+        def on_console_close(event):
+            if event == 2:  # CTRL_CLOSE_EVENT: stop PostgreSQL before Windows tears down the console.
+                try:
+                    stop_database()
+                except Exception:  # noqa: BLE001 — allow the rest of the process tree to exit
+                    log.exception("Не удалось штатно остановить локальную базу при закрытии BIS")
+            return False
+
+        global _windows_shutdown_callback
+        _windows_shutdown_callback = console_handler(on_console_close)
+        if not ctypes.windll.kernel32.SetConsoleCtrlHandler(_windows_shutdown_callback, True):
+            raise ctypes.WinError()
     url = f"postgresql+psycopg://postgres@127.0.0.1:{port}/postgres"
     if os.environ.get("BIS_VECTOR_ENABLED", "false").lower() in ("1", "true", "yes"):
         import psycopg
@@ -179,4 +207,20 @@ def run(workdir: Path, host: str, port: int) -> None:
     from bis.main import create_app
 
     print(f"\n  BIS работает: http://localhost:{port}   (остановить — закройте это окно или Ctrl+C)\n", flush=True)
+    if os.environ.get("BIS_OPEN_BROWSER", "false").lower() in ("1", "true", "yes"):
+        import socket
+        import time
+        import webbrowser
+
+        def open_when_ready():
+            deadline = time.monotonic() + 60
+            while time.monotonic() < deadline:
+                try:
+                    with socket.create_connection((host, port), timeout=1):
+                        webbrowser.open(f"http://localhost:{port}")
+                        return
+                except OSError:
+                    time.sleep(0.25)
+
+        threading.Thread(target=open_when_ready, daemon=True, name="bis-open-browser").start()
     uvicorn.run(create_app(), host=host, port=port, log_level="warning")

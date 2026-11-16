@@ -114,10 +114,9 @@ $Cmd = @"
 @echo off
 setlocal
 set "BIS_WEB_DIR=$Web"
+set "BIS_OPEN_BROWSER=true"
 title BIS Pilot
-start "" /b cmd /c "timeout /t 8 /nobreak >nul & start http://localhost:$Port"
 "$Bis" local --dir "$BisRoot" --host 127.0.0.1 --port $Port
-pause
 "@
 [IO.File]::WriteAllText($Launcher, $Cmd, [Text.Encoding]::Default)
 $Shell = New-Object -ComObject WScript.Shell
