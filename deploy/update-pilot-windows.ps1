@@ -3,8 +3,9 @@ param([string]$BisRoot = '', [switch]$ConnectOpenAI)
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-$SourceCommit = '1fa85342c6cc52ffd66bc383ba167e95cabab554'
-$Expected = 'fe32cc3fc1344b61b812b43b5b499cbeffe507dd1c0b767db558239ee5c451f0'
+$Repository = 'baboevazamatkz-create/bis'
+$Branch = 'codex/pilot-readiness'
+$GitHubHeaders = @{ 'User-Agent' = 'BIS-Pilot-Updater'; 'Accept' = 'application/vnd.github+json' }
 if (-not $BisRoot) {
     $Candidates = @('C:\BIS-Pilot', 'C:\Users\Public\BIS-Pilot') | Where-Object { Test-Path (Join-Path $_ '.pilot-installation') }
     if (@($Candidates).Count -ne 1) { throw 'Specify the pilot folder with -BisRoot.' }
@@ -20,20 +21,26 @@ foreach ($File in @($EnvFile, $Python, $Launcher, (Join-Path $BisRoot '.pilot-in
 $Running = @(Get-Process bis, python, postgres -ErrorAction SilentlyContinue | Where-Object {
     $_.Path -and $_.Path.StartsWith($BisRoot + '\', [StringComparison]::OrdinalIgnoreCase)
 })
-if ($Running.Count) { throw 'Stop BIS-Pilot with Ctrl+C and close its window before updating. No data were changed.' }
+if ($Running.Count) { throw 'Close the BIS-Pilot window and wait a few seconds for its local database to stop. No data were changed.' }
 $LauncherText = [IO.File]::ReadAllText($Launcher)
 $WebPattern = '(?im)^set "BIS_WEB_DIR=[^"\r\n]*"'
-if (-not [regex]::IsMatch($LauncherText, $WebPattern)) { throw 'The pilot launcher has an unsupported format. No data were changed.' }
+$RunPattern = '(?im)^"[^"\r\n]+\\(?:bis|python)\.exe"(?: (?:"[^"\r\n]+\\start_release\.py"|-m bis\.cli))?( local --dir .+)$'
+if (-not [regex]::IsMatch($LauncherText, $WebPattern) -or [regex]::Matches($LauncherText, $RunPattern).Count -ne 1) {
+    throw 'The pilot launcher has an unsupported format. No data were changed.'
+}
 $TempDir = Join-Path ([IO.Path]::GetTempPath()) ('bis-update-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory $TempDir | Out-Null
 $Archive = Join-Path $TempDir 'source.zip'
-Write-Host '1/3 Downloading the fixed BIS version...' -ForegroundColor Cyan
-Invoke-WebRequest "https://github.com/baboevazamatkz-create/bis/archive/$SourceCommit.zip" -OutFile $Archive -UseBasicParsing
-if ((Get-FileHash $Archive -Algorithm SHA256).Hash -ne $Expected) { throw 'Archive checksum mismatch. Update stopped.' }
+Write-Host '1/3 Resolving the latest GitHub branch commit...' -ForegroundColor Cyan
+$Latest = Invoke-RestMethod "https://api.github.com/repos/$Repository/commits/$Branch" -Headers $GitHubHeaders
+$SourceCommit = $Latest.sha
+if ($SourceCommit -notmatch '^[a-f0-9]{40}$') { throw 'GitHub returned an invalid commit id. Update stopped.' }
+Invoke-WebRequest "https://github.com/$Repository/archive/$SourceCommit.zip" -OutFile $Archive -UseBasicParsing
 Expand-Archive $Archive (Join-Path $TempDir 'source')
 $Directories = @(Get-ChildItem (Join-Path $TempDir 'source') -Directory)
 if ($Directories.Count -ne 1) { throw 'Unexpected source archive structure.' }
 $Source = $Directories[0].FullName
+if ($Source -notmatch [regex]::Escape($SourceCommit)) { throw 'Downloaded archive does not match the resolved commit.' }
 foreach ($File in @('backend\pyproject.toml', 'deploy\web\index.html')) {
     if (-not (Test-Path (Join-Path $Source $File))) { throw "Incomplete source archive: $File" }
 }
@@ -64,6 +71,13 @@ $LauncherText = [regex]::Replace($LauncherText, $WebPattern, [Text.RegularExpres
     param($Match)
     return 'set "BIS_WEB_DIR=' + $Web + '"'
 })
+$LauncherText = [regex]::Replace($LauncherText, '(?im)^set "PYTHONPATH=[^"\r\n]*"\r?\n', '')
+$LauncherText = [regex]::Replace($LauncherText, $RunPattern, [Text.RegularExpressions.MatchEvaluator]{
+    param($Match)
+    return 'set "PYTHONPATH=' + (Join-Path $App 'backend') + '"' + [Environment]::NewLine +
+        '"' + $Python + '" -m bis.cli' + $Match.Groups[1].Value
+})
+Copy-Item -LiteralPath $Launcher -Destination (Join-Path $App 'START-BIS.previous.cmd') -Force
 [IO.File]::WriteAllText($Launcher, $LauncherText, [Text.Encoding]::Default)
 $Encoding = New-Object Text.UTF8Encoding $false
 $Lines = @(Get-Content $EnvFile -Encoding UTF8 | Where-Object { $_ -notmatch '^\s*BIS_AUTO_LOGIN\s*=' })
@@ -72,6 +86,6 @@ $Lines += 'BIS_AUTO_LOGIN=true'
 $Manifest = @{ release_id = ('pto_' + $SourceCommit.Substring(0, 12)); source_commit = $SourceCommit; frontend_prebuilt = $true } | ConvertTo-Json
 [IO.File]::WriteAllText((Join-Path $App 'RELEASE.json'), $Manifest, $Encoding)
 Remove-Item $TempDir -Recurse -Force
-Write-Host '3/3 Updated. Database, documents and AI keys preserved. Local login is automatic.' -ForegroundColor Green
-Write-Host 'BIS-Pilot is starting. Refresh the browser with Ctrl+F5.'
+Write-Host "3/3 Updated to $SourceCommit. Database, documents and AI keys preserved. Local login is automatic." -ForegroundColor Green
+Write-Host 'BIS-Pilot is starting. Closing its window stops the server and local database.'
 Start-Process $Launcher
