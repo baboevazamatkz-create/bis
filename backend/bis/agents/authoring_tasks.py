@@ -97,6 +97,13 @@ def finalize(ctx, result, effective_request):
                               'request': effective_request, 'organization_id': str(ctx.org_id),
                               'object_id': str(scope.object_id) if scope and scope.object_id else None}
         ctx.draft_task.update(status='created', document_ids=[ref['id'] for ref in refs])
+        uncertain = [ref for ref in refs if (ref.get('basis') or {}).get('identity_review_required')]
+        if uncertain:
+            result.text = 'Создан черновик: ' + '; '.join(ref['title'] for ref in refs) + '. Файл доступен ниже.'
+            for ref in uncertain:
+                sample = (ref['basis'].get('sample') or {}).get('title', 'исходящее письмо организации')
+                result.text += ('\nБланк автоматически взят из «' + sample + '». Подписант не подтверждён '
+                                'источниками: в файле оставлены поля для уточнения, реквизиты из карточки не подставлены.')
         if not result.text.strip():
             result.text = 'Черновик создан. Файл доступен ниже.'
     elif ctx.draft_task and requests_write(effective_request):

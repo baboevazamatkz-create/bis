@@ -9,6 +9,22 @@ from PIL import Image
 from bis.services import document_authoring as authoring
 
 
+def test_result_reports_actual_unknown_signer_instead_of_model_claim(monkeypatch):
+    import uuid
+    from bis.agents.authoring_tasks import finalize
+    from bis.agents.base import AgentResult
+    from bis.agents import builtin_tools
+    doc = SimpleNamespace(id=uuid.uuid4(), organization_id='org', file_key='saved', kind='letter',
+        data={'authoring': {'basis': {'identity_review_required': True,
+                                    'sample': {'title': 'Архивное исходящее письмо'}}}})
+    monkeypatch.setattr(builtin_tools, '_doc_ref', lambda d: {'id': str(d.id), 'title': 'Письмо', 'kind': 'letter'})
+    ctx = SimpleNamespace(org_id='org', draft_task={'kind': 'letter'},
+        db=SimpleNamespace(info={'request_created_documents': [str(doc.id)]}, get=lambda *a: doc))
+    result = finalize(ctx, AgentResult(text='Подписант — Seed Person.', agent='assistant'), 'Напиши письмо')
+    assert 'Seed Person' not in result.text
+    assert 'не подтверждён' in result.text and 'Архивное исходящее письмо' in result.text
+
+
 def test_archive_letter_does_not_inherit_unverified_card_signer():
     import pytest
     from bis.documents import LetterData
