@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { api, download, openFile, setActiveProject, STATUS_LABELS, type DocumentRow } from '../../api';
+import { activeProject, api, download, openFile, setActiveProject, STATUS_LABELS, type DocumentRow } from '../../api';
 import { PageHead } from '../../components';
 import { navigate } from '../navigation';
 import TaskComposer from './TaskComposer';
@@ -25,6 +25,7 @@ export default function WorkspaceDocuments({ category, canWrite = false, openPro
   const [projectName, setProjectName] = useState('');
   const [projectCode, setProjectCode] = useState('');
   const [creatingProject, setCreatingProject] = useState(false);
+  const [deletingProject, setDeletingProject] = useState(false);
   const [checking, setChecking] = useState(false);
   const request = useRef<AbortController | null>(null);
   const [filter, setFilter] = useState('all');
@@ -58,6 +59,24 @@ export default function WorkspaceDocuments({ category, canWrite = false, openPro
     try { setCheck(await api('/archive/id-check')); } catch (e) { setError((e as Error).message); } finally { setChecking(false); }
   }
   function searchNow() { if (busy) return; if (query === appliedQuery) void load(); else setAppliedQuery(query); }
+  async function deleteProject() {
+    const id = activeProject();
+    if (!id || deletingProject) return;
+    setDeletingProject(true);
+    setError('');
+    try {
+      const project = await api<{ name: string }>(`/objects/${id}`);
+      if (!window.confirm(`Удалить проект «${project.name}»? Проектные подключения, диалоги и проектные записи будут удалены. Файлы на диске останутся, документы и договоры в BIS потеряют привязку к проекту.`)) return;
+      await api(`/objects/${id}`, { method: 'DELETE' });
+      if (activeProject() === id) setActiveProject('');
+      window.dispatchEvent(new Event('bis:objects'));
+      navigate('id', 'project');
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setDeletingProject(false);
+    }
+  }
   async function createProject() {
     setCreatingProject(true);
     setError('');
@@ -82,6 +101,10 @@ export default function WorkspaceDocuments({ category, canWrite = false, openPro
       'Перечень документов, состояние готовности и задания на подготовку — без ручного заполнения реквизитов.'}>
       <button className="btn" disabled={busy} onClick={() => void load()}>Обновить список</button>
       <button className="btn" onClick={() => navigate('id', 'libraries')}>Подключить документы</button>
+      {category === 'project' && canWrite && activeProject() &&
+        <button className="btn danger" disabled={deletingProject} onClick={() => void deleteProject()}>
+          {deletingProject ? 'Удаление проекта…' : 'Удалить проект…'}
+        </button>}
     </PageHead>
     {error && <div role="alert" className="alert error">{error}</div>}
     {category === 'project' && canWrite && <details className="panel compact-panel" open={openProjectForm || undefined}>
