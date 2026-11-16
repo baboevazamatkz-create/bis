@@ -169,7 +169,7 @@ def create_letter(
         pattern = (org.settings or {}).get("letter_number_format", "{seq}/{yy}") if org else "{seq}/{yy}"
         data.number = pattern.format(seq=seq, yy=f"{data.date.year % 100:02d}", yyyy=data.date.year)
     from bis.documents.templates import default_template, render_template, template_context
-    from bis.services.document_authoring import adapt_layout
+    from bis.services.document_authoring import adapt_layout, reconcile_archive_identity
     from bis.services.library_forms import MissingFormError, render as render_library_form
 
     basis = {'mode': 'approved_template', 'review_required': True}
@@ -191,6 +191,13 @@ def create_letter(
                                             organization_only=require_organization_form)
             if require_organization_form and basis['mode'] != 'sender_brand_and_styles':
                 raise ValueError('Не удалось перенести бланк из доступных писем организации. ' + basis['note'])
+            revised = reconcile_archive_identity(data, basis)
+            if revised is not data:
+                data = revised
+                file_bytes, rendered_basis = adapt_layout(db, storage, org_id, 'letter', render_letter(data),
+                    data.subject, basis['sample']['id'], organization_only=require_organization_form)
+                if rendered_basis['mode'] != 'sender_brand_and_styles':
+                    raise ValueError('Повторное заполнение архивного бланка не выполнено')
 
     title = f"Исх. № {data.number}: {data.subject[:200]}"
     return save_document(

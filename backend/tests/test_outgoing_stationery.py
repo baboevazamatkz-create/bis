@@ -9,6 +9,21 @@ from PIL import Image
 from bis.services import document_authoring as authoring
 
 
+def test_archive_letter_does_not_inherit_unverified_card_signer():
+    import pytest
+    from bis.documents import LetterData
+    from bis.documents.common import Party
+    from bis.services.document_authoring import reconcile_archive_identity
+    data = LetterData(sender=Party(name='Pilot Company'), subject='New', body=['New text'],
+                      addressee=['Customer'], signer_name='Seed Person', signer_position='Director', executor='Seed User')
+    basis = {'selection_reason': 'outgoing_organization_archive', 'sender_confirmed': False}
+    revised = reconcile_archive_identity(data, basis)
+    assert revised.signer_name == '[Подписант: уточнить]' and revised.executor is None
+    assert data.signer_name == 'Seed Person'
+    with pytest.raises(ValueError, match='карточки'):
+        reconcile_archive_identity(data.model_copy(update={'body': ['С уважением, Pilot Company.']}), basis)
+
+
 def test_outgoing_image_stationery_survives_without_matching_card(monkeypatch):
     logo = io.BytesIO()
     Image.new('RGB', (220, 55), 'red').save(logo, format='PNG')

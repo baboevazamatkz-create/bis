@@ -93,6 +93,20 @@ def public_example(item):
     return {key: value for key, value in item.items() if not key.startswith('_')}
 
 
+def reconcile_archive_identity(data, basis):
+    """Archive stationery does not establish that organization-card signers belong to it."""
+    if basis.get('selection_reason') != 'outgoing_organization_archive' or basis.get('sender_confirmed'):
+        return data
+    if any(_same_sender(text, data.sender) for text in data.body):
+        raise ValueError('Бланк взят из исходящих писем, но отправитель из карточки организации не подтверждён '
+                         'этим бланком. Повтори create_letter_draft без названия организации и подписанта '
+                         'в body; реквизиты уже находятся на бланке, неподтверждённая подпись будет отмечена [уточнить].')
+    basis['identity_review_required'] = True
+    basis['note'] = basis.get('note', '') + ' Подписант и исполнитель из карточки не перенесены: их соответствие архивному бланку не подтверждено.'
+    return data.model_copy(update={'signer_name': '[Подписант: уточнить]',
+                                  'signer_position': '[Должность подписанта: уточнить]', 'executor': None})
+
+
 def _plain(element):
     return ''.join(element.xpath('.//w:t/text()'))
 
