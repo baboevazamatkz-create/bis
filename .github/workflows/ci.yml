@@ -11,12 +11,12 @@ jobs:
       postgres:
         image: pgvector/pgvector:pg16
         env:
-          POSTGRES_USER: bis
-          POSTGRES_PASSWORD: bis
+          POSTGRES_USER: bis_test_admin
+          POSTGRES_PASSWORD: disposable-ci-admin
           POSTGRES_DB: bis_test
-        ports: ["5432:5432"]
+        ports: ["127.0.0.1:5432:5432"]
         options: >-
-          --health-cmd "pg_isready -U bis"
+          --health-cmd "pg_isready -U bis_test_admin -d bis_test"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
@@ -29,10 +29,37 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -e ".[dev]"
-      - run: ruff check bis tests
-      - run: pytest
+      - run: pytest guard_tests
+      - name: Provision disposable PostgreSQL
+        shell: bash
         env:
-          TEST_DATABASE_URL: postgresql+psycopg://bis:bis@localhost:5432/bis_test
+          BIS_TEST_ADMIN_PASSWORD: disposable-ci-admin
+          BIS_TEST_CONTAINER: ${{ job.services.postgres.id }}
+        run: |
+          export BIS_TEST_DB_ID="$(python -c 'import uuid; print(uuid.uuid4())')"
+          export BIS_TEST_RUNNER_PASSWORD="$(python -c 'import secrets; print(secrets.token_hex(24))')"
+          printf '::add-mask::%s\n' "$BIS_TEST_RUNNER_PASSWORD"
+          BIS_TEST_CLUSTER_ID="$(docker exec "$BIS_TEST_CONTAINER" psql -XAt -v ON_ERROR_STOP=1 \
+            -U bis_test_admin -d bis_test -c 'SELECT system_identifier FROM pg_catalog.pg_control_system()')"
+          export BIS_TEST_CLUSTER_ID
+          if BIS_TEST_CLUSTER_ID=1 python scripts/provision_test_database.py --port 5432 \
+              > "$RUNNER_TEMP/bis-wrong-cluster.log" 2>&1; then
+            echo 'Provisioning accepted an incorrect PostgreSQL cluster identifier.'
+            exit 1
+          fi
+          grep -Fq 'ClusterIdentityMismatch' "$RUNNER_TEMP/bis-wrong-cluster.log"
+          python scripts/provision_test_database.py --port 5432
+          {
+            printf 'BIS_TEST_DB_ID=%s\n' "$BIS_TEST_DB_ID"
+            printf 'TEST_DATABASE_URL=postgresql+psycopg://bis_test_runner:%s@127.0.0.1:5432/bis_test\n' "$BIS_TEST_RUNNER_PASSWORD"
+            printf 'BIS_VECTOR_ENABLED=true\n'
+          } >> "$GITHUB_ENV"
+      - name: Verify PostgreSQL isolation and pgvector
+        run: pytest -v tests/test_database_boundary.py
+      - name: Run backend suite
+        run: pytest tests
+      - run: ruff check bis tests guard_tests scripts/provision_test_database.py
+        if: ${{ !cancelled() }}
 
   frontend:
     runs-on: ubuntu-latest
