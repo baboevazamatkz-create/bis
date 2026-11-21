@@ -63,11 +63,12 @@ def test_engine_connect_args_cannot_redirect_the_connection(monkeypatch, overrid
 
 
 @pytest.mark.parametrize(('row', 'accepted'), [
-    (('bis_test', 'bis_test_runner', 'bis_test_runner', '127.0.0.1', 54532, IDENTITY, True), True),
-    (('bis', 'bis_test_runner', 'bis_test_runner', '127.0.0.1', 54532, IDENTITY, True), False),
-    (('bis_test', 'bis_test_runner', 'postgres', '127.0.0.1', 54532, IDENTITY, True), False),
-    (('bis_test', 'bis_test_runner', 'bis_test_runner', '127.0.0.1', 54532, 'other', True), False),
-    (('bis_test', 'bis_test_runner', 'bis_test_runner', '127.0.0.1', 54532, IDENTITY, False), False),
+    (('bis_test', 'bis_test_runner', 'bis_test_runner', True, 54532, IDENTITY, True), True),
+    (('bis', 'bis_test_runner', 'bis_test_runner', True, 54532, IDENTITY, True), False),
+    (('bis_test', 'bis_test_runner', 'postgres', True, 54532, IDENTITY, True), False),
+    (('bis_test', 'bis_test_runner', 'bis_test_runner', False, 54532, IDENTITY, True), False),
+    (('bis_test', 'bis_test_runner', 'bis_test_runner', True, 54532, 'other', True), False),
+    (('bis_test', 'bis_test_runner', 'bis_test_runner', True, 54532, IDENTITY, False), False),
     (None, False),
 ])
 def test_identity_verified_using_only_reads(row, accepted):

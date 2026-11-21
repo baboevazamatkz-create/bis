@@ -26,8 +26,11 @@ def provision(port, admin_password, runner_password, identity, vector):
         admin.execute('GRANT CONNECT, CREATE ON DATABASE bis_test TO bis_test_runner')
         admin.execute('ALTER SCHEMA public OWNER TO bis_test_runner')
         admin.execute('CREATE SCHEMA bis_test_guard AUTHORIZATION bis_test_admin')
-        admin.execute('CREATE TABLE bis_test_guard.identity (id uuid PRIMARY KEY)')
-        admin.execute('INSERT INTO bis_test_guard.identity VALUES (%s)', (identity,))
+        admin.execute('CREATE TABLE bis_test_guard.identity (id uuid PRIMARY KEY, server_address inet NOT NULL)')
+        # The client dials loopback. Docker's port forwarding can give PostgreSQL a bridge address.
+        local_endpoint = admin.execute("SELECT inet_server_addr() = '127.0.0.1'::inet").fetchone()[0]
+        print('PostgreSQL endpoint recorded:', 'loopback' if local_endpoint else 'forwarded', flush=True)
+        admin.execute('INSERT INTO bis_test_guard.identity VALUES (%s, inet_server_addr())', (identity,))
         admin.execute('REVOKE ALL ON bis_test_guard.identity FROM PUBLIC')
         admin.execute('GRANT USAGE ON SCHEMA bis_test_guard TO bis_test_runner')
         admin.execute('GRANT SELECT ON bis_test_guard.identity TO bis_test_runner')

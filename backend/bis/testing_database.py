@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from uuid import UUID
 
 from sqlalchemy import event
-from sqlalchemy.engine import Engine, URL, make_url
+from sqlalchemy.engine import URL, Engine, make_url
 from sqlalchemy.exc import ArgumentError
 
 
@@ -16,7 +16,7 @@ class UnsafeTestDatabase(RuntimeError):
 
 IDENTITY_SQL = """
 SELECT current_database(), current_user, session_user,
-       host(inet_server_addr()), inet_server_port(), marker.id::text,
+       inet_server_addr() = marker.server_address, inet_server_port(), marker.id::text,
        NOT (r.rolsuper OR r.rolcreatedb OR r.rolcreaterole OR r.rolreplication OR r.rolbypassrls)
        AND NOT EXISTS (SELECT 1 FROM pg_auth_members WHERE member = r.oid)
        AND NOT EXISTS (
@@ -60,13 +60,14 @@ class TestDatabaseConfig:
             with connection.cursor() as cursor:
                 cursor.execute(IDENTITY_SQL)
                 result = cursor.fetchone()
-            if result != (self.url.database, self.url.username, self.url.username,
-                          self.url.host, self.url.port, self.identity, True):
-                raise UnsafeTestDatabase('BIS test database identity or PostgreSQL permissions do not match.')
             connection.rollback()
         except Exception:
             connection.close()
-            raise UnsafeTestDatabase('BIS test database identity or PostgreSQL permissions do not match.') from None
+            raise UnsafeTestDatabase('Cannot read the protected BIS test database identity.') from None
+        if result != (self.url.database, self.url.username, self.url.username,
+                      True, self.url.port, self.identity, True):
+            connection.close()
+            raise UnsafeTestDatabase('BIS test database identity or PostgreSQL permissions do not match.')
         return connection
 
 
