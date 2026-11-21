@@ -14,7 +14,7 @@ jobs:
           POSTGRES_USER: bis_test_admin
           POSTGRES_PASSWORD: disposable-ci-admin
           POSTGRES_DB: bis_test
-        ports: ["5432:5432"]
+        ports: ["127.0.0.1:5432:5432"]
         options: >-
           --health-cmd "pg_isready -U bis_test_admin -d bis_test"
           --health-interval 5s
@@ -34,10 +34,20 @@ jobs:
         shell: bash
         env:
           BIS_TEST_ADMIN_PASSWORD: disposable-ci-admin
+          BIS_TEST_CONTAINER: ${{ job.services.postgres.id }}
         run: |
           export BIS_TEST_DB_ID="$(python -c 'import uuid; print(uuid.uuid4())')"
           export BIS_TEST_RUNNER_PASSWORD="$(python -c 'import secrets; print(secrets.token_hex(24))')"
           printf '::add-mask::%s\n' "$BIS_TEST_RUNNER_PASSWORD"
+          BIS_TEST_CLUSTER_ID="$(docker exec "$BIS_TEST_CONTAINER" psql -XAt -v ON_ERROR_STOP=1 \
+            -U bis_test_admin -d bis_test -c 'SELECT system_identifier FROM pg_catalog.pg_control_system()')"
+          export BIS_TEST_CLUSTER_ID
+          if BIS_TEST_CLUSTER_ID=1 python scripts/provision_test_database.py --port 5432 \
+              > "$RUNNER_TEMP/bis-wrong-cluster.log" 2>&1; then
+            echo 'Provisioning accepted an incorrect PostgreSQL cluster identifier.'
+            exit 1
+          fi
+          grep -Fq 'ClusterIdentityMismatch' "$RUNNER_TEMP/bis-wrong-cluster.log"
           python scripts/provision_test_database.py --port 5432
           {
             printf 'BIS_TEST_DB_ID=%s\n' "$BIS_TEST_DB_ID"

@@ -8,9 +8,16 @@ import psycopg
 from psycopg import sql
 
 
-def provision(port, admin_password, runner_password, identity, vector):
+class ClusterIdentityMismatch(RuntimeError):
+    """The endpoint is not the disposable cluster identified out of band."""
+
+
+def provision(port, admin_password, runner_password, identity, vector, cluster_id):
     with psycopg.connect(host='127.0.0.1', port=port, dbname='bis_test', user='bis_test_admin',
                          password=admin_password, connect_timeout=5) as admin:
+        actual_id = admin.execute('SELECT system_identifier FROM pg_catalog.pg_control_system()').fetchone()[0]
+        if actual_id != cluster_id:
+            raise ClusterIdentityMismatch
         databases = {name for (name,) in admin.execute('SELECT datname FROM pg_database')}
         if databases != {'bis_test', 'postgres', 'template0', 'template1'}:
             raise RuntimeError('Provisioning requires a fresh dedicated test cluster.')
@@ -48,11 +55,13 @@ if __name__ == '__main__':
     args = parser.parse_args()
     try:
         identity = UUID(os.environ['BIS_TEST_DB_ID'])
+        cluster_id = int(os.environ['BIS_TEST_CLUSTER_ID'])
         admin_password = os.environ['BIS_TEST_ADMIN_PASSWORD']
         runner_password = os.environ['BIS_TEST_RUNNER_PASSWORD']
-        if (identity.version != 4 or not admin_password or not runner_password or admin_password == runner_password
+        if (identity.version != 4 or cluster_id <= 0 or not admin_password or not runner_password
+                or admin_password == runner_password
                 or any(key.startswith('PG') for key in os.environ)):
             raise ValueError
-        provision(args.port, admin_password, runner_password, identity, not args.without_vector)
+        provision(args.port, admin_password, runner_password, identity, not args.without_vector, cluster_id)
     except (KeyError, ValueError, RuntimeError, psycopg.Error) as exc:
         parser.exit(1, f'Disposable PostgreSQL provisioning failed ({type(exc).__name__}).\n')
