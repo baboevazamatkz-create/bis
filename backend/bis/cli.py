@@ -24,7 +24,13 @@ def _local_home() -> Path | None:
     """Папка локальной установки BIS (C:\\BIS): там .env и встроенная база."""
     import os
 
-    for d in [os.environ.get("BIS_HOME"), Path(sys.executable).resolve().parents[2], "C:\\BIS", "C:\\Users\\Public\\BIS"]:
+    if os.environ.get("BIS_ENV") == "test":
+        return None
+    explicit_home = os.environ.get("BIS_HOME")
+    candidates = [explicit_home] if explicit_home else [
+        Path(sys.executable).resolve().parents[2], "C:\\BIS", "C:\\Users\\Public\\BIS",
+    ]
+    for d in candidates:
         if d and (Path(d) / ".env").exists() and (Path(d) / "data").exists():
             return Path(d)
     return None

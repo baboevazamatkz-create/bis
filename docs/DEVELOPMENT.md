@@ -66,9 +66,8 @@ uvicorn bis.main:app --reload          # API: http://localhost:8000/docs
 cd ../frontend && npm install && npm run dev   # http://localhost:5173
 ```
 
-Тесты (нужна БД `bis_test`): `TEST_DATABASE_URL=postgresql+psycopg://bis:bis@localhost:5432/bis_test pytest`.
-Используйте отдельную тестовую БД: фикстуры пересоздают схему `public`. Если PostgreSQL недоступна,
-тесты, требующие БД, пропускаются — такой запуск не проверяет приложение целиком.
+Тесты с БД требуют отдельного одноразового PostgreSQL. См. [изоляцию тестовой БД](TEST_DATABASE.md).
+Проверки самой защиты без подключения к PostgreSQL запускаются из `backend` командой `python -m pytest guard_tests`.
 Набор зависимостей `[dev]` включает MCP SDK для CAD-тестов; для работы с AutoCAD/nanoCAD через COM
 на Windows установите также `[cad]`.
 

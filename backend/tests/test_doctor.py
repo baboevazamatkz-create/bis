@@ -18,6 +18,7 @@ def test_cli_finds_local_install_and_starts_embedded_db(tmp_path, monkeypatch):
     from bis import cli, local
 
     monkeypatch.delenv("BIS_DATABASE_URL", raising=False)
+    monkeypatch.setenv("BIS_ENV", "dev")
     monkeypatch.setenv("BIS_HOME", str(tmp_path))
     assert cli._local_home() is None  # без .env и data — не установка BIS
     (tmp_path / ".env").write_text("BIS_ENV=prod\n", encoding="utf-8")
@@ -31,3 +32,16 @@ def test_cli_finds_local_install_and_starts_embedded_db(tmp_path, monkeypatch):
     monkeypatch.setenv("BIS_DATABASE_URL", "postgresql+psycopg://x@server/bis")
     cli._auto_local("import-archive")  # сервер задан явно — его и используем
     assert started == [tmp_path]
+
+
+def test_test_cli_without_explicit_home_never_inspects_installed_bis(monkeypatch):
+    from unittest.mock import Mock
+
+    from bis import cli
+
+    monkeypatch.delenv("BIS_HOME", raising=False)
+    monkeypatch.setenv("BIS_ENV", "test")
+    paths = Mock(side_effect=AssertionError("Test CLI must not discover a working installation"))
+    monkeypatch.setattr(cli, "Path", paths)
+    assert cli._local_home() is None
+    paths.assert_not_called()
