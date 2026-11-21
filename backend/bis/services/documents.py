@@ -174,7 +174,8 @@ def create_letter(
         data.number = pattern.format(seq=seq, yy=f"{data.date.year % 100:02d}", yyyy=data.date.year)
     from bis.documents.templates import default_template, render_template, template_context
     from bis.services.document_authoring import adapt_layout, reconcile_archive_identity
-    from bis.services.library_forms import MissingFormError, render as render_library_form
+    from bis.services.library_forms import MissingFormError
+    from bis.services.library_forms import render as render_library_form
 
     basis = {'mode': 'approved_template', 'review_required': True}
     try:
