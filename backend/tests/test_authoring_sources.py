@@ -1,11 +1,12 @@
 """Automatic discovery must inspect sources and retain project isolation."""
+from test_adaptive_authoring import context, sample
+
+from bis.agents.builtin_tools import LetterArgs, create_letter_draft, find_documents, get_organization_info
 from bis.agents.grounding import authoring_sources
-from bis.agents.builtin_tools import find_documents, get_organization_info, LetterArgs, create_letter_draft
 from bis.agents.tools_control import get_document
-from bis.models import ConstructionObject, Document
-from bis.rag.ingest import ingest_text
+from bis.models import ConstructionObject
 from bis.rag.embeddings import get_embedder
-from test_adaptive_authoring import sample, context
+from bis.rag.ingest import ingest_text
 
 
 def test_draft_without_sample_is_created_and_explicitly_marked(db, demo):
