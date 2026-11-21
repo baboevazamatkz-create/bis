@@ -11,9 +11,10 @@ from bis.services import document_authoring as authoring
 
 def test_result_reports_actual_unknown_signer_instead_of_model_claim(monkeypatch):
     import uuid
+
+    from bis.agents import builtin_tools
     from bis.agents.authoring_tasks import finalize
     from bis.agents.base import AgentResult
-    from bis.agents import builtin_tools
     doc = SimpleNamespace(id=uuid.uuid4(), organization_id='org', file_key='saved', kind='letter',
         data={'authoring': {'basis': {'identity_review_required': True,
                                     'sample': {'title': 'Архивное исходящее письмо'}}}})
@@ -27,6 +28,7 @@ def test_result_reports_actual_unknown_signer_instead_of_model_claim(monkeypatch
 
 def test_archive_letter_does_not_inherit_unverified_card_signer():
     import pytest
+
     from bis.documents import LetterData
     from bis.documents.common import Party
     from bis.services.document_authoring import reconcile_archive_identity
@@ -69,7 +71,8 @@ def test_outgoing_image_stationery_survives_without_matching_card(monkeypatch):
 
 
 def test_required_letter_uses_archive_without_registered_form(db, demo):
-    from test_adaptive_authoring import sample, context
+    from test_adaptive_authoring import context, sample
+
     from bis.agents.builtin_tools import LetterArgs, create_letter_draft
     original = sample(db, demo, brand='ARCHIVE LETTERHEAD')
     ctx = context(db, demo)
@@ -80,7 +83,8 @@ def test_required_letter_uses_archive_without_registered_form(db, demo):
 
 
 def test_organization_library_overrides_stale_project_binding(db, demo, tmp_path):
-    from test_adaptive_authoring import sample, context
+    from test_adaptive_authoring import context, sample
+
     from bis.models import ConstructionObject
     from bis.models.libraries import LibraryConnection, LibraryFile, LibraryVersion
     project = ConstructionObject(organization_id=demo.id, name='Archived pilot', status='archived')
