@@ -139,13 +139,13 @@ def start_database(data_dir: Path) -> str:
 
 def prepare(workdir: Path, *, server_host: str | None = None) -> Path:
     """Окружение, база и миграции. Возвращает папку данных."""
-    from bis.config import get_settings, validate_auto_login
+    from bis.config import get_settings, validate_server_settings
 
     os.chdir(workdir)
     load_env(workdir / ".env", prefer_file=True)
     if server_host is not None:
         get_settings.cache_clear()
-        validate_auto_login(server_host)
+        validate_server_settings(server_host)
     os.environ['BIS_LOCAL_DIR'] = str(workdir)
     # pgvector из встроенной сборки падает на части процессоров — по умолчанию поиск полнотекстовый
     os.environ.setdefault("BIS_VECTOR_ENABLED", "false")

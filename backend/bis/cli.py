@@ -168,14 +168,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "local":
         from bis import local
-        from bis.config import UnsafeAutoLogin
+        from bis.config import UnsafeServerConfiguration
 
         if args.setup:
             local.prepare(args.dir.resolve())
             return main(args.then) if args.then else 0
         try:
             local.run(args.dir.resolve(), args.host, args.port)
-        except UnsafeAutoLogin as exc:
+        except UnsafeServerConfiguration as exc:
             print(exc, file=sys.stderr)
             return 1
         return 0
@@ -313,11 +313,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "serve":
         import uvicorn
 
-        from bis.config import UnsafeAutoLogin, validate_auto_login
+        from bis.config import UnsafeServerConfiguration, validate_server_settings
 
         try:
-            validate_auto_login()
-        except UnsafeAutoLogin as exc:
+            validate_server_settings()
+        except UnsafeServerConfiguration as exc:
             print(exc, file=sys.stderr)
             return 1
         uvicorn.run("bis.main:app", host=args.host, port=args.port)

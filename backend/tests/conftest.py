@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 import tempfile
 
 import pytest
@@ -16,6 +17,7 @@ except UnsafeTestDatabase as exc:
 remove_test_guard = install_guard(test_db)
 os.environ["BIS_DATABASE_URL"] = os.environ["TEST_DATABASE_URL"]
 os.environ["BIS_ENV"] = "test"
+os.environ["BIS_SECRET_KEY"] = secrets.token_hex(32)
 os.environ["BIS_STORAGE_DIR"] = tempfile.mkdtemp(prefix="bis-test-")
 os.environ.pop("BIS_LLM_PROVIDERS_JSON", None)
 os.environ.pop("BIS_LLM_CONFIG_FILE", None)
