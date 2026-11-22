@@ -69,7 +69,7 @@ def _pages(data: bytes, name: str, mime: str | None) -> tuple[list[Page], str]:
     from bis.rag.columns import split_columns
 
     pages, how = _raw_pages(data, name, mime)
-    return [Page(p.number, split_columns(p.text), p.warning) for p in pages], how
+    return [Page(p.number, split_columns(p.text), p.warning, p.sheet_name) for p in pages], how
 
 
 def _raw_pages(data: bytes, name: str, mime: str | None) -> tuple[list[Page], str]:

@@ -61,11 +61,60 @@ def connection_predicate(scope):
             if scope.object_id else false())))
 
 
-def active_versions(scope):
+def project_connection_predicate(scope):
+    return and_(LibraryConnection.organization_id == scope.organization_id,
+                LibraryConnection.level == "project",
+                LibraryConnection.object_id == scope.object_id if scope.object_id else false())
+
+
+def active_versions(scope, *, project_only=False):
     return select(LibraryVersion.id).join(LibraryFile, LibraryFile.active_version_id == LibraryVersion.id).join(
         LibraryConnection, LibraryConnection.id == LibraryFile.connection_id).where(
-            connection_predicate(scope), LibraryConnection.enabled.is_(True), LibraryFile.state == "ready",
+            project_connection_predicate(scope) if project_only else connection_predicate(scope),
+            LibraryFile.id == LibraryVersion.file_id, LibraryConnection.enabled.is_(True), LibraryFile.state == "ready",
             LibraryVersion.state == "ready")
+
+
+def project_source_predicate(scope):
+    """Restrict direct project searches and originals regardless of the organization policy."""
+    current_sources = select(LibraryVersion.source_id).where(LibraryVersion.id.in_(
+        active_versions(scope, project_only=True)))
+    linked_version = select(LibraryVersion.id).where(or_(
+        LibraryVersion.source_id == KnowledgeSource.id,
+        LibraryVersion.document_id == KnowledgeSource.document_id)).exists()
+    legacy_documents = select(Document.id).where(
+        Document.organization_id == scope.organization_id,
+        Document.object_id == scope.object_id if scope.object_id else false(),
+        Document.status.notin_(["cancelled", "replaced", "rejected"]),
+        func.jsonb_extract_path_text(Document.data, "library_version_id").is_(None),
+        func.coalesce(func.jsonb_extract_path_text(Document.data, "library_scope"), "project") == "project")
+    return and_(
+        KnowledgeSource.organization_id == scope.organization_id,
+        KnowledgeSource.status == "active",
+        or_(KnowledgeSource.id.in_(current_sources), and_(
+            ~linked_version, func.jsonb_extract_path_text(KnowledgeSource.meta, "library_version_id").is_(None),
+            func.coalesce(func.jsonb_extract_path_text(KnowledgeSource.meta, "level"), "project") == "project",
+            KnowledgeSource.document_id.in_(legacy_documents))))
+
+
+class ProjectSelectionRequired(ValueError):
+    def __init__(self):
+        super().__init__("Выберите объект для поиска по проекту")
+
+
+def selected_project(db, organization_id):
+    scope = db.info.get("source_context")
+    if not scope or scope.organization_id != organization_id or not scope.object_id:
+        raise ProjectSelectionRequired()
+    return scope
+
+
+def search_scope_options(db, organization_id, requested_scope, *, include_global=True):
+    if requested_scope == "project":
+        return {"project_scope": selected_project(db, organization_id), "include_global": False}
+    policy = db.info.get("source_context")
+    level = {"norms": "knowledge", "organization": "organization"}.get(requested_scope)
+    return {"library_level": level if policy and policy.strict else None, "include_global": include_global}
 
 
 def source_predicate(scope):

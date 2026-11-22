@@ -143,9 +143,9 @@ def imported_scope(db, user, level):
 def imports(level: Literal['organization', 'project'], db: Session = Depends(get_db),
             user: User = Depends(require('documents:read'))):
     rows = list(db.scalars(imported_scope(db, user, level).order_by(Document.created_at.desc())))
-    return {'total': len(rows), 'documents': [{'id': str(d.id), 'title': d.title,
-        'state': (d.data or {}).get('read_state', 'stored'), 'error': (d.data or {}).get('reading_error')}
-        for d in rows[:200]], 'has_more': len(rows) > 200}
+    return {'total': len(rows), 'documents': [{'id': str(d.id), 'title': d.title, 'file_name': d.file_name,
+        'state': (d.data or {}).get('read_state', 'stored'), 'error': (d.data or {}).get('reading_error'),
+        'reading': (d.data or {}).get('reading') or {}} for d in rows[:200]], 'has_more': len(rows) > 200}
 
 
 @router.post('/imports/reread', status_code=202)

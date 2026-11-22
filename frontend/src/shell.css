@@ -380,6 +380,7 @@ td { padding-top: 14px; padding-bottom: 14px; }
 .workspace-document.selected { background: var(--soft); border-radius: 12px; padding-inline: 14px; }
 .workspace-document-copy { min-width: 0; flex: 1; overflow-wrap: anywhere; }
 .workspace-document-copy p { margin: 6px 0; }
+.project-fragment { margin: 8px 0 0; white-space: pre-wrap; }
 .document-actions { align-self: center; flex-wrap: wrap; justify-content: flex-end; }
 .section-list-header { justify-content: space-between; align-items: center; }
 .task-composer textarea { flex: 1; min-width: 220px; }

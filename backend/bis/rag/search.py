@@ -20,6 +20,7 @@ from bis.models.knowledge import VECTOR
 from bis.rag.chunking import parse_reference
 from bis.rag.embeddings import Embedder
 from bis.rag.thesaurus import expand, org_terms
+from bis.services.library_access import SourceContext, project_source_predicate
 
 _TOKEN_RE = re.compile(r"[а-яёa-z]{2,}|\d+", re.IGNORECASE)
 RRF_K = 60
@@ -45,6 +46,10 @@ class SearchHit:
     document_id: str | None = None
     library_version_id: str | None = None
     library_level: str | None = None
+    file_name: str | None = None
+    sheet_name: str | None = None
+    reading_status: str | None = None
+    original_url: str | None = None
 
     @property
     def citation(self) -> str:
@@ -64,6 +69,9 @@ class SearchHit:
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
+        if self.reading_status is None:
+            for key in ('file_name', 'sheet_name', 'reading_status', 'original_url'):
+                d.pop(key)
         d["citation"] = self.citation
         return d
 
@@ -77,7 +85,8 @@ def build_tsquery(query: str) -> str | None:
 
 
 def _base_filter(stmt: Select, org_id: uuid.UUID | None, kinds: list[str] | None, include_global: bool,
-                 only_active: bool, source_ids: list[uuid.UUID] | None, library_level: str | None = None) -> Select:
+                 only_active: bool, source_ids: list[uuid.UUID] | None, library_level: str | None = None,
+                 project_scope: SourceContext | None = None) -> Select:
     stmt = stmt.join(KnowledgeSource, KnowledgeSource.id == KnowledgeChunk.source_id)
     scope = []
     if org_id is not None:
@@ -91,6 +100,8 @@ def _base_filter(stmt: Select, org_id: uuid.UUID | None, kinds: list[str] | None
         stmt = stmt.where(KnowledgeSource.status.notin_(["cancelled", "replaced"]))
     if source_ids is not None:
         stmt = stmt.where(KnowledgeSource.id.in_(source_ids))
+    if project_scope is not None:
+        stmt = stmt.where(project_source_predicate(project_scope))
     if library_level:
         from bis.models import Document
 
@@ -138,12 +149,14 @@ def _vectors(db: Session, flt: dict, dim: int):
     import numpy as np
 
     key = (db.info.get("source_context"),) + tuple((k, tuple(v) if isinstance(v, list) else v) for k, v in sorted(flt.items())) + (dim,)
-    base = _base_filter(select(func.count(KnowledgeChunk.id), func.max(KnowledgeSource.created_at)), **flt) \
-        .where(KnowledgeChunk.embedding.is_not(None))
-    version = tuple(db.execute(base).one())
-    cached = _MATRIX_CACHE.get(key)
-    if cached and cached[0] == version:
-        return cached[1], cached[2]
+    cacheable = flt["project_scope"] is None
+    if cacheable:
+        base = _base_filter(select(func.count(KnowledgeChunk.id), func.max(KnowledgeSource.created_at)), **flt) \
+            .where(KnowledgeChunk.embedding.is_not(None))
+        version = tuple(db.execute(base).one())
+        cached = _MATRIX_CACHE.get(key)
+        if cached and cached[0] == version:
+            return cached[1], cached[2]
     rows = db.execute(_base_filter(select(KnowledgeChunk.id, KnowledgeChunk.embedding), **flt)
                       .where(KnowledgeChunk.embedding.is_not(None))).all()
     rows = [r for r in rows if r[1] is not None and len(r[1]) == dim]
@@ -151,9 +164,10 @@ def _vectors(db: Session, flt: dict, dim: int):
     m = np.asarray([r[1] for r in rows], dtype=np.float32).reshape(len(rows), dim)
     if len(rows):
         m /= np.linalg.norm(m, axis=1, keepdims=True) + 1e-9
-    if len(_MATRIX_CACHE) >= _MATRIX_LIMIT:
-        _MATRIX_CACHE.pop(next(iter(_MATRIX_CACHE)))
-    _MATRIX_CACHE[key] = (version, ids, m)
+    if cacheable:
+        if len(_MATRIX_CACHE) >= _MATRIX_LIMIT:
+            _MATRIX_CACHE.pop(next(iter(_MATRIX_CACHE)))
+        _MATRIX_CACHE[key] = (version, ids, m)
     return ids, m
 
 
@@ -169,14 +183,14 @@ def _semantic_in_memory(db: Session, qvec: list[float], flt: dict, pool: int) ->
     k = min(pool, len(ids))
     best = np.argpartition(-sims, k - 1)[:k]
     top = [ids[i] for i in best[np.argsort(-sims[best])]]
-    found = {c.id: (c, s) for c, s in db.execute(select(KnowledgeChunk, KnowledgeSource).join(
-        KnowledgeSource, KnowledgeSource.id == KnowledgeChunk.source_id).where(KnowledgeChunk.id.in_(top))).all()}
+    stmt = _base_filter(select(KnowledgeChunk, KnowledgeSource), **flt).where(KnowledgeChunk.id.in_(top))
+    found = {c.id: (c, s) for c, s in db.execute(stmt)}
     return [found[i] for i in top if i in found]
 
 
 def hybrid_search(
     db: Session,
-    embedder: Embedder,
+    embedder: Embedder | None,
     query: str,
     *,
     org_id: uuid.UUID | None,
@@ -185,25 +199,28 @@ def hybrid_search(
     only_active: bool = False,
     source_ids: list[uuid.UUID] | None = None,
     library_level: str | None = None,
+    project_scope: SourceContext | None = None,
+    fragments_only: bool = False,
     k: int = 8,
 ) -> list[SearchHit]:
     query = query.strip()
     if not query:
         return []
     pool = max(k * 4, 20)
-    flt = dict(org_id=org_id, kinds=kinds, include_global=include_global, only_active=only_active, source_ids=source_ids, library_level=library_level)
+    flt = dict(org_id=org_id, kinds=kinds, include_global=include_global, only_active=only_active,
+               source_ids=source_ids, library_level=library_level, project_scope=project_scope)
     ranked: list[list[tuple[KnowledgeChunk, KnowledgeSource]]] = []
     weights: list[float] = []
 
     try:
-        qvec = embedder.embed_query(query)
+        qvec = embedder.embed_query(query) if embedder else None
     except Exception:  # noqa: BLE001 — сервис векторов недоступен: ищем по словам, а не падаем
         qvec = None
     expansions = expand(query, org_terms(db, org_id))
 
     # 1. Точная ссылка на пункт
     designation, clause = parse_reference(query)
-    if designation:
+    if designation and not fragments_only:
         stmt = _base_filter(select(KnowledgeChunk, KnowledgeSource), **flt).where(
             func.replace(KnowledgeSource.designation, " ", "").ilike("%" + designation.replace(" ", "") + "%")
         )
@@ -246,12 +263,12 @@ def hybrid_search(
     # Native Windows pilots use lexical search. Filenames, short drawing codes and exact
     # identifiers must remain searchable even when Russian full-text tokenization differs.
     if len(query) <= 300:
-        literal = _base_filter(select(KnowledgeChunk, KnowledgeSource), **flt).where(or_(
-            KnowledgeChunk.content.icontains(query, autoescape=True),
-            KnowledgeSource.title.icontains(query, autoescape=True),
-            KnowledgeSource.designation.icontains(query, autoescape=True),
-            KnowledgeSource.file_name.icontains(query, autoescape=True),
-        )).order_by(KnowledgeChunk.ord, KnowledgeSource.created_at.desc()).limit(pool)
+        matches = [KnowledgeChunk.content.icontains(query, autoescape=True)]
+        if not fragments_only:
+            matches.extend(field.icontains(query, autoescape=True) for field in (
+                KnowledgeSource.title, KnowledgeSource.designation, KnowledgeSource.file_name))
+        literal = _base_filter(select(KnowledgeChunk, KnowledgeSource), **flt).where(or_(*matches)) \
+            .order_by(KnowledgeChunk.ord, KnowledgeSource.created_at.desc()).limit(pool)
         ranked.append(list(db.execute(literal).all()))
         weights.append(1.2)
 
@@ -267,10 +284,41 @@ def hybrid_search(
         h = _hit(*rows[cid])
         h.score = round(scores[cid], 6)
         hits.append(h)
-    hits = rerank(query, hits)[:k]
+    hits = (hits if project_scope is not None else rerank(query, hits))[:k]
+    if project_scope is not None:
+        for hit in hits:
+            _project_hit(db, hit, *rows[uuid.UUID(hit.chunk_id)])
     for i, h in enumerate(hits, 1):
         h.n = i
     return hits
+
+
+def _project_hit(db: Session, hit: SearchHit, chunk: KnowledgeChunk, source: KnowledgeSource) -> None:
+    from bis.rag.reading import coverage_status
+
+    hit.file_name = source.file_name
+    key = source.file_key
+    if (not hit.file_name or not key) and source.document_id:
+        from bis.models import Document
+
+        document = db.get(Document, source.document_id)
+        if document:
+            hit.file_name = hit.file_name or document.file_name
+            key = key or document.file_key
+    hit.reading_status = coverage_status((source.meta or {}).get("reading"))
+    if key:
+        hit.original_url = f"/api/knowledge/project/sources/{source.id}/file"
+    if (hit.file_name or "").lower().endswith((".xlsx", ".xlsm")):
+        hit.page = None
+        hit.sheet_name = chunk.section_path
+        if not hit.sheet_name:
+            # Older XLSX chunks stored the sheet header only in the first chunk of each sheet.
+            header = db.scalar(select(KnowledgeChunk.content).where(
+                KnowledgeChunk.source_id == source.id, KnowledgeChunk.ord <= chunk.ord,
+                KnowledgeChunk.content.startswith("Лист: ")
+            ).order_by(KnowledgeChunk.ord.desc()).limit(1))
+            if header:
+                hit.sheet_name = header.splitlines()[0].removeprefix("Лист: ")
 
 
 def rerank(query: str, hits: list[SearchHit]) -> list[SearchHit]:
