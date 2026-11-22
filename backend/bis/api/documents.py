@@ -45,8 +45,8 @@ def _owned(db: Session, user: User, doc_id: uuid.UUID) -> Document:
     return doc
 
 
-def _form_ctx(db: Session, user: User) -> AgentContext:
-    ctx = agent_context(db, user)
+def _form_ctx(db: Session, user: User, *, query_only: bool = False) -> AgentContext:
+    ctx = agent_context(db, user, query_only=query_only)
     ctx.agent_name = "form"
     return ctx
 
@@ -132,7 +132,7 @@ def download_dwg(doc_id: uuid.UUID, db: Session = Depends(get_db), user: User = 
 @router.post("/aosr", response_model=DocumentOut, status_code=201)
 def create_aosr(body: AOSRArgs, db: Session = Depends(get_db), user: User = Depends(require("documents:write"))):
     """Формирование АОСР по структурированной форме (без языковой модели)."""
-    return _run_tool(create_aosr_draft, _form_ctx(db, user), body)
+    return _run_tool(create_aosr_draft, _form_ctx(db, user, query_only=True), body)
 
 
 @router.post("/aosr/check")

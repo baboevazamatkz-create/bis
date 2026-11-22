@@ -58,6 +58,13 @@ def render_with_org_template(db: Session, storage: Storage, org_id: uuid.UUID, k
 
         return render(db, storage, org_id, kind, data)
     tpl = default_template(db, org_id, kind)
-    if tpl is None:
-        return None
-    return render_template(storage.get(tpl.file_key), template_context(data))
+    if tpl is not None:
+        return render_template(storage.get(tpl.file_key), template_context(data))
+    if kind == 'aosr':
+        from bis.services.library_forms import MissingFormError, render
+
+        try:
+            return render(db, storage, org_id, kind, data, profile='aosr_docx')
+        except MissingFormError:
+            pass
+    return None

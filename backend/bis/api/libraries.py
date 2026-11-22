@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import hmac
 import os
 import shutil
 import uuid
@@ -16,6 +18,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from bis.api.deps import require
+from bis.config import get_settings
 from bis.db import get_db
 from bis.models import ConstructionObject, Document, Organization, User
 from bis.models.libraries import LibraryConnection, LibraryFile, LibraryVersion
@@ -41,6 +44,7 @@ class PolicyIn(BaseModel):
 class Approval(BaseModel):
     kind: Literal['aosr', 'aook', 'letter', 'work_journal', 'id_registry']
     mapping: forms.Mapping
+    preview_token: str = Field(default='', max_length=64)
 
 
 class Assignment(BaseModel):
@@ -64,9 +68,9 @@ def owned(db, user, connection_id, *, write=False, content=False):
     return c
 
 
-def version_owned(db, user, version_id, *, write=False):
-    v = db.get(LibraryVersion, version_id)
-    item = db.get(LibraryFile, v.file_id) if v else None
+def version_owned(db, user, version_id, *, write=False, lock=False):
+    v = db.get(LibraryVersion, version_id, with_for_update=lock, populate_existing=lock)
+    item = db.get(LibraryFile, v.file_id, populate_existing=lock) if v else None
     if item is None:
         raise HTTPException(404, 'Версия не найдена')
     c = owned(db, user, item.connection_id, write=write, content=True)
@@ -282,45 +286,81 @@ def original(version_id: uuid.UUID, db: Session = Depends(get_db), user: User = 
 
 
 @router.post('/versions/{version_id}/prepare')
-def prepare(version_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(require('settings:write'))):
+def prepare(version_id: uuid.UUID, kind: Literal['aosr'] | None = None,
+            db: Session = Depends(get_db), user: User = Depends(require('settings:write'))):
     v, item, _ = version_owned(db, user, version_id, write=True)
     if v.approved_at:
         raise HTTPException(409, 'Эта версия уже подтверждена; сначала отмените подтверждение')
     from bis.llm.gateway import get_gateway
     try:
-        mapping = forms.prepare(get_storage().get(v.file_key), item.relative_path, get_gateway())
+        raw = get_storage().get(v.file_key)
+        if kind == 'aosr' or v.form_kind == 'aosr' and item.relative_path.lower().endswith('.docx'):
+            check_template_version(raw, v)
+            mapping, origins, places = forms.prepare_aosr(raw, item.relative_path, get_gateway)
+            return {**mapping.model_dump(), 'targets': places, 'origins': origins, 'fields': forms.AOSR_FIELDS,
+                    'required': sorted(forms.REQUIRED['aosr']),
+                    'modes': {target: forms.aosr_target_mode(anchor) for target, anchor in places.items()}}
+        mapping = forms.prepare(raw, item.relative_path, get_gateway())
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
-    v.mapping = mapping.model_dump()
+    v, item, _ = version_owned(db, user, version_id, write=True, lock=True)
+    if v.approved_at:
+        raise HTTPException(409, 'Эта версия уже подтверждена; сначала отмените подтверждение')
+    v.mapping = mapping.model_dump(exclude_none=True)
     db.commit()
-    fmt, places = forms.targets(get_storage().get(v.file_key), item.relative_path)
+    _, places = forms.targets(raw, item.relative_path)
     return {**v.mapping, "targets": places}
+
+
+def check_template_version(raw, version):
+    if hashlib.sha256(raw).hexdigest() != version.sha256:
+        raise ValueError('Сохранённый оригинал формы изменился')
+
+
+def form_preview_token(version, user, mapping):
+    payload = f'aosr-preview:{version.id}:{version.sha256}:{user.id}:{mapping.model_dump_json()}'
+    return hmac.new(get_settings().secret_key.encode(), payload.encode(), hashlib.sha256).hexdigest()
 
 
 @router.post('/versions/{version_id}/preview')
 def preview(version_id: uuid.UUID, body: Approval, db: Session = Depends(get_db),
             user: User = Depends(require('settings:write'))):
     v, item, _ = version_owned(db, user, version_id, write=True)
+    headers = {}
     try:
         raw = get_storage().get(v.file_key)
-        forms.validate_mapping(raw, item.relative_path, body.mapping, body.kind)
-        content = forms.filled(raw, item.relative_path, body.mapping, {k: 'ПРИМЕР: ' + label for k, label in forms.FIELDS.items()})
+        if body.kind == 'aosr' and item.relative_path.lower().endswith('.docx'):
+            check_template_version(raw, v)
+            mapping = body.mapping.model_copy(update={'profile': 'aosr_docx'})
+            content = forms.preview_aosr(raw, item.relative_path, mapping)
+            headers['X-BIS-Form-Preview'] = form_preview_token(v, user, mapping)
+        else:
+            forms.validate_mapping(raw, item.relative_path, body.mapping, body.kind)
+            content = forms.filled(raw, item.relative_path, body.mapping, {k: 'ПРИМЕР: ' + label for k, label in forms.FIELDS.items()})
     except (ValueError, OSError) as exc:
         raise HTTPException(400, str(exc)) from exc
-    return Response(content, media_type=v.mime or 'application/octet-stream')
+    return Response(content, media_type=v.mime or 'application/octet-stream', headers=headers)
 
 
 @router.post('/versions/{version_id}/approve')
 def approve(version_id: uuid.UUID, body: Approval, db: Session = Depends(get_db),
             user: User = Depends(require('settings:write'))):
-    v, item, _ = version_owned(db, user, version_id, write=True)
+    v, item, _ = version_owned(db, user, version_id, write=True, lock=True)
     if v.approved_at:
         raise HTTPException(409, 'Карта этой версии уже подтверждена')
+    mapping = body.mapping
     try:
-        forms.validate_mapping(get_storage().get(v.file_key), item.relative_path, body.mapping, body.kind)
-    except ValueError as exc:
+        raw = get_storage().get(v.file_key)
+        if body.kind == 'aosr' and item.relative_path.lower().endswith('.docx'):
+            check_template_version(raw, v)
+            mapping = mapping.model_copy(update={'profile': 'aosr_docx'})
+            if not hmac.compare_digest(body.preview_token.encode(), form_preview_token(v, user, mapping).encode()):
+                raise ValueError('Скачайте пробное заполнение для текущей карты полей')
+        else:
+            forms.validate_mapping(raw, item.relative_path, mapping, body.kind)
+    except (ValueError, OSError) as exc:
         raise HTTPException(400, str(exc)) from exc
-    v.form_kind, v.mapping, v.approved_at, v.approved_by_id = body.kind, body.mapping.model_dump(), dt.datetime.now(dt.UTC), user.id
+    v.form_kind, v.mapping, v.approved_at, v.approved_by_id = body.kind, mapping.model_dump(exclude_none=True), dt.datetime.now(dt.UTC), user.id
     audit(db, user.organization_id, actor_type='user', actor=str(user.id), action='library.form_approve',
           entity_type='library_version', entity_id=v.id, details={'sha256': v.sha256, 'kind': body.kind})
     db.commit()
