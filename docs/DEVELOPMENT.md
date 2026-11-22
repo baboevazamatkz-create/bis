@@ -60,6 +60,7 @@ cd backend
 python -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"
 export BIS_DATABASE_URL=postgresql+psycopg://bis:bis@localhost:5432/bis
+export BIS_SECRET_KEY="$(python -c 'import secrets; print(secrets.token_hex(32))')"
 bis migrate && bis seed-demo
 uvicorn bis.main:app --reload          # API: http://localhost:8000/docs
 
@@ -76,7 +77,8 @@ cd ../frontend && npm install && npm run dev   # http://localhost:5173
 Статическая демо-версия (интерфейс + снимок данных, записанный с работающего backend):
 
 ```bash
-# 1. свежая демо-база и запущенный API (BIS_DATABASE_URL, BIS_STORAGE_DIR, BIS_SECRET_KEY — одинаковые для шагов 1 и 2)
+# 1. Свежая демо-база и API. Используйте одинаковые BIS_DATABASE_URL, BIS_STORAGE_DIR и BIS_SECRET_KEY на шагах 1 и 2.
+export BIS_SECRET_KEY="$(python -c 'import secrets; print(secrets.token_hex(32))')"
 bis migrate && bis seed-demo && bis run-jobs && uvicorn bis.main:app --port 8000 &
 # 2. снимок: рабочий день через ИИ-конвейер (scripts/demo_ai_scenario.py: почта и Telegram с имитацией транспорта),
 #    затем действия (АОСР, КС-2/КС-3, М-29, схема, сверка ПД, чат, примеры для ленты) — настоящим API

@@ -11,4 +11,4 @@ RUN pip install --no-cache-dir ".[anthropic]" && useradd --create-home bis && mk
 
 USER bis
 EXPOSE 8000
-CMD ["sh", "-c", "bis migrate && uvicorn bis.main:app --host 0.0.0.0 --port 8000 --workers 2"]
+CMD ["sh", "-c", "python -c 'from bis.config import validate_server_settings; validate_server_settings()' && bis migrate && uvicorn bis.main:app --host 0.0.0.0 --port 8000 --workers 2"]
