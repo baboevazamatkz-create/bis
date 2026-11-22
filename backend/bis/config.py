@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Sensitivity = Literal["public", "internal", "confidential"]
+PILOT_BIND = "127.0.0.1"
 
 
 class ProviderConfig(BaseModel):
@@ -109,7 +110,7 @@ class Settings(BaseSettings):
     digest_hour: int = 18
     remind_hour: int = 16
     digest_sunday: bool = False
-    # вход без пароля с этого же компьютера (локальный запуск на время разработки)
+    # Вход без пароля только для личного пилота, запущенного через bis local.
     auto_login: bool = False
     telegram_bot_token: str | None = None
     telegram_bot_username: str | None = None  # для ссылки привязки t.me/<бот>?start=<код>
@@ -179,3 +180,17 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+class UnsafeAutoLogin(RuntimeError):
+    """Автовход включён вне поддерживаемого режима личного пилота."""
+
+
+def validate_auto_login(local_bind: str | None = None) -> bool:
+    enabled = get_settings().auto_login
+    if enabled and local_bind != PILOT_BIND:
+        raise UnsafeAutoLogin(
+            f"BIS_AUTO_LOGIN разрешён только при запуске bis local на {PILOT_BIND}. "
+            "Для сетевого запуска отключите BIS_AUTO_LOGIN."
+        )
+    return enabled
