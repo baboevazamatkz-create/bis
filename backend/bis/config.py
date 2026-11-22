@@ -11,6 +11,12 @@ from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Sensitivity = Literal["public", "internal", "confidential"]
+PILOT_BIND = "127.0.0.1"
+DEFAULT_SECRET_KEY = "change-me-in-production"
+KNOWN_INSECURE_JWT_KEYS = frozenset({
+    DEFAULT_SECRET_KEY,
+    "synthetic-signing-key-for-startup-tests",
+})
 
 
 class ProviderConfig(BaseModel):
@@ -74,7 +80,7 @@ class Settings(BaseSettings):
     database_statement_timeout_ms: int = Field(20000, ge=100, le=300000)
     model_initialization_wait_seconds: float = Field(5, gt=0, le=15)
     database_url: str = "postgresql+psycopg://bis:bis@localhost:5432/bis"
-    secret_key: str = "change-me-in-production"  # в prod — не короче 32 символов
+    secret_key: str = DEFAULT_SECRET_KEY
     access_token_ttl_minutes: int = 60 * 12
     storage_dir: Path = Path("./data/files")
     cors_origins: list[str] = ["http://localhost:5173", "http://localhost:8080"]
@@ -109,7 +115,7 @@ class Settings(BaseSettings):
     digest_hour: int = 18
     remind_hour: int = 16
     digest_sunday: bool = False
-    # вход без пароля с этого же компьютера (локальный запуск на время разработки)
+    # Вход без пароля только для личного пилота, запущенного через bis local.
     auto_login: bool = False
     telegram_bot_token: str | None = None
     telegram_bot_username: str | None = None  # для ссылки привязки t.me/<бот>?start=<код>
@@ -179,3 +185,24 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+class UnsafeServerConfiguration(RuntimeError):
+    """Настройки HTTP-сервера не обеспечивают безопасный запуск."""
+
+
+def validate_server_settings(local_bind: str | None = None) -> bool:
+    settings = get_settings()
+    pilot_bind = local_bind == PILOT_BIND
+    if settings.auto_login and not pilot_bind:
+        raise UnsafeServerConfiguration(
+            f"BIS_AUTO_LOGIN разрешён только при запуске bis local на {PILOT_BIND}. "
+            "Для сетевого запуска отключите BIS_AUTO_LOGIN."
+        )
+    # Generic ASGI entry points cannot attest to the socket bind address.
+    secret = settings.secret_key.strip()
+    if (not pilot_bind or settings.env == "prod") and (
+        len(secret) < 32 or secret in KNOWN_INSECURE_JWT_KEYS
+    ):
+        raise UnsafeServerConfiguration("Задайте собственный случайный BIS_SECRET_KEY длиной не менее 32 символов.")
+    return settings.auto_login

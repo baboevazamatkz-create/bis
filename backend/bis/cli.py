@@ -95,7 +95,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser("local", help="Локальный запуск без Docker: встроенная БД, API, веб, фоновые задачи, Telegram")
     p.add_argument("--dir", type=Path, default=Path.cwd(), help="Папка с .env и данными")
-    p.add_argument("--host", default="0.0.0.0")
+    p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8080)
     p.add_argument("--setup", action="store_true", help="Только подготовить базу и выполнить команду --then")
     p.add_argument("--then", nargs=argparse.REMAINDER, default=[], help="Команда bis после подготовки (seed-demo, create-org …)")
@@ -168,11 +168,16 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "local":
         from bis import local
+        from bis.config import UnsafeServerConfiguration
 
         if args.setup:
             local.prepare(args.dir.resolve())
             return main(args.then) if args.then else 0
-        local.run(args.dir.resolve(), args.host, args.port)
+        try:
+            local.run(args.dir.resolve(), args.host, args.port)
+        except UnsafeServerConfiguration as exc:
+            print(exc, file=sys.stderr)
+            return 1
         return 0
     if args.cmd == "cad-mcp":
         from bis.cad.mcp_server import main as cad_main
@@ -308,6 +313,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "serve":
         import uvicorn
 
+        from bis.config import UnsafeServerConfiguration, validate_server_settings
+
+        try:
+            validate_server_settings()
+        except UnsafeServerConfiguration as exc:
+            print(exc, file=sys.stderr)
+            return 1
         uvicorn.run("bis.main:app", host=args.host, port=args.port)
         return 0
 
