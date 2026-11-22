@@ -3,7 +3,7 @@
 ## Начало работы
 
 - [Контекст продукта](PROJECT_CONTEXT.md) · [Архитектура](ARCHITECTURE.md) · [Текущее состояние](CURRENT_STATE.md)
-- [Приоритеты и backlog](TASKS.md) · [Журнал решений](DECISIONS.md)
+- [Генеральный план развития](PRODUCT_ROADMAP.md) · [Приоритеты и backlog](TASKS.md) · [Журнал решений](DECISIONS.md)
 - [Запуск для разработчика](DEVELOPMENT.md) · [Изоляция PostgreSQL](TEST_DATABASE.md) · [Сквозная приёмка](ACCEPTANCE.md)
 - [Правила агентов](../AGENTS.md) · [Роли AI-команды](AI_TEAM.md) · [Шаблон задания](templates/TASK.md) · [Шаблон передачи](templates/HANDOFF.md)
 
