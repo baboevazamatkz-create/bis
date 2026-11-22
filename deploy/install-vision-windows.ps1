@@ -2,7 +2,7 @@
 # Читает схемы, чертежи и фото документов локально — без интернета и без Yandex.
 #
 # PowerShell:
-#   irm https://raw.githubusercontent.com/baboevazamatkz-create/bis/claude/construction-ai-automation-system-lya9lz/deploy/install-vision-windows.ps1 | iex
+#   irm https://raw.githubusercontent.com/baboevazamatkz-create/bis/codex/pilot-readiness/deploy/install-vision-windows.ps1 | iex
 #
 # Нужно: ~8 ГБ на диске, 16 ГБ оперативной памяти; с видеокартой NVIDIA (8+ ГБ) — секунды на лист, без неё — минуты.
 # Другая модель: перед запуском $env:BIS_VISION_MODEL = "qwen2.5vl:7b" (лучше читает русский текст на листах).

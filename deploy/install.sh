@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Установка BIS на виртуальную машину (Ubuntu 22.04/24.04, Yandex Cloud или любой VPS).
 #
-#   curl -fsSL https://raw.githubusercontent.com/baboevazamatkz-create/bis/claude/construction-ai-automation-system-lya9lz/deploy/install.sh -o install.sh
+#   curl -fsSL https://raw.githubusercontent.com/baboevazamatkz-create/bis/codex/pilot-readiness/deploy/install.sh -o install.sh
 #   sudo bash install.sh
 #
 # Что делает: ставит Docker, скачивает BIS, спрашивает ключ и каталог Yandex AI Studio, создаёт настройки
@@ -10,6 +10,7 @@
 set -euo pipefail
 
 REPO="${BIS_REPO:-https://github.com/baboevazamatkz-create/bis.git}"
+# Сохраняем ветку существующих Docker-установок до проверки входа на пилотной ветке.
 BRANCH="${BIS_BRANCH:-claude/construction-ai-automation-system-lya9lz}"
 DIR="${BIS_DIR:-/opt/bis}"
 ENV_FILE="$DIR/deploy/.env"

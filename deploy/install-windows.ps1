@@ -2,14 +2,14 @@
 # Ставит Python 3.12 (если нет), BIS со встроенной базой PostgreSQL, создаёт ярлык «BIS» на рабочем столе.
 #
 # PowerShell (Win+R → powershell → Enter):
-#   irm https://raw.githubusercontent.com/baboevazamatkz-create/bis/claude/construction-ai-automation-system-lya9lz/deploy/install-windows.ps1 | iex
+#   irm https://raw.githubusercontent.com/baboevazamatkz-create/bis/codex/pilot-readiness/deploy/install-windows.ps1 | iex
 #
-# Повторный запуск обновляет BIS, настройки и данные сохраняются.
+# Повторный запуск переустанавливает закреплённую версию BIS, настройки и данные сохраняются.
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
-$Branch = "claude/construction-ai-automation-system-lya9lz"
-$Zip = "https://github.com/baboevazamatkz-create/bis/archive/refs/heads/$Branch.zip"
+$SourceCommit = "834162487cf6659c8ef4dbc9dbe801b0b377e2fc"
+$Zip = "https://github.com/baboevazamatkz-create/bis/archive/$SourceCommit.zip"
 function Say($t) { Write-Host "`n>> $t" -ForegroundColor Yellow }
 function RandHex($n) { $b = New-Object byte[] $n; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b); ($b | % { $_.ToString("x2") }) -join "" }
 

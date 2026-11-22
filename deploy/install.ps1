@@ -1,13 +1,13 @@
 # Установка BIS на компьютер с Windows 10/11 (через Docker Desktop).
 #
 # Откройте PowerShell (Win+R → powershell → Enter) и выполните:
-#   irm https://raw.githubusercontent.com/baboevazamatkz-create/bis/claude/construction-ai-automation-system-lya9lz/deploy/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/baboevazamatkz-create/bis/codex/pilot-readiness/deploy/install.ps1 | iex
 #
-# Повторный запуск обновляет BIS и сохраняет настройки и данные.
+# Повторный запуск переустанавливает закреплённую версию BIS и сохраняет настройки и данные.
 
 $ErrorActionPreference = "Stop"
-$Branch = "claude/construction-ai-automation-system-lya9lz"
-$Zip = "https://github.com/baboevazamatkz-create/bis/archive/refs/heads/$Branch.zip"
+$SourceCommit = "834162487cf6659c8ef4dbc9dbe801b0b377e2fc"
+$Zip = "https://github.com/baboevazamatkz-create/bis/archive/$SourceCommit.zip"
 $Dir = Join-Path $env:USERPROFILE "BIS"
 $EnvFile = Join-Path $Dir "deploy\.env"
 $Url = "http://localhost:8080"
@@ -114,5 +114,5 @@ if (-not (Test-Path $marker)) {
 }
 
 Write-Host "`nГотово: BIS работает — $Url" -ForegroundColor Green
-Write-Host "Обновить: выполните команду установки ещё раз.  Остановить: cd $Dir\deploy; docker compose stop"
+Write-Host "Переустановить закреплённую версию: выполните команду установки ещё раз.  Остановить: cd $Dir\deploy; docker compose stop"
 Start-Process $Url

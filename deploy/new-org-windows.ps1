@@ -1,5 +1,5 @@
 # Создать организацию и администратора в установленном BIS (Windows).
-#   irm https://raw.githubusercontent.com/baboevazamatkz-create/bis/claude/construction-ai-automation-system-lya9lz/deploy/new-org-windows.ps1 | iex
+#   irm https://raw.githubusercontent.com/baboevazamatkz-create/bis/codex/pilot-readiness/deploy/new-org-windows.ps1 | iex
 
 $Root = if (Test-Path "C:\BIS\venv") { "C:\BIS" } elseif (Test-Path "C:\Users\Public\BIS\venv") { "C:\Users\Public\BIS" } else { $null }
 if (-not $Root) { Write-Host "BIS не установлен — сначала запустите install-windows.ps1" -ForegroundColor Red; return }

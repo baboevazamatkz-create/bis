@@ -1,16 +1,16 @@
 # Установка BIS в Yandex Cloud
 
-> Нужен только для доступа сотрудников из любого места. На своём компьютере с Windows — без виртуальной машины,
-> Docker и прав администратора: откройте PowerShell и выполните
-> `irm https://raw.githubusercontent.com/baboevazamatkz-create/bis/claude/construction-ai-automation-system-lya9lz/deploy/install-windows.ps1 | iex`
+> Для текущего локального пилота Windows см. [установку и обновление BIS-Pilot](PILOT_WINDOWS.md).
+> Команды ниже относятся к прежней установке в `C:\BIS`, закреплённой на коммите `8341624`. Для её переустановки выполните
+> `irm https://raw.githubusercontent.com/baboevazamatkz-create/bis/codex/pilot-readiness/deploy/install-windows.ps1 | iex`
 > (ставит Python и BIS со встроенной базой, создаёт ярлык «BIS» на рабочем столе).
 > Проверить, что работает и что тормозит (база, модели, поиск, голос, сканы, AutoCAD, журнал ошибок):
 > `C:\BIS\venv\Scripts\bis.exe doctor --dir C:\BIS` — отчёт сохраняется в `C:\BIS\doctor.txt`.
 > Зрение «Эрудита» по умолчанию — Qwen 3.6 в Yandex AI Studio (облако). Только если нужна работа без интернета —
 > модель зрения на своём компьютере (Llama 3.2 Vision через Ollama, нужен мощный компьютер):
-> `irm https://raw.githubusercontent.com/baboevazamatkz-create/bis/claude/construction-ai-automation-system-lya9lz/deploy/install-vision-windows.ps1 | iex`
+> `irm https://raw.githubusercontent.com/baboevazamatkz-create/bis/codex/pilot-readiness/deploy/install-vision-windows.ps1 | iex`
 > Начать с чистой базы (удалить демо-данные и всё загруженное, ключи сохраняются):
-> `irm https://raw.githubusercontent.com/baboevazamatkz-create/bis/claude/construction-ai-automation-system-lya9lz/deploy/reset-windows.ps1 | iex`
+> `irm https://raw.githubusercontent.com/baboevazamatkz-create/bis/codex/pilot-readiness/deploy/reset-windows.ps1 | iex`
 
 Около 15 минут. Понадобятся: доступ к консоли Yandex Cloud, секретный ключ AI Studio (`AQVN…`) и идентификатор
 каталога (`b1g…`). Сервисному аккаунту ключа нужны роли `ai.languageModels.user`, `ai.speechkit-stt.user`,
@@ -44,9 +44,12 @@ ssh bis@<публичный-IP>
 И выполните:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/baboevazamatkz-create/bis/claude/construction-ai-automation-system-lya9lz/deploy/install.sh -o install.sh
+curl -fsSL https://raw.githubusercontent.com/baboevazamatkz-create/bis/codex/pilot-readiness/deploy/install.sh -o install.sh
 sudo bash install.sh
 ```
+
+Скрипт скачивается из рабочей ветки. Код для Linux/Docker он по умолчанию берёт из прежней
+ветки установки. Перевод Docker на рабочую ветку требует отдельной проверки входа через браузер.
 
 Скрипт спросит ключ AI Studio (ввод скрыт), каталог, токен Telegram-бота (можно пропустить), затем — загрузить
 демо-данные или создать вашу организацию и администратора. Первая сборка занимает 5–10 минут.
