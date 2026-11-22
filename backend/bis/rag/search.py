@@ -149,7 +149,7 @@ def _vectors(db: Session, flt: dict, dim: int):
     import numpy as np
 
     key = (db.info.get("source_context"),) + tuple((k, tuple(v) if isinstance(v, list) else v) for k, v in sorted(flt.items())) + (dim,)
-    cacheable = flt["project_scope"] is None
+    cacheable = flt.get("project_scope") is None
     if cacheable:
         base = _base_filter(select(func.count(KnowledgeChunk.id), func.max(KnowledgeSource.created_at)), **flt) \
             .where(KnowledgeChunk.embedding.is_not(None))
