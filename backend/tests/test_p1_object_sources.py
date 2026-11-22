@@ -87,6 +87,24 @@ def test_project_original_opens_a_legacy_pdf_with_generic_mime(client, auth, db,
     assert original.content == drawing.read_bytes()
 
 
+def test_project_fragment_search_distinguishes_drawing_code_suffixes(client, auth, db, demo, corpus):
+    root, generator = corpus
+    project = ConstructionObject(name='Объект с похожими шифрами', organization_id=demo.id)
+    db.add(project)
+    db.commit()
+    headers = {**auth, 'X-BIS-Project': str(project.id)}
+    drawing = root / 'Drawing.pdf'
+    generator['write_pdf'](drawing, [
+        ['The annex code is RD-TRAIN-17-2, or RD-TRAIN-17/2, or RD-TRAIN-17.2.'],
+        ['The main drawing is RD-TRAIN-17. This sentence contains the complete drawing code.'],
+    ])
+    upload(client, headers, [drawing], project)
+    assert [hit['page'] for hit in hits(client, headers, 'RD-TRAIN-17', fragments=True)] == [2]
+    assert not hits(client, headers, 'TRAIN-17', fragments=True)
+    for suffix in ('-2', '/2', '.2'):
+        assert [hit['page'] for hit in hits(client, headers, 'RD-TRAIN-17' + suffix, fragments=True)] == [1]
+
+
 def test_uploaded_object_sources_and_originals(client, auth, db, demo, corpus, tmp_path):
     root, generator = corpus
     foreign_org = Organization(name='Учебная другая организация')

@@ -268,7 +268,7 @@ def hybrid_search(
     # identifiers must remain searchable even when Russian full-text tokenization differs.
     if len(query) <= 300:
         if identifier:
-            pattern = rf"(?<![[:alnum:]_]){re.escape(query)}(?![[:alnum:]_])"
+            pattern = rf"(?:^|[^[:alnum:]_./-])[./-]*{re.escape(query)}(?![./-]*[[:alnum:]_])"
             matches = [KnowledgeChunk.content.op("~*")(pattern)]
         else:
             matches = [KnowledgeChunk.content.icontains(query, autoescape=True)]

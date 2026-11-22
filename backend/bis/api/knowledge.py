@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import mimetypes
 import uuid
 from datetime import date
 from typing import Literal
@@ -188,8 +187,8 @@ def project_source_file(source_id: uuid.UUID, db: Session = Depends(get_db),
     original = src if src.file_key else db.get(Document, src.document_id) if src.document_id else None
     if original and original.file_key:
         mime = original.mime
-        if mime in (None, "", "application/octet-stream") and original.file_name:
-            mime = mimetypes.guess_type(original.file_name)[0]
+        if mime in (None, "", "application/octet-stream") and (original.file_name or "").lower().endswith(".pdf"):
+            mime = "application/pdf"
         try:
             return _original_response(original.file_key, original.file_name, mime)
         except FileNotFoundError:
