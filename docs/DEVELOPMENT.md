@@ -89,14 +89,16 @@ Compose описывает API, web, worker и PostgreSQL. В рабочей в�
 ## Локальный API и Vite
 
 Для ручной проверки API подготовьте отдельную пустую БД разработки PostgreSQL 16 с
-pgvector. Это отдельный контур от БД для автоматических тестов. Укажите
-`BIS_DEV_DATABASE_URL` для этой БД и запустите из корня уже подготовленного клона:
+pgvector. Это отдельный контур от БД для автоматических тестов. Перед запуском из корня
+клона замените пример `BIS_DATABASE_URL` ниже на адрес этой БД. Команды миграции
+и демонаполнения пишут данные.
 
 ```bash
 cd backend
-. .venv/bin/activate
-export BIS_DATABASE_URL="${BIS_DEV_DATABASE_URL:?Укажите адрес отдельной БД разработки}"
 export BIS_STORAGE_DIR="$(mktemp -d)"
+python -m venv .venv && . .venv/bin/activate
+pip install -e ".[dev]"
+export BIS_DATABASE_URL=postgresql+psycopg://bis:bis@localhost:5432/bis
 bis migrate && bis seed-demo
 uvicorn bis.main:app --host 127.0.0.1 --reload
 ```
