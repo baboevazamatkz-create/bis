@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import mimetypes
 import uuid
 from datetime import date
 from typing import Literal
@@ -186,8 +187,11 @@ def project_source_file(source_id: uuid.UUID, db: Session = Depends(get_db),
         raise HTTPException(404, "Источник недоступен")
     original = src if src.file_key else db.get(Document, src.document_id) if src.document_id else None
     if original and original.file_key:
+        mime = original.mime
+        if mime in (None, "", "application/octet-stream") and original.file_name:
+            mime = mimetypes.guess_type(original.file_name)[0]
         try:
-            return _original_response(original.file_key, original.file_name, original.mime)
+            return _original_response(original.file_key, original.file_name, mime)
         except FileNotFoundError:
             pass
     raise HTTPException(404, "Оригинал недоступен")

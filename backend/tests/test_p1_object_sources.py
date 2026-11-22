@@ -68,6 +68,25 @@ def headers_for(user, project=None):
     return headers
 
 
+def test_project_original_opens_a_legacy_pdf_with_generic_mime(client, auth, db, demo, corpus):
+    root, _ = corpus
+    project = ConstructionObject(name='Старый импорт РД', organization_id=demo.id)
+    db.add(project)
+    db.commit()
+    headers = {**auth, 'X-BIS-Project': str(project.id)}
+    drawing = root / 'A' / 'RD-TRAIN-17.pdf'
+    response = client.post('/api/documents/upload', headers=headers,
+                           data={'kind': 'project_doc', 'object_id': str(project.id)},
+                           files={'file': (drawing.name, drawing.read_bytes(), 'application/octet-stream')})
+    assert response.status_code == 201
+    fragment = hits(client, headers, 'KLAB471', fragments=True)[0]
+    assert fragment['page'] == 2
+    original = client.get(fragment['original_url'], headers=headers)
+    assert original.status_code == 200
+    assert original.headers['Content-Type'] == 'application/pdf'
+    assert original.content == drawing.read_bytes()
+
+
 def test_uploaded_object_sources_and_originals(client, auth, db, demo, corpus, tmp_path):
     root, generator = corpus
     foreign_org = Organization(name='Учебная другая организация')
@@ -142,6 +161,9 @@ def test_uploaded_object_sources_and_originals(client, auth, db, demo, corpus, t
 
     for query in ('SCANNEDLAB701', 'UNREADLAB884', 'DRAWINGOBJECTB', 'ORGONLYMARKER', 'GLOBALONLYMARKER'):
         assert not hits(client, viewer_a, query), query
+    for query in ('KLAB120', 'SCANNEDLAB120', 'RD-TRAIN-99', 'KLAB47'):
+        assert not hits(client, viewer_a, query, fragments=True), query
+    assert hits(client, viewer_a, 'klab471', fragments=True)[0]['source_id'] == a_hits['KLAB471']['source_id']
     assert not hits(client, admin_b, 'DRAWINGOBJECTA')
     b_hit = hits(client, admin_b, 'KLAB471')[0]
     assert b_hit['page'] == 2 and '375 m' in b_hit['content']

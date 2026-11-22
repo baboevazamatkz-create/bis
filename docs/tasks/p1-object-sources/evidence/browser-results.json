@@ -3,8 +3,8 @@
     {
       "query": "KLAB471",
       "name": "RD-TRAIN-17.pdf",
-      "expected": "/api/knowledge/project/sources/e54d6aa0-8afe-4db1-842e-db34fdb0a993/file",
-      "actual": "/api/knowledge/project/sources/e54d6aa0-8afe-4db1-842e-db34fdb0a993/file",
+      "expected": "/api/knowledge/project/sources/c0015eee-3851-4f84-8bed-86649926cdb2/file",
+      "actual": "/api/knowledge/project/sources/c0015eee-3851-4f84-8bed-86649926cdb2/file",
       "status": 200,
       "expectedSha256": "afbf1f1baf2a2b6962141f14d309e3ad092724377558101ac558de95b0cf44c2",
       "actualSha256": "afbf1f1baf2a2b6962141f14d309e3ad092724377558101ac558de95b0cf44c2",
@@ -13,18 +13,18 @@
     {
       "query": "SPECLAB082",
       "name": "Specification.xlsx",
-      "expected": "/api/knowledge/project/sources/6f18e69a-d3f6-405f-a2f7-0f247eed4d97/file",
-      "actual": "/api/knowledge/project/sources/6f18e69a-d3f6-405f-a2f7-0f247eed4d97/file",
+      "expected": "/api/knowledge/project/sources/1192de6a-6f37-4bf4-9037-154472d2ada3/file",
+      "actual": "/api/knowledge/project/sources/1192de6a-6f37-4bf4-9037-154472d2ada3/file",
       "status": 200,
-      "expectedSha256": "5716bf4105444ec0fa32e8ed879394faba2391fdcbee3713c0d8115f56a1d29d",
-      "actualSha256": "5716bf4105444ec0fa32e8ed879394faba2391fdcbee3713c0d8115f56a1d29d",
+      "expectedSha256": "c579bcb873660317b3ffb8b135c0ebfdfd1f856b20036ef9b989ab5b892fc0da",
+      "actualSha256": "c579bcb873660317b3ffb8b135c0ebfdfd1f856b20036ef9b989ab5b892fc0da",
       "location": "Лист «Кабели»"
     },
     {
       "query": "QUALITYLAB309",
       "name": "Quality.pdf",
-      "expected": "/api/knowledge/project/sources/6c4a6dbd-c58b-4df7-b3f5-3803444bb2fa/file",
-      "actual": "/api/knowledge/project/sources/6c4a6dbd-c58b-4df7-b3f5-3803444bb2fa/file",
+      "expected": "/api/knowledge/project/sources/04a02dce-1f3b-4f52-aa06-834817182481/file",
+      "actual": "/api/knowledge/project/sources/04a02dce-1f3b-4f52-aa06-834817182481/file",
       "status": 200,
       "expectedSha256": "08257ae30bf57c26172dcfeb95e3cb60c45248da3b7aeb51607e7bcda7f175cc",
       "actualSha256": "08257ae30bf57c26172dcfeb95e3cb60c45248da3b7aeb51607e7bcda7f175cc",
@@ -34,20 +34,20 @@
   "denied": [
     {
       "strict": false,
-      "url": "/api/knowledge/project/sources/16f8dbf6-562c-4c3c-b86d-d63bff968bc7/file",
+      "url": "/api/knowledge/project/sources/a3121f7d-ccbe-4a84-90e0-5f9cafcae390/file",
       "expected": 404,
       "actual": 404
     },
     {
       "strict": true,
-      "url": "/api/knowledge/project/sources/16f8dbf6-562c-4c3c-b86d-d63bff968bc7/file",
+      "url": "/api/knowledge/project/sources/a3121f7d-ccbe-4a84-90e0-5f9cafcae390/file",
       "expected": 404,
       "actual": 404
     }
   ],
   "revision": {
     "syncStatus": 202,
-    "oldLink": "/api/knowledge/project/sources/e54d6aa0-8afe-4db1-842e-db34fdb0a993/file",
+    "oldLink": "/api/knowledge/project/sources/c0015eee-3851-4f84-8bed-86649926cdb2/file",
     "oldLinkStatus": 404,
     "replacement": "121 m",
     "disableStatus": 200
@@ -58,6 +58,7 @@
     "xlsx-download",
     "partial",
     "three-empty-in-A",
+    "exact-identifiers",
     "A-to-B-during-search",
     "object-B-375m",
     "no-project-prompt",

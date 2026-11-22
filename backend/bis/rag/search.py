@@ -23,6 +23,7 @@ from bis.rag.thesaurus import expand, org_terms
 from bis.services.library_access import SourceContext, project_source_predicate
 
 _TOKEN_RE = re.compile(r"[а-яёa-z]{2,}|\d+", re.IGNORECASE)
+_IDENTIFIER_RE = re.compile(r"(?=.*[^\W\d_])(?=.*\d)[\w./-]+")
 RRF_K = 60
 
 STATUS_LABELS = {"cancelled": "отменён", "replaced": "заменён", "unknown": "статус не проверен"}
@@ -216,7 +217,10 @@ def hybrid_search(
         qvec = embedder.embed_query(query) if embedder else None
     except Exception:  # noqa: BLE001 — сервис векторов недоступен: ищем по словам, а не падаем
         qvec = None
-    expansions = expand(query, org_terms(db, org_id))
+    # A drawing code or mark identifies evidence as a whole. Matching its number
+    # or one component on its own would cite unrelated quantities and documents.
+    identifier = fragments_only and _IDENTIFIER_RE.fullmatch(query)
+    expansions = [] if identifier else expand(query, org_terms(db, org_id))
 
     # 1. Точная ссылка на пункт
     designation, clause = parse_reference(query)
@@ -252,7 +256,7 @@ def hybrid_search(
         weights.append(weight)
 
     # 3. Полнотекстовый поиск (с синонимами)
-    tsq_text = build_tsquery(" ".join([query, *expansions]))
+    tsq_text = None if identifier else build_tsquery(" ".join([query, *expansions]))
     if tsq_text:
         tsq = func.to_tsquery("russian", tsq_text)
         stmt = _base_filter(select(KnowledgeChunk, KnowledgeSource), **flt).where(KnowledgeChunk.tsv.op("@@")(tsq))
@@ -263,7 +267,11 @@ def hybrid_search(
     # Native Windows pilots use lexical search. Filenames, short drawing codes and exact
     # identifiers must remain searchable even when Russian full-text tokenization differs.
     if len(query) <= 300:
-        matches = [KnowledgeChunk.content.icontains(query, autoescape=True)]
+        if identifier:
+            pattern = rf"(?<![[:alnum:]_]){re.escape(query)}(?![[:alnum:]_])"
+            matches = [KnowledgeChunk.content.op("~*")(pattern)]
+        else:
+            matches = [KnowledgeChunk.content.icontains(query, autoescape=True)]
         if not fragments_only:
             matches.extend(field.icontains(query, autoescape=True) for field in (
                 KnowledgeSource.title, KnowledgeSource.designation, KnowledgeSource.file_name))
