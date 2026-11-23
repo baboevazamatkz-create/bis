@@ -39,7 +39,7 @@ def _label_key(text):
     return label.rstrip(':：').rstrip().casefold()
 
 
-def _adjacent_cell_paragraph(paragraph):
+def adjacent_cell_paragraph(paragraph):
     cell = paragraph._p.getparent()
     if (cell.tag != qn('w:tc') or len(cell.p_lst) != 1
             or len(cell.getparent().tc_lst) != 2):
@@ -97,7 +97,7 @@ def find_values(lines, labels):
             continue
         number = _NUMBER_ONLY.fullmatch(anchor)
         if number:
-            other = positions.get(_adjacent_cell_paragraph(paragraph))
+            other = positions.get(adjacent_cell_paragraph(paragraph))
             date = _DATE_ONLY.fullmatch(anchors[other]) if other is not None else None
             explicit = re.match(rf'^\s*{_ACT}\s+№', anchor, re.IGNORECASE)
             add(index, *number.span('number'), 'number' if date or explicit else None)
@@ -136,7 +136,7 @@ def find_values(lines, labels):
                     add(signature, 0, len(anchors[signature]), field.replace('representative_', 'signature_', 1))
                     occupied.update((index, signature))
                     continue
-            other = positions.get(_adjacent_cell_paragraph(paragraph))
+            other = positions.get(adjacent_cell_paragraph(paragraph))
             if other is not None and anchors[other].strip() and not pattern.match(anchors[other]):
                 add(other, 0, len(anchors[other]), field)
                 occupied.add(other)

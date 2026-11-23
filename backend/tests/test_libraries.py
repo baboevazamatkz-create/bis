@@ -1,6 +1,7 @@
 """Folder lifecycle, immutable forms and isolation before retrieval/generation."""
 import datetime as dt
 import io
+import json
 from zipfile import ZipFile
 
 import pytest
@@ -827,3 +828,147 @@ def test_filled_example_rejects_hidden_text(content_control):
     doc.save(source)
     with pytest.raises(ValueError, match="скрытый текст"):
         forms.prepare_aosr_example(source.getvalue(), "Готовый акт.docx")
+
+
+def _aosr_precision_doc(scenario, *, ambiguous=False):
+    from docx.shared import Mm, Pt
+
+    doc = Word()
+    doc.sections[0].page_width, doc.sections[0].page_height = Mm(210), Mm(297)
+    doc.add_heading("Акт освидетельствования скрытых работ", 0)
+    doc.add_heading("Сроки работ" if scenario == "inline" else "Участники строительства", 2)
+    if scenario == "inline":
+        p = doc.add_paragraph()
+        for label in ("Начало работ", "Окончание работ"):
+            p.add_run(label + ": ").bold = True
+            p.add_run("___").italic = True
+            p.add_run("___").italic = True
+            if label == "Начало работ":
+                p.add_run("\t")
+        skipped = {"work_start", "work_end"}
+        if ambiguous:
+            doc.add_paragraph("Рабочая документация: ______    Основание проверки: ______")
+            skipped.update(("project_docs", "executive_docs"))
+    else:
+        table = doc.add_table(rows=1, cols=2)
+        table.style = "Table Grid"
+        label, value = table.rows[0].cells
+        label.paragraphs[0].add_run(forms.FIELDS["builder_text"]).bold = True
+        style = value.paragraphs[0].add_run()
+        style.italic, style.font.size = True, Pt(9)
+        skipped = {"builder_text"}
+        if ambiguous:
+            table.add_row().cells[0].text = "Сведения об использованном"
+            skipped.add("materials")
+    doc.add_paragraph("Контрольный текст вне подписей:")
+    for field in sorted(forms.REQUIRED["aosr"] - skipped):
+        doc.add_paragraph(forms.FIELDS[field] + ": ______")
+    result = io.BytesIO()
+    doc.save(result)
+    return result.getvalue()
+
+
+def test_aosr_blank_supports_two_independently_addressable_dates_in_one_paragraph():
+    source = _aosr_precision_doc("inline")
+    mapping, origins, _ = forms.prepare_aosr(source, "Сроки.docx", None)
+    dates = {entry.field: entry for entry in mapping.entries if entry.field in {"work_start", "work_end"}}
+    assert dates.keys() == {"work_start", "work_end"}
+    assert dates["work_start"].target != dates["work_end"].target
+    assert all(origins[entry.target] == "rule" for entry in dates.values())
+    forms.validate_mapping(source, "Сроки.docx", mapping, "aosr")
+    preview = Word(io.BytesIO(forms.preview_aosr(source, "Сроки.docx", mapping)))
+    assert preview.paragraphs[2].text == "Начало работ: 12.01.2026\tОкончание работ: 15.01.2026"
+    output = forms.filled(source, "Сроки.docx", mapping, {
+        "work_start": dt.date(2026, 11, 12), "work_end": dt.date(2026, 11, 15),
+    })
+    p = Word(io.BytesIO(output)).paragraphs[2]
+    assert p.text == "Начало работ: 12.11.2026\tОкончание работ: 15.11.2026"
+    assert p.runs[0].bold and p.runs[1].italic and p.runs[4].bold and p.runs[5].italic
+
+
+def test_aosr_blank_fills_empty_right_cell_without_touching_left_label():
+    source = _aosr_precision_doc("table")
+    mapping, _, _ = forms.prepare_aosr(source, "Таблица.docx", None)
+    forms.validate_mapping(source, "Таблица.docx", mapping, "aosr")
+    output = forms.filled(source, "Таблица.docx", mapping, {"builder_text": "ООО Учебный подрядчик"})
+    before = Word(io.BytesIO(source)).tables[0]
+    after = Word(io.BytesIO(output)).tables[0]
+    assert after.style.name == before.style.name == "Table Grid"
+    assert len(after.rows) == 1 and len(after.columns) == 2
+    assert after.cell(0, 0)._tc.xml == before.cell(0, 0)._tc.xml
+    assert after.cell(0, 1).text == "ООО Учебный подрядчик"
+    assert after.cell(0, 1).paragraphs[0].runs[-1].italic
+    assert after.cell(0, 1).paragraphs[0].runs[-1].font.size.pt == 9
+
+
+def test_aosr_model_receives_only_local_context_for_unresolved_span():
+    from bis.llm.gateway import LLMGateway, ProviderEntry
+    from bis.llm.providers.offline import ScriptedProvider
+
+    original = _aosr_precision_doc("inline", ambiguous=True)
+    labels = {}
+    manual, _, places = forms.prepare_aosr(original, "Сроки.docx", lambda: LLMGateway(entries={}), target_labels=labels)
+    unresolved = next(target for target, label in labels.items() if label == "Основание проверки")
+    assert unresolved in places and unresolved not in {entry.target for entry in manual.entries}
+    neighbour = next(entry.target for entry in manual.entries if entry.field == "project_docs")
+    reply = json.dumps({"entries": [
+        {"field": "executive_docs", "target": unresolved},
+        {"field": "next_works", "target": neighbour},
+        {"field": "materials", "target": "999"},
+    ]})
+    provider = ScriptedProvider([reply], name="context-test")
+    gateway = LLMGateway(entries={"context-test": ProviderEntry(provider)})
+    mapping, origins, _ = forms.prepare_aosr(original, "Сроки.docx", lambda: gateway)
+    assert next(entry for entry in mapping.entries if entry.target == unresolved).field == "executive_docs"
+    assert origins[unresolved] == "model" and origins[neighbour] == "rule"
+    assert "999" not in origins
+    prompt = provider.calls[0]["messages"][-1].content
+    assert "Сроки работ" in prompt and "Рабочая документация" in prompt and "Основание проверки" in prompt
+    assert "Контрольный текст вне подписей" not in prompt and "______" not in prompt
+
+
+def test_aosr_legacy_approved_mapping_reuses_numeric_paragraph_address():
+    original = _aosr_training_doc()
+    _, places = forms.targets(original, "Старый.docx", existing_parts_only=True)
+    saved = {
+        "format": "docx", "profile": "aosr_docx",
+        "entries": [{"field": field, "target": target, "anchor": anchor, "mode": "slot"}
+                    for field in forms.REQUIRED["aosr"] for target, anchor in places.items()
+                    if anchor.startswith(forms.FIELDS[field] + ":") or
+                    field == "object_name" and anchor.startswith("Объект капитального строительства") or
+                    field == "developer_text" and anchor.startswith("Застройщик или технический заказчик")],
+    }
+    mapping = forms.Mapping.model_validate(saved)
+    forms.validate_mapping(original, "Старый.docx", mapping, "aosr")
+    content = forms.filled(original, "Старый.docx", mapping, {"works": "Заполнение по прежней карте"})
+    doc = Word(io.BytesIO(content))
+    assert any(p.text == "Выполненные работы: Заполнение по прежней карте" for p in forms.paragraphs(doc))
+
+
+def test_aosr_slot_span_cannot_overwrite_label_or_overlap_numeric_address():
+    original = _aosr_precision_doc("inline")
+    mapping, _, _ = forms.prepare_aosr(original, "Сроки.docx", None)
+    entry = next(entry for entry in mapping.entries if entry.field == "work_start")
+    paragraph, start, end = forms.span_address(entry.target)
+    corrupted = entry.model_copy(update={"target": f"{paragraph}:{start - 1}:{end}"})
+    entries = [corrupted if item.target == entry.target else item for item in mapping.entries]
+    with pytest.raises(ValueError, match="не совпадает с заполнителем"):
+        forms.validate_mapping(original, "Сроки.docx", mapping.model_copy(update={"entries": entries}), "aosr")
+    overlapping = entry.model_copy(update={"target": str(paragraph), "mode": "replace"})
+    with pytest.raises(ValueError, match="пересекаются"):
+        forms.validate_mapping(original, "Сроки.docx", mapping.model_copy(update={"entries": [*mapping.entries, overlapping]}), "aosr")
+
+
+def test_aosr_two_slots_in_same_run_allow_multiline_value_on_right():
+    doc = Word()
+    doc.add_paragraph("Рабочая документация: ______   Материалы: ______").runs[0].bold = True
+    source = io.BytesIO()
+    doc.save(source)
+    original = source.getvalue()
+    mapping, _, _ = forms.prepare_aosr(original, "Бланк.docx", None)
+    output = forms.filled(original, "Бланк.docx", mapping, {
+        "project_docs": "РД-21", "materials": ["Кабель", "Лоток"],
+    })
+    p = Word(io.BytesIO(output)).paragraphs[0]
+    assert p.text == "Рабочая документация: РД-21   Материалы: Кабель\nЛоток"
+    assert p.runs[0].bold

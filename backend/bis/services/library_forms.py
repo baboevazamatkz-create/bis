@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import io
+import json
 import re
 from collections import Counter, defaultdict
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -82,6 +83,7 @@ REPRESENTATIVE_FIELDS = {f'representative_{role}' for role, meta in REPRESENTATI
 
 SLOT = re.compile(r'_{2,}')
 TOKEN = re.compile(r'{{\s*(\w+)\s*}}')
+BLANK = re.compile(f'{SLOT.pattern}|{TOKEN.pattern}')
 
 
 class Entry(BaseModel):
@@ -184,23 +186,104 @@ def aosr_target_mode(anchor):
     return 'append'
 
 
-def prepare_aosr(data, filename, get_gateway):
-    fmt, places = targets(data, filename, existing_parts_only=True)
-    if fmt != 'docx':
+@dataclass(frozen=True)
+class BlankLocation:
+    target: str
+    label: str
+    field: str | None = None
+
+
+def _blank_locations(lines, places):
+    from docx.oxml.ns import qn
+
+    from bis.services.aosr_example import adjacent_cell_paragraph
+
+    numbers = {p._p: index for index, p in enumerate(lines)}
+    locations = defaultdict(list)
+    for index, paragraph in enumerate(lines):
+        target, anchor = str(index), paragraph.text
+        matches = list(BLANK.finditer(anchor))
+        if len(matches) > 1:
+            del places[target]
+            previous = 0
+            for match in matches:
+                slot = f'{index}:{match.start()}:{match.end()}'
+                label = anchor[previous:match.start()].strip(' 	:：;,')
+                places[slot] = anchor
+                locations[paragraph._p].append(BlankLocation(slot, label, match[1]))
+                previous = match.end()
+            continue
+        if matches:
+            match = matches[0]
+            label = (anchor[:match.start()] + anchor[match.end():]).strip() if match[1] is None else ''
+            locations[paragraph._p].append(BlankLocation(target, label, match[1]))
+            continue
+        if not anchor.strip():
+            continue
+        right = numbers.get(adjacent_cell_paragraph(paragraph))
+        if right is not None:
+            empty = lines[right]
+            if (not empty.text and all(child.tag in {qn('w:pPr'), qn('w:r')} for child in empty._p)
+                    and all(node.tag in {qn('w:rPr'), qn('w:t')} for run in empty.runs for node in run._r)):
+                del places[target]
+                locations[paragraph._p].append(BlankLocation(str(right), anchor.strip()))
+                continue
+        if not _is_heading(paragraph) and paragraph._p.getparent().tag != qn('w:tc'):
+            locations[paragraph._p].append(BlankLocation(target, anchor.strip()))
+    return locations
+
+
+def _is_heading(paragraph):
+    style = paragraph.style
+    return style is not None and (style.style_id.startswith('Heading') or style.style_id == 'Title')
+
+
+def _blank_context(lines, locations):
+    from docx.oxml.ns import qn
+
+    paragraphs_by_node = {p._p: p for p in lines}
+    roots = dict.fromkeys(p._p.getroottree().getroot() for p in lines)
+    for root in roots:
+        section, group = '', []
+        for node in root.iter(qn('w:p')):
+            if node in paragraphs_by_node and _is_heading(paragraphs_by_node[node]):
+                yield section, group
+                section, group = ' '.join(BLANK.sub('', paragraphs_by_node[node].text).split())[:120], []
+            group.extend(locations.get(node, ()))
+        yield section, group
+
+
+def blank_target_mode(target, anchor):
+    return 'slot_span' if ':' in target else aosr_target_mode(anchor)
+
+
+def prepare_aosr(data, filename, get_gateway, *, target_labels=None):
+    from docx import Document
+
+    if not filename.lower().endswith('.docx'):
         raise ValueError('Настройка полей АОСР поддерживает DOCX')
+    lines = paragraphs(Document(io.BytesIO(data)), existing_parts_only=True)
+    places = {str(index): p.text for index, p in enumerate(lines)}
     entries, origins, ambiguous = {}, {}, {}
-    for target, anchor in places.items():
-        tokens = TOKEN.findall(anchor)
-        slots = list(SLOT.finditer(anchor))
-        label = SLOT.sub('', anchor) if len(slots) == 1 else anchor
-        normalized = ' '.join(label.split()).rstrip(':').strip().casefold()
-        label_key = re.sub(r'^\d+[.)]\s+', '', normalized)
-        field = tokens[0] if len(tokens) == 1 else AOSR_LABELS.get(label_key) if not tokens else None
-        if field in AOSR_FIELDS:
-            entries[target] = Entry(field=field, target=target, anchor=anchor, mode=aosr_target_mode(anchor))
-            origins[target] = 'rule'
-        elif not tokens and normalized and (len(slots) == 1 or anchor.rstrip().endswith(':')):
-            ambiguous[target] = label.strip()[:240]
+    locations = _blank_locations(lines, places)
+    for section, group in _blank_context(lines, locations):
+        for index, location in enumerate(group):
+            target, label = location.target, location.label
+            anchor = places[target]
+            normalized = ' '.join(label.split()).rstrip(':：').strip().casefold()
+            key = re.sub(r'^\d+[.)]\s+', '', normalized)
+            field = location.field if location.field is not None else AOSR_LABELS.get(key)
+            mode = blank_target_mode(target, anchor)
+            if target_labels is not None and (mode == 'slot_span' or not anchor):
+                target_labels[target] = label[:160] or 'Пропуск без подписи'
+            if field in AOSR_FIELDS:
+                entries[target] = Entry(field=field, target=target, anchor=anchor, mode=mode)
+                origins[target] = 'rule'
+            elif location.field is None and normalized and (mode != 'append' or not anchor):
+                nearby = [other.label[:100].rstrip(':：') for other in group[max(0, index - 2):index + 3]
+                          if other.target != target and other.label and
+                          (blank_target_mode(other.target, places[other.target]) != 'append' or not places[other.target])]
+                ambiguous[target] = {'target': target, 'label': label[:160], 'neighbours': nearby, 'section': section}
 
     if ambiguous:
         task = 'executive_document'
@@ -212,9 +295,9 @@ def prepare_aosr(data, filename, get_gateway):
         candidates = dict(list(ambiguous.items())[:80])
         if providers:
             text_gateway = replace(gateway, entries={name: gateway.entries[name] for name in providers})
-            result = extract(text_gateway, AOSRProposal, '\n'.join(f'{target}: {label}' for target, label in candidates.items()),
+            result = extract(text_gateway, AOSRProposal, '\n'.join(json.dumps(item, ensure_ascii=False) for item in candidates.values()),
                 task=task, retries=0, instructions='Сопоставь неоднозначные подписи АОСР. '
-                'target — адрес из списка подписей. Сомнительные пропускай. Допустимые field: ' +
+                'target — адрес из записи JSON. Соседние подписи и заголовок только уточняют смысл. Сомнительные пропускай. Допустимые field: ' +
                 ', '.join(f'{field} ({label})' for field, label in AOSR_FIELDS.items())).data
             if result:
                 counts = Counter(pair.target for pair in result.entries)
@@ -223,9 +306,9 @@ def prepare_aosr(data, filename, get_gateway):
                         continue
                     anchor = places[pair.target]
                     entries[pair.target] = Entry(field=pair.field, target=pair.target, anchor=anchor,
-                        mode=aosr_target_mode(anchor))
+                        mode=blank_target_mode(pair.target, anchor))
                     origins[pair.target] = 'model'
-    return Mapping(format=fmt, entries=list(entries.values()), profile='aosr_docx'), origins, places
+    return Mapping(format='docx', entries=list(entries.values()), profile='aosr_docx'), origins, places
 
 
 def prepare_aosr_example(data, filename):
@@ -262,6 +345,10 @@ def preview_aosr(data, filename, mapping):
     validate_mapping(data, filename, mapping, 'aosr')
     samples = {field: 'ПРИМЕР: ' + title for field, title in EXAMPLE_FIELDS.items()}
     samples['clear_example_value'] = ''
+    date_examples = {'work_start': '12.01.2026', 'work_end': '15.01.2026', 'date': '17.01.2026'}
+    for entry in mapping.entries:
+        if entry.mode == 'slot_span' and entry.field in date_examples:
+            samples[entry.field] = date_examples[entry.field]
     content = filled(data, filename, mapping, samples)
     _, places = targets(content, filename, existing_parts_only=True)
     for entry in mapping.entries:
@@ -288,8 +375,8 @@ def validate_mapping(data, filename, mapping, kind):
     spans = defaultdict(list)
     for e in mapping.entries:
         supported_slot = aosr_docx and e.mode in ('slot', 'token') and e.mode == aosr_target_mode(e.anchor)
-        is_span = aosr_docx and e.mode == 'span'
-        allowed_fields = EXAMPLE_FIELDS if is_span else AOSR_FIELDS if aosr_docx else FIELDS
+        is_span = aosr_docx and e.mode in ('span', 'slot_span')
+        allowed_fields = EXAMPLE_FIELDS if is_span and e.mode == 'span' else AOSR_FIELDS if aosr_docx else FIELDS
         if (e.field not in allowed_fields or e.target in used
                 or not (e.mode in ('append', 'replace') or supported_slot or is_span)):
             raise ValueError('Неизвестное поле, повтор адреса или недопустимый способ заполнения')
@@ -299,6 +386,8 @@ def validate_mapping(data, filename, mapping, kind):
             if (places.get(str(paragraph)) != e.anchor or not 0 <= start < end <= len(e.anchor)
                     or not e.anchor[start:end].strip()):
                 raise ValueError('Значение не найдено или исходный пример изменился: ' + e.target)
+            if e.mode == 'slot_span' and not any(match.span() == (start, end) for match in BLANK.finditer(e.anchor)):
+                raise ValueError('Фрагмент не совпадает с заполнителем: ' + e.target)
             spans[str(paragraph)].append((start, end))
         elif mapping.format == 'pdf_coordinates':
             parts = e.target.split(':')
@@ -371,18 +460,21 @@ def replace_paragraph_ranges(paragraph, anchor, target, ranges):
     if ''.join(run.text for run in runs) != anchor:
         raise ValueError('Нельзя безопасно заменить текст в сложном абзаце: ' + target)
     text_nodes = {qn('w:rPr'), qn('w:t'), qn('w:tab')}
-    for start, end, value in sorted(ranges, reverse=True):
-        offset = 0
-        inserted = False
-        for run in runs:
-            original = run.text
-            next_offset = offset + len(original)
-            if start < next_offset and end > offset and original:
-                if any(node.tag not in text_nodes for node in run._r):
-                    raise ValueError('Заполнитель пересекается с нетекстовым объектом: ' + target)
-                run.text = original[:max(0, start - offset)] + (value if not inserted else '') + original[end - offset:]
-                inserted = True
-            offset = next_offset
+    ordered = sorted(ranges, reverse=True)
+    offset = 0
+    for run in runs:
+        original = run.text
+        next_offset = offset + len(original)
+        changes = [(start, end, value) for start, end, value in ordered if start < next_offset and end > offset]
+        if original and changes:
+            if any(node.tag not in text_nodes for node in run._r):
+                raise ValueError('Заполнитель пересекается с нетекстовым объектом: ' + target)
+            replacement = original
+            for start, end, value in changes:
+                local_start, local_end = max(0, start - offset), end - offset
+                replacement = replacement[:local_start] + (value if start >= offset else '') + replacement[local_end:]
+            run.text = replacement
+        offset = next_offset
 
 
 def filled(data, filename, mapping, values):
@@ -401,7 +493,7 @@ def filled(data, filename, mapping, values):
         lines = paragraphs(doc, existing_parts_only=mapping.profile == 'aosr_docx')
         spans = defaultdict(list)
         for e in mapping.entries:
-            if e.mode == 'span':
+            if e.mode in ('span', 'slot_span'):
                 index, start, end = span_address(e.target)
                 value = '' if e.field == 'clear_example_value' else value_text(values.get(e.field))
                 spans[index].append((start, end, value))
@@ -418,7 +510,7 @@ def filled(data, filename, mapping, values):
         for index, ranges in spans.items():
             paragraph = lines[index]
             replace_paragraph_ranges(paragraph, paragraph.text, str(index), ranges)
-        if spans:
+        if any(e.mode == 'span' for e in mapping.entries):
             props = doc.core_properties
             for name in ('author', 'last_modified_by', 'comments', 'title', 'subject', 'keywords', 'category', 'identifier'):
                 setattr(props, name, '')
@@ -428,7 +520,7 @@ def filled(data, filename, mapping, values):
                     del rels[rel_id]
         if any('{{' in p.text or '{%' in p.text for p in lines):
             if mapping.profile == 'aosr_docx':
-                raise ValueError('В бланке остались несопоставленные заполнители. Для АОСР используйте один заполнитель на абзац.')
+                raise ValueError('В бланке остались несопоставленные заполнители. Проверьте карту полей.')
             raise ValueError('В бланке остались несопоставленные заполнители')
         doc.save(out)
     elif mapping.format == 'xlsx':

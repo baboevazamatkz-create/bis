@@ -14,6 +14,7 @@ interface PreparedForm extends FormMapping {
   fields?: Record<string, string>;
   origins?: Record<string, string>;
   modes?: Record<string, string>;
+  target_labels?: Record<string, string>;
   required?: string[];
   alternatives?: Record<string, string[]>;
   example?: boolean;
@@ -36,15 +37,18 @@ function AosrFields({ mapping, busy, onChange }: {
   const label = (target: string) => {
     const [paragraph, start, end] = target.split(':').map(Number);
     const anchor = mapping.targets[target] ?? '';
-    const text = mapping.example ? Array.from(anchor).slice(start, end).join('') : anchor;
-    return `Абзац ${paragraph + 1} · ${text.trim() || 'пустой абзац'}`;
+    const sourceLabel = mapping.target_labels?.[target];
+    if (sourceLabel && !anchor) return `Пустая ячейка · ${sourceLabel}`;
+    const text = mapping.example ? Array.from(anchor).slice(start, end).join('') : sourceLabel ?? anchor;
+    const position = mapping.modes?.[target] === 'slot_span' ? `, пропуск с позиции ${start + 1}` : '';
+    return `Абзац ${paragraph + 1}${position} · ${text.trim() || 'пустой абзац'}`;
   };
   const fieldOptions = fields.map(([field, title]) => <option key={field} value={field}>{title}</option>);
   return <fieldset disabled={busy}>
     <legend>Соответствия полей АОСР</legend>
     <p className="small muted">{mapping.example
       ? 'Текст без соответствий и изображения останутся как в примере. Проверьте пробный DOCX. Лишние значения можно сопоставить с «Очистить значение из примера».'
-      : 'Выберите одно поле для каждого абзаца. Размещайте отдельные заполнители в отдельных абзацах.'}</p>
+      : 'Проверьте реквизит для каждого пропуска или пустой ячейки.'}</p>
     {mapping.entries.map((entry) => <div key={entry.target} className="row">
       <label className="field"><span>{label(entry.target)}{mapping.origins?.[entry.target] === 'model' ? ' · предложение ИИ' : ''}</span>
         <select value={entry.field} onChange={(event) => onChange(mapping.entries.map((row) =>
@@ -62,7 +66,7 @@ function AosrFields({ mapping, busy, onChange }: {
         onChange([...mapping.entries, { target, field: missing[0] ?? (mapping.example ? 'clear_example_value' : fields[0][0]),
           anchor: mapping.targets[target], mode: mapping.modes?.[target] ?? 'append' }]);
       }}>
-        <option value="">{mapping.example ? 'Выберите значение из примера' : 'Выберите абзац бланка'}</option>
+        <option value="">{mapping.example ? 'Выберите значение из примера' : 'Выберите место в бланке'}</option>
         {rows.filter(([target]) => !used.has(target)).map(([target]) => <option key={target} value={target}>{label(target)}</option>)}
       </select>
     </label>}

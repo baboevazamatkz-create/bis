@@ -296,15 +296,16 @@ def prepare(version_id: uuid.UUID, kind: Literal['aosr'] | None = None, example:
         raw = get_storage().get(v.file_key)
         if example or kind == 'aosr' or (v.form_kind == 'aosr' and item.relative_path.lower().endswith('.docx')):
             check_template_version(raw, v)
+            target_labels: dict[str, str] = {}
             if example:
                 mapping, origins, places = forms.prepare_aosr_example(raw, item.relative_path)
             else:
-                mapping, origins, places = forms.prepare_aosr(raw, item.relative_path, get_gateway)
+                mapping, origins, places = forms.prepare_aosr(raw, item.relative_path, get_gateway, target_labels=target_labels)
             return {**mapping.model_dump(), 'targets': places, 'origins': origins, 'example': example,
-                    'fields': forms.EXAMPLE_FIELDS if example else forms.AOSR_FIELDS,
+                    'fields': forms.EXAMPLE_FIELDS if example else forms.AOSR_FIELDS, 'target_labels': target_labels,
                     'required': sorted(forms.REQUIRED['aosr']),
                     'alternatives': {'representatives': sorted(forms.REPRESENTATIVE_FIELDS)} if example else {},
-                    'modes': {target: 'span' if example else forms.aosr_target_mode(anchor)
+                    'modes': {target: 'span' if example else forms.blank_target_mode(target, anchor)
                               for target, anchor in places.items()}}
         mapping = forms.prepare(raw, item.relative_path, get_gateway())
     except ValueError as exc:
