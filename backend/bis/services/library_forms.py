@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import io
 import re
-from collections import Counter
+from collections import Counter, defaultdict
 from copy import deepcopy
 from dataclasses import replace
 from typing import Literal
@@ -11,6 +11,8 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
+from bis.documents.aosr import REPRESENTATIVE_ROLES
+from bis.documents.common import short_name
 from bis.documents.templates import template_context
 from bis.llm.extract import extract
 from bis.llm.types import LLMError
@@ -59,6 +61,25 @@ AOSR_LABELS = {
     'разрешается производство последующих работ по': 'next_works',
     **{title.casefold(): field for field, title in AOSR_FIELDS.items()},
 }
+EXAMPLE_FIELDS = {
+    **AOSR_FIELDS,
+    'performer_name': 'Наименование исполнителя работ',
+    'copies': 'Число экземпляров',
+    'attachment_list': 'Список приложений с номерами',
+    'clear_example_value': 'Очистить значение из примера',
+    **{f'representative_{role}': meta['title'] for role, meta in REPRESENTATIVE_ROLES.items()},
+    **{f'signature_{role}': f'Расшифровка подписи · {meta["title"]}' for role, meta in REPRESENTATIVE_ROLES.items()},
+}
+EXAMPLE_LABELS = {
+    **AOSR_LABELS,
+    'номер акта': 'number',
+    'дата акта': 'date',
+    'застройщик (технический заказчик)': 'developer_text',
+    'произвели осмотр работ, выполненных': 'performer_name',
+    **{meta['title'].casefold(): f'representative_{role}' for role, meta in REPRESENTATIVE_ROLES.items()},
+}
+REPRESENTATIVE_FIELDS = {f'representative_{role}' for role, meta in REPRESENTATIVE_ROLES.items() if meta['required']}
+
 SLOT = re.compile(r'_{2,}')
 TOKEN = re.compile(r'{{\s*(\w+)\s*}}')
 
@@ -207,14 +228,46 @@ def prepare_aosr(data, filename, get_gateway):
     return Mapping(format=fmt, entries=list(entries.values()), profile='aosr_docx'), origins, places
 
 
+def prepare_aosr_example(data, filename):
+    from docx import Document
+
+    from bis.services.aosr_example import check_source, find_values
+
+    if not filename.lower().endswith('.docx'):
+        raise ValueError('Настройка полей АОСР поддерживает DOCX')
+    check_source(data)
+    lines = paragraphs(Document(io.BytesIO(data)), existing_parts_only=True)
+    candidates = find_values(lines, EXAMPLE_LABELS)
+    places = {target: anchor for target, (anchor, _) in candidates.items()}
+    entries = [Entry(field=field, target=target, anchor=anchor, mode='span')
+               for target, (anchor, field) in candidates.items() if field]
+    return Mapping(format='docx', entries=entries, profile='aosr_docx'), dict.fromkeys(
+        (entry.target for entry in entries), 'rule'), places
+
+
+def span_address(target):
+    if not re.fullmatch(r'(?:0|[1-9][0-9]{0,8}):(?:0|[1-9][0-9]{0,8}):(?:0|[1-9][0-9]{0,8})', target):
+        raise ValueError('Недопустимый адрес значения: ' + target)
+    return tuple(map(int, target.split(':')))
+
+
+def missing_fields(kind, fields, *, aosr_docx=False):
+    missing = REQUIRED[kind] - fields
+    if aosr_docx and fields >= REPRESENTATIVE_FIELDS:
+        missing.discard('representatives')
+    return missing
+
+
 def preview_aosr(data, filename, mapping):
     validate_mapping(data, filename, mapping, 'aosr')
-    samples = {field: 'ПРИМЕР: ' + title for field, title in AOSR_FIELDS.items()}
+    samples = {field: 'ПРИМЕР: ' + title for field, title in EXAMPLE_FIELDS.items()}
+    samples['clear_example_value'] = ''
     content = filled(data, filename, mapping, samples)
     _, places = targets(content, filename, existing_parts_only=True)
     for entry in mapping.entries:
-        if entry.field in REQUIRED['aosr'] and samples[entry.field] not in places.get(entry.target, ''):
-            raise ValueError('Пробное заполнение не внесло обязательное поле: ' + FIELDS[entry.field])
+        paragraph_index = entry.target.partition(':')[0]
+        if samples[entry.field] not in places.get(paragraph_index, ''):
+            raise ValueError('Пробное заполнение не внесло поле: ' + EXAMPLE_FIELDS[entry.field])
     return content
 
 
@@ -222,19 +275,32 @@ def validate_mapping(data, filename, mapping, kind):
     if kind not in REQUIRED:
         raise ValueError('Вид формы пока не поддерживает автозаполнение')
     aosr_docx = mapping.profile == 'aosr_docx'
+    if aosr_docx and any(entry.mode == 'span' for entry in mapping.entries):
+        from bis.services.aosr_example import check_source
+
+        check_source(data)
     fmt, places = targets(data, filename, existing_parts_only=aosr_docx)
     if mapping.format not in (fmt, 'pdf_coordinates' if fmt == 'pdf' else fmt):
         raise ValueError('Формат карты не соответствует исходному файлу')
     if aosr_docx and (kind != 'aosr' or fmt != 'docx'):
         raise ValueError('Эта карта предназначена для бланка АОСР в DOCX')
     used = set()
+    spans = defaultdict(list)
     for e in mapping.entries:
         supported_slot = aosr_docx and e.mode in ('slot', 'token') and e.mode == aosr_target_mode(e.anchor)
-        if (e.field not in (AOSR_FIELDS if aosr_docx else FIELDS) or e.target in used
-                or not (e.mode in ('append', 'replace') or supported_slot)):
+        is_span = aosr_docx and e.mode == 'span'
+        allowed_fields = EXAMPLE_FIELDS if is_span else AOSR_FIELDS if aosr_docx else FIELDS
+        if (e.field not in allowed_fields or e.target in used
+                or not (e.mode in ('append', 'replace') or supported_slot or is_span)):
             raise ValueError('Неизвестное поле, повтор адреса или недопустимый способ заполнения')
         used.add(e.target)
-        if mapping.format == 'pdf_coordinates':
+        if is_span:
+            paragraph, start, end = span_address(e.target)
+            if (places.get(str(paragraph)) != e.anchor or not 0 <= start < end <= len(e.anchor)
+                    or not e.anchor[start:end].strip()):
+                raise ValueError('Значение не найдено или исходный пример изменился: ' + e.target)
+            spans[str(paragraph)].append((start, end))
+        elif mapping.format == 'pdf_coordinates':
             parts = e.target.split(':')
             if len(parts) != 5:
                 raise ValueError('Адрес PDF: номер страницы:x:y:ширина:высота (в пунктах от верхнего края)')
@@ -260,7 +326,11 @@ def validate_mapping(data, filename, mapping, kind):
                 raise ValueError('Некорректная или непустая ячейка Excel') from exc
         elif e.target not in places or places[e.target] != e.anchor:
             raise ValueError('Поле не найдено или исходный бланк изменился: ' + e.target)
-    missing = REQUIRED[kind] - {e.field for e in mapping.entries}
+    for paragraph, ranges in spans.items():
+        ranges.sort()
+        if paragraph in used or any(left[1] > right[0] for left, right in zip(ranges, ranges[1:], strict=False)):
+            raise ValueError('Поля пересекаются в абзаце: ' + paragraph)
+    missing = missing_fields(kind, {e.field for e in mapping.entries}, aosr_docx=aosr_docx)
     if missing:
         raise ValueError('Не сопоставлены обязательные поля: ' + ', '.join(FIELDS[k] for k in sorted(missing)))
 
@@ -278,8 +348,6 @@ def value_text(value):
 
 
 def fill_paragraph(paragraph, entry, value):
-    from docx.oxml.ns import qn
-
     token = re.compile(r'{{\s*' + re.escape(entry.field) + r'\s*}}')
     matches = list((TOKEN if entry.mode == 'token' else token).finditer(entry.anchor))
     if not matches and entry.mode == 'slot':
@@ -293,10 +361,17 @@ def fill_paragraph(paragraph, entry, value):
         if runs and runs[-1]._r.rPr is not None:
             added._r.insert(0, deepcopy(runs[-1]._r.rPr))
         return
-    if ''.join(run.text for run in runs) != entry.anchor:
-        raise ValueError('Нельзя безопасно заменить текст в сложном абзаце: ' + entry.target)
-    text_nodes = {qn('w:rPr'), qn('w:t')}
-    for start, end in reversed(ranges):
+    replace_paragraph_ranges(paragraph, entry.anchor, entry.target, [(start, end, value) for start, end in ranges])
+
+
+def replace_paragraph_ranges(paragraph, anchor, target, ranges):
+    from docx.oxml.ns import qn
+
+    runs = paragraph.runs
+    if ''.join(run.text for run in runs) != anchor:
+        raise ValueError('Нельзя безопасно заменить текст в сложном абзаце: ' + target)
+    text_nodes = {qn('w:rPr'), qn('w:t'), qn('w:tab')}
+    for start, end, value in sorted(ranges, reverse=True):
         offset = 0
         inserted = False
         for run in runs:
@@ -304,7 +379,7 @@ def fill_paragraph(paragraph, entry, value):
             next_offset = offset + len(original)
             if start < next_offset and end > offset and original:
                 if any(node.tag not in text_nodes for node in run._r):
-                    raise ValueError('Заполнитель пересекается с нетекстовым объектом: ' + entry.target)
+                    raise ValueError('Заполнитель пересекается с нетекстовым объектом: ' + target)
                 run.text = original[:max(0, start - offset)] + (value if not inserted else '') + original[end - offset:]
                 inserted = True
             offset = next_offset
@@ -324,7 +399,13 @@ def filled(data, filename, mapping, values):
         from docx import Document
         doc = Document(io.BytesIO(data))
         lines = paragraphs(doc, existing_parts_only=mapping.profile == 'aosr_docx')
+        spans = defaultdict(list)
         for e in mapping.entries:
+            if e.mode == 'span':
+                index, start, end = span_address(e.target)
+                value = '' if e.field == 'clear_example_value' else value_text(values.get(e.field))
+                spans[index].append((start, end, value))
+                continue
             paragraph = lines[int(e.target)]
             if mapping.profile == 'aosr_docx':
                 fill_paragraph(paragraph, e, value_text(values.get(e.field)))
@@ -334,6 +415,17 @@ def filled(data, filename, mapping, values):
                     run.text = ''
             else:
                 paragraph.add_run(text(e))
+        for index, ranges in spans.items():
+            paragraph = lines[index]
+            replace_paragraph_ranges(paragraph, paragraph.text, str(index), ranges)
+        if spans:
+            props = doc.core_properties
+            for name in ('author', 'last_modified_by', 'comments', 'title', 'subject', 'keywords', 'category', 'identifier'):
+                setattr(props, name, '')
+            rels = doc.part.package.rels
+            for rel_id, rel in list(rels.items()):
+                if rel.reltype.endswith('/thumbnail'):
+                    del rels[rel_id]
         if any('{{' in p.text or '{%' in p.text for p in lines):
             if mapping.profile == 'aosr_docx':
                 raise ValueError('В бланке остались несопоставленные заполнители. Для АОСР используйте один заполнитель на абзац.')
@@ -450,8 +542,13 @@ def render(db, storage, org_id, kind, data, object_id=None, *, organization_only
     validate_mapping(original, item.relative_path, mapping, kind)
     values = template_context(data) if isinstance(data, BaseModel) else data
     if isinstance(data, BaseModel) and hasattr(data, "representatives"):
-        from bis.documents.aosr import REPRESENTATIVE_ROLES
-
+        performer = getattr(data, 'performer', None) or getattr(data, 'builder', None)
+        values['performer_name'] = performer.name if performer else ''
+        values['attachment_list'] = [f'{i}. {item}' for i, item in enumerate(getattr(data, 'attachments', []), 1)]
+        values.update({f'signature_{role}': f'{person.position} {short_name(person.full_name)}'
+                       for role, person in data.representatives.items()})
+        values.update({f'representative_{role}': person.format(REPRESENTATIVE_ROLES.get(role, {}).get('nrs', True))
+                       for role, person in data.representatives.items()})
         values["representatives"] = "\n".join(
             REPRESENTATIVE_ROLES.get(role, {}).get("title", role) + ": " + person.format()
             for role, person in data.representatives.items())

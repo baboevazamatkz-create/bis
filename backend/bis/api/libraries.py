@@ -286,7 +286,7 @@ def original(version_id: uuid.UUID, db: Session = Depends(get_db), user: User = 
 
 
 @router.post('/versions/{version_id}/prepare')
-def prepare(version_id: uuid.UUID, kind: Literal['aosr'] | None = None,
+def prepare(version_id: uuid.UUID, kind: Literal['aosr'] | None = None, example: bool = False,
             db: Session = Depends(get_db), user: User = Depends(require('settings:write'))):
     v, item, _ = version_owned(db, user, version_id, write=True)
     if v.approved_at:
@@ -294,12 +294,18 @@ def prepare(version_id: uuid.UUID, kind: Literal['aosr'] | None = None,
     from bis.llm.gateway import get_gateway
     try:
         raw = get_storage().get(v.file_key)
-        if kind == 'aosr' or v.form_kind == 'aosr' and item.relative_path.lower().endswith('.docx'):
+        if example or kind == 'aosr' or (v.form_kind == 'aosr' and item.relative_path.lower().endswith('.docx')):
             check_template_version(raw, v)
-            mapping, origins, places = forms.prepare_aosr(raw, item.relative_path, get_gateway)
-            return {**mapping.model_dump(), 'targets': places, 'origins': origins, 'fields': forms.AOSR_FIELDS,
+            if example:
+                mapping, origins, places = forms.prepare_aosr_example(raw, item.relative_path)
+            else:
+                mapping, origins, places = forms.prepare_aosr(raw, item.relative_path, get_gateway)
+            return {**mapping.model_dump(), 'targets': places, 'origins': origins, 'example': example,
+                    'fields': forms.EXAMPLE_FIELDS if example else forms.AOSR_FIELDS,
                     'required': sorted(forms.REQUIRED['aosr']),
-                    'modes': {target: forms.aosr_target_mode(anchor) for target, anchor in places.items()}}
+                    'alternatives': {'representatives': sorted(forms.REPRESENTATIVE_FIELDS)} if example else {},
+                    'modes': {target: 'span' if example else forms.aosr_target_mode(anchor)
+                              for target, anchor in places.items()}}
         mapping = forms.prepare(raw, item.relative_path, get_gateway())
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc

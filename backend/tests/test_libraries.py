@@ -671,3 +671,159 @@ def test_aosr_slot_refuses_to_rewrite_a_run_with_a_page_break():
     mapping, _, _ = forms.prepare_aosr(data.getvalue(), "Учебный.docx", None)
     with pytest.raises(ValueError, match="нетекстовым объектом"):
         forms.preview_aosr(data.getvalue(), "Учебный.docx", mapping)
+
+
+def _filled_aosr_example():
+    doc = Word()
+    header = doc.add_paragraph()
+    header.add_run("Акт освидетельствования скрытых работ № ").bold = True
+    header.add_run("ОБРАЗЕЦ-99").italic = True
+    header.add_run(" от ").bold = True
+    header.add_run("03.02.2024").underline = True
+    table = doc.add_table(rows=0, cols=2)
+    table.style = "Table Grid"
+    for field in sorted(forms.REQUIRED["aosr"] - {"number", "date", "works", "norms"}):
+        left, right = table.add_row().cells
+        left.paragraphs[0].add_run(forms.FIELDS[field]).bold = True
+        right.paragraphs[0].add_run(f"СТАРОЕ-{field}").italic = True
+    doc.add_paragraph("1. К освидетельствованию предъявлены следующие работы:\tСТАРОЕ-works")
+    p = doc.add_paragraph("6. Работы выполнены в соответствии с ")
+    p.add_run("СТАРОЕ-norms").underline = True
+    doc.add_paragraph("Защищаемая подпись: СТАТИЧЕСКИЙ ТЕКСТ")
+    result = io.BytesIO()
+    doc.save(result)
+    return result.getvalue()
+
+
+def test_filled_aosr_example_replaces_values_and_preserves_labels_and_styles():
+    original = _filled_aosr_example()
+    mapping, _, _ = forms.prepare_aosr_example(original, "Готовый акт.docx")
+    assert {entry.field for entry in mapping.entries} == forms.REQUIRED["aosr"]
+    preview = forms.preview_aosr(original, "Готовый акт.docx", mapping)
+    doc = Word(io.BytesIO(preview))
+    assert doc.paragraphs[0].text == "Акт освидетельствования скрытых работ № ПРИМЕР: Номер от ПРИМЕР: Дата составления"
+    assert doc.paragraphs[0].runs[0].bold and doc.paragraphs[0].runs[1].italic
+    assert doc.paragraphs[0].runs[-1].underline
+    assert doc.tables[0].style.name == "Table Grid"
+    assert all(row.cells[0].paragraphs[0].runs[0].bold and row.cells[1].paragraphs[0].runs[0].italic
+               for row in doc.tables[0].rows)
+    text = "\n".join(p.text for p in forms.paragraphs(doc))
+    assert text.count("ПРИМЕР: ") == len(forms.REQUIRED["aosr"])
+    assert "СТАРОЕ-" not in text and "ОБРАЗЕЦ-99" not in text and "03.02.2024" not in text
+    assert "работы:\tПРИМЕР: Выполненные работы" in text
+    assert "Защищаемая подпись: СТАТИЧЕСКИЙ ТЕКСТ" in text
+
+    first = mapping.entries[0]
+    bad = first.model_copy(update={"target": first.target.rsplit(":", 1)[0] + ":99999"})
+    with pytest.raises(ValueError):
+        forms.validate_mapping(original, "Готовый акт.docx",
+                               mapping.model_copy(update={"entries": [bad, *mapping.entries[1:]]}), "aosr")
+
+
+def test_filled_aosr_example_can_map_representatives_individually():
+    source = Word(io.BytesIO(_filled_aosr_example()))
+    row = next(row for row in source.tables[0].rows if row.cells[0].text == forms.FIELDS["representatives"])
+    for role, meta in forms.REPRESENTATIVE_ROLES.items():
+        if meta["required"]:
+            source.add_paragraph(meta["title"] + f": СТАРЫЙ-{role}")
+    row._tr.getparent().remove(row._tr)
+    original = io.BytesIO()
+    source.save(original)
+    mapping, _, _ = forms.prepare_aosr_example(original.getvalue(), "Готовый акт.docx")
+    assert {entry.field for entry in mapping.entries} >= forms.REPRESENTATIVE_FIELDS
+    preview = forms.preview_aosr(original.getvalue(), "Готовый акт.docx", mapping)
+    assert "СТАРЫЙ-" not in "\n".join(p.text for p in forms.paragraphs(Word(io.BytesIO(preview))))
+
+
+def test_filled_aosr_example_api_uses_approved_ranges(client, auth, db, demo, tmp_path, monkeypatch):
+    monkeypatch.setattr(get_settings(), "library_roots", [tmp_path])
+    filename = "Заполненный АОСР.docx"
+    original = _filled_aosr_example()
+    upload = client.post("/api/libraries/upload", headers=auth, data={"level": "organization"},
+                         files={"files": (filename, original)})
+    assert upload.status_code == 201, upload.text
+    connection_id = upload.json()["id"]
+    version_id = client.get(f"/api/libraries/{connection_id}/files", headers=auth).json()[0]["active_version_id"]
+    url = f"/api/libraries/versions/{version_id}"
+
+    def unavailable_model():
+        raise AssertionError("The example must be processed locally")
+
+    monkeypatch.setattr("bis.llm.gateway.get_gateway", unavailable_model)
+    prepared = client.post(url + "/prepare", headers=auth, params={"kind": "aosr", "example": "true"})
+    assert prepared.status_code == 200, prepared.text
+    review = prepared.json()
+    assert review["example"] and len(review["entries"]) == len(forms.REQUIRED["aosr"])
+    body = {"kind": "aosr", "mapping": {"format": review["format"], "entries": review["entries"]}}
+    preview = client.post(url + "/preview", headers=auth, json=body)
+    assert preview.status_code == 200, preview.text[:300]
+    body["preview_token"] = preview.headers["X-BIS-Form-Preview"]
+    response = client.post(url + "/approve", headers=auth, json=body)
+    assert response.status_code == 200, response.text
+    db.expire_all()
+    project = db.scalar(select(ConstructionObject).where(ConstructionObject.organization_id == demo.id))
+    generated = client.post("/api/documents/aosr", headers=auth, json={
+        "object_id": str(project.id), "works": "Новая прокладка кабеля", "project_docs": "РД-02",
+        "work_start": "2026-11-12", "work_end": "2026-11-13",
+    })
+    assert generated.status_code == 201, generated.text
+    doc = generated.json()
+    assert doc["data"]["library_form"]["version_id"] == version_id
+    file = client.get(f'/api/documents/{doc["id"]}/file', headers=auth)
+    assert file.status_code == 200
+    document = Word(io.BytesIO(file.content))
+    text = "\n".join(p.text for p in forms.paragraphs(document))
+    assert "Новая прокладка кабеля" in text
+    assert "СТАРОЕ-" not in text and "ОБРАЗЕЦ-99" not in text and "03.02.2024" not in text
+    assert document.sections[0].header.paragraphs[0].text == ""
+    assert client.get(url + "/file", headers=auth).content == original
+
+
+def test_filled_example_recognizes_stock_aosr_and_removes_old_signatory_names():
+    from bis.documents.aosr import AOSRData, Representative, render_aosr
+    from bis.documents.common import Party
+
+    data = AOSRData(
+        number="АОСР-99", date=dt.date(2024, 2, 3), object_name="Прежний объект",
+        developer=Party(name="Прежний заказчик"), builder=Party(name="Прежний подрядчик"),
+        works="Прежние работы", project_docs="Старый шифр", materials=["Старый материал"],
+        executive_docs=["Старая схема"], work_start=dt.date(2024, 1, 31), work_end=dt.date(2024, 2, 1),
+        norms=["Старый СП"], copies=22, attachments=["Старый лист", "Старая схема приложения"],
+        representatives={role: Representative(position="Инженер", full_name="Прежний Иван Иванович")
+                                              for role in forms.REPRESENTATIVE_ROLES},
+    )
+    original = render_aosr(data)
+    mapping, _, _ = forms.prepare_aosr_example(original, "Готовый акт.docx")
+    preview = forms.preview_aosr(original, "Готовый акт.docx", mapping)
+    text = "\n".join(p.text for p in forms.paragraphs(Word(io.BytesIO(preview))))
+    assert "Прежн" not in text and "Стары" not in text
+    assert "_______________ (подпись)" in text
+    assert "Старая схема приложения" not in text and "22 экземплярах" not in text
+
+
+def test_filled_example_does_not_guess_bare_number_or_adjacent_labeled_value():
+    doc = Word()
+    doc.add_paragraph("№ П-028")
+    left, middle, right = doc.add_table(rows=1, cols=3).rows[0].cells
+    left.text = "Материалы"
+    middle.text = "Начало работ: 01.02.2024"
+    right.text = "Лоток старого акта"
+    source = io.BytesIO()
+    doc.save(source)
+    mapping, _, _ = forms.prepare_aosr_example(source.getvalue(), "Готовый акт.docx")
+    assert {entry.field for entry in mapping.entries} == {"work_start"}
+
+
+@pytest.mark.parametrize("content_control", [False, True])
+def test_filled_example_rejects_hidden_text(content_control):
+    from docx.oxml import OxmlElement
+
+    doc = Word()
+    if content_control:
+        doc.element.body.insert(0, OxmlElement("w:sdt"))
+    else:
+        doc.add_paragraph().add_run("Скрытые реквизиты").font.hidden = True
+    source = io.BytesIO()
+    doc.save(source)
+    with pytest.raises(ValueError, match="скрытый текст"):
+        forms.prepare_aosr_example(source.getvalue(), "Готовый акт.docx")
