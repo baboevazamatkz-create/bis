@@ -22,13 +22,26 @@ def load_env(path: Path, *, prefer_file: bool = False) -> None:
         return
     from dotenv import dotenv_values
 
+    auto_login_values = []
     for key, value in dotenv_values(path, encoding='utf-8-sig').items():
         if value is None:
             continue
-        if prefer_file and key != 'BIS_WEB_DIR':
+        if prefer_file and key.upper() == "BIS_AUTO_LOGIN":
+            auto_login_values.append(value)
+        elif prefer_file and key != 'BIS_WEB_DIR':
             os.environ[key] = value
         else:
             os.environ.setdefault(key, value)
+    if auto_login_values:
+        from pydantic import TypeAdapter
+
+        aliases = [key for key in os.environ if key.upper() == "BIS_AUTO_LOGIN"]
+        boolean = TypeAdapter(bool)
+        values = auto_login_values + [os.environ[key] for key in aliases]
+        enabled_values = [boolean.validate_python(value) for value in values]
+        for key in aliases:
+            del os.environ[key]
+        os.environ["BIS_AUTO_LOGIN"] = "true" if all(enabled_values) else "false"
 
 
 def _pg_bin(name: str) -> str:
@@ -124,15 +137,18 @@ def start_database(data_dir: Path) -> str:
     return url
 
 
-def prepare(workdir: Path) -> Path:
+def prepare(workdir: Path, *, server_host: str | None = None) -> Path:
     """Окружение, база и миграции. Возвращает папку данных."""
+    from bis.config import get_settings, validate_server_settings
+
     os.chdir(workdir)
     load_env(workdir / ".env", prefer_file=True)
+    if server_host is not None:
+        get_settings.cache_clear()
+        validate_server_settings(server_host)
     os.environ['BIS_LOCAL_DIR'] = str(workdir)
     # pgvector из встроенной сборки падает на части процессоров — по умолчанию поиск полнотекстовый
     os.environ.setdefault("BIS_VECTOR_ENABLED", "false")
-    # без формы входа на своём компьютере (BIS_AUTO_LOGIN=false в .env — вернуть вход)
-    os.environ["BIS_AUTO_LOGIN"] = "true"  # local pilot deliberately has no login screen
     data = Path(os.environ.get("BIS_DATA_DIR") or (workdir / "data"))
     os.environ["BIS_DATABASE_URL"] = start_database(data)
     os.environ.setdefault("BIS_STORAGE_DIR", str(data / "files"))
@@ -146,8 +162,6 @@ def prepare(workdir: Path) -> Path:
             os.environ["BIS_FFMPEG"] = imageio_ffmpeg.get_ffmpeg_exe()
         except Exception:  # noqa: BLE001 — без ffmpeg не будет только распознавания голосовых
             pass
-    from bis.config import get_settings
-
     get_settings.cache_clear()
     from bis.cli import _alembic_upgrade
 
@@ -193,7 +207,8 @@ def run(workdir: Path, host: str, port: int) -> None:
     import uvicorn
 
     setup_log(workdir)
-    prepare(workdir)
+    prepare(workdir, server_host=host)
+    from bis.app import create_app
     from bis.config import get_settings
     from bis.db import SessionLocal
     from bis.jobs import load_all_jobs, worker
@@ -204,7 +219,6 @@ def run(workdir: Path, host: str, port: int) -> None:
         from bis.connectors.telegram import poll
 
         threading.Thread(target=poll, daemon=True, name="bis-telegram").start()
-    from bis.main import create_app
 
     print(f"\n  BIS работает: http://localhost:{port}   (остановить — закройте это окно или Ctrl+C)\n", flush=True)
     if os.environ.get("BIS_OPEN_BROWSER", "false").lower() in ("1", "true", "yes"):
@@ -223,4 +237,5 @@ def run(workdir: Path, host: str, port: int) -> None:
                     time.sleep(0.25)
 
         threading.Thread(target=open_when_ready, daemon=True, name="bis-open-browser").start()
-    uvicorn.run(create_app(), host=host, port=port, log_level="warning")
+    app = create_app(local_bind=host)
+    uvicorn.run(app, host=host, port=port, log_level="warning", proxy_headers=not app.state.local_auto_login)

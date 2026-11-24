@@ -1,20 +1,57 @@
 # BIS — запуск и разработка
 
-С 09.11.2026 основной интерфейс открывает блок ИД: `/#/id/overview`.
-Остальные направления вынесены в `/#/platform/feed`; подробности — [MODULES.md](MODULES.md).
+Входная точка интерфейса пилота — `/#/id/chat`. Действующие разделы и ограничения
+описаны в [текущем состоянии](CURRENT_STATE.md). Материалы об отдельных направлениях
+платформы сохраняются в [описании модулей](MODULES.md).
 
-Актуальные причины проблем с ответами, внесённые исправления и этапы развития:
-[Аудит интеллекта и план развития](INTELLIGENCE_AUDIT.md).
+Перед изменениями прочитайте [AGENTS.md](../AGENTS.md) и проверьте свежий HEAD
+`codex/pilot-readiness`. В новом клоне выберите рабочую ветку явно. В существующем
+клоне начните задачу от актуальной удалённой вершины в отдельной ветке.
 
-## Быстрый старт (Docker)
+## Первые проверки в чистом клоне
+
+Нужны Python 3.11+ и Node.js 22, как в CI для frontend. Эти команды выполняются
+без PostgreSQL, ключей провайдеров и установки Windows.
 
 ```bash
-cp deploy/.env.example deploy/.env          # задайте BIS_SECRET_KEY и пароли
-docker compose -f deploy/docker-compose.yml up -d --build
-docker compose -f deploy/docker-compose.yml exec api bis seed-demo
+git clone --branch codex/pilot-readiness https://github.com/baboevazamatkz-create/bis.git
+cd bis
+python3 deploy/check_repository_files.py
+(
+  cd backend
+  python -m venv .venv
+  . .venv/bin/activate
+  python -m pip install -e ".[dev]"
+  python -m ruff check bis tests guard_tests scripts/provision_test_database.py
+  python -m pytest guard_tests
+)
+(
+  cd frontend
+  npm ci
+  npm run build
+)
 ```
 
-Откройте http://localhost:8080. Демо-вход: `admin@demo.bis` / `demo12345`.
+Полный backend-набор запускайте только после подготовки [изолированного
+PostgreSQL](TEST_DATABASE.md). Виртуальное окружение `[dev]` включает MCP SDK
+для CAD-тестов. Для AutoCAD/nanoCAD через COM на Windows дополнительно нужен `[cad]`.
+
+Перед PR повторите проверку файлов после `git add`. Она читает содержимое
+из индекса Git и проверяет пути и известные признаки секретов. Для настройки
+берите публичный [пример окружения](../deploy/.env.example). Заполненный файл,
+резервные копии, оригиналы и результаты работы держите вне репозитория.
+Проверка дополняет правила игнорирования и не может распознать все варианты
+секретов или персональные данные в произвольном файле.
+
+## Docker и интерактивная разработка
+
+Compose описывает API, web, worker и PostgreSQL. Для сетевого запуска,
+включая Docker и запуск через Uvicorn, отключите `BIS_AUTO_LOGIN` и задайте
+случайный `BIS_SECRET_KEY` длиной не менее 32 символов. В рабочей ветке браузерная
+оболочка показывает ошибку, если `/api/auth/me` не вернул пользователя.
+Наличие API входа и демо-учётных записей само по себе не делает браузерный
+вход доступным. Статус сетевого запуска фиксируется в [текущем состоянии](CURRENT_STATE.md).
+Прежний серверный сценарий сохранён в [инструкции Yandex Cloud](INSTALL_YANDEX_CLOUD.md).
 
 Без ключей моделей система работает в **офлайн-режиме**: поиск по нормам с цитатами, реестры,
 формирование АОСР и писем по формам. Ответы в чате в этом режиме собираются из найденных фрагментов,
@@ -44,39 +81,43 @@ docker compose -f deploy/docker-compose.yml exec api bis seed-demo
 - YandexGPT (Yandex AI Studio): готовая конфигурация `deploy/config/llm.yandex.json` — YandexGPT Lite для диспетчера
   и чтения документов, YandexGPT Pro для ассистента и юриста. Переменные: `BIS_LLM_CONFIG_FILE=deploy/config/llm.yandex.json`,
   `YANDEX_API_KEY` (секретный ключ AI Studio, `AQVN…`), `YANDEX_FOLDER_ID` (каталог, `b1g…`). Сервисному аккаунту ключа
-  нужна роль `ai.languageModels.user` в каталоге. Проверка: `bis llm-check` или «ИИ-специалисты» → «Проверить модели».
+  нужна роль `ai.languageModels.user` в каталоге. Для проверки используйте `bis llm-check`.
 - Голос и сканы тем же ключом: `BIS_STT_PROVIDER=yandex` (SpeechKit, роль `ai.speechkit-stt.user`, нужен `ffmpeg`)
   и `BIS_OCR_PROVIDER=yandex` (Vision OCR, роль `ai.vision.user`). Голосовые режутся на части по 25 с; сканы PDF без
   текстового слоя и фото накладных, сертификатов, протоколов распознаются и передаются чтецу документов.
 - Claude (`"kind": "anthropic"`, модель `claude-opus-5-5`) подключается там, где сервис доступен легально.
   Серверный fallback при отказе модели включён.
 
-## Локальная разработка
+## Локальный API и Vite
 
-Нужны Python 3.11+, Node 20+ и PostgreSQL 16 с pgvector.
+Для ручной проверки API подготовьте отдельную пустую БД разработки PostgreSQL 16 с
+pgvector. Это отдельный контур от БД для автоматических тестов. Перед запуском из корня
+клона задайте `BIS_DEV_DATABASE_URL` с адресом этой БД. Команды миграции
+и демонаполнения пишут данные.
 
 ```bash
 cd backend
+export BIS_STORAGE_DIR="$(mktemp -d)"
 python -m venv .venv && . .venv/bin/activate
 pip install -e ".[dev]"
-export BIS_DATABASE_URL=postgresql+psycopg://bis:bis@localhost:5432/bis
-bis migrate && bis seed-demo
-uvicorn bis.main:app --reload          # API: http://localhost:8000/docs
-
-cd ../frontend && npm install && npm run dev   # http://localhost:5173
+export BIS_SECRET_KEY="$(python -c 'import secrets; print(secrets.token_hex(32))')"
+export BIS_DATABASE_URL="${BIS_DEV_DATABASE_URL:?Укажите адрес отдельной БД разработки}" &&
+  bis migrate && bis seed-demo &&
+  uvicorn bis.main:app --host 127.0.0.1 --reload
 ```
 
-Тесты с БД требуют отдельного одноразового PostgreSQL. См. [изоляцию тестовой БД](TEST_DATABASE.md).
-Проверки самой защиты без подключения к PostgreSQL запускаются из `backend` командой `python -m pytest guard_tests`.
-Набор зависимостей `[dev]` включает MCP SDK для CAD-тестов; для работы с AutoCAD/nanoCAD через COM
-на Windows установите также `[cad]`.
+Swagger доступен на `http://127.0.0.1:8000/docs`. Для разработки frontend
+запустите из `frontend/` команду `npm run dev -- --host 127.0.0.1`. Vite
+проксирует `/api` на `BIS_API_URL` или `http://localhost:8000`; ограничения
+браузерного входа действуют и здесь.
 
 ## Демо-страница без сервера
 
 Статическая демо-версия (интерфейс + снимок данных, записанный с работающего backend):
 
 ```bash
-# 1. свежая демо-база и запущенный API (BIS_DATABASE_URL, BIS_STORAGE_DIR, BIS_SECRET_KEY — одинаковые для шагов 1 и 2)
+# 1. Свежая демо-база и API. Используйте одинаковые BIS_DATABASE_URL, BIS_STORAGE_DIR и BIS_SECRET_KEY на шагах 1 и 2.
+export BIS_SECRET_KEY="$(python -c 'import secrets; print(secrets.token_hex(32))')"
 bis migrate && bis seed-demo && bis run-jobs && uvicorn bis.main:app --port 8000 &
 # 2. снимок: рабочий день через ИИ-конвейер (scripts/demo_ai_scenario.py: почта и Telegram с имитацией транспорта),
 #    затем действия (АОСР, КС-2/КС-3, М-29, схема, сверка ПД, чат, примеры для ленты) — настоящим API
@@ -91,7 +132,9 @@ cd frontend && VITE_DEMO=1 npx vite build --outDir dist-demo && node scripts/pac
 
 ## ИИ-конвейер и «Лента ИИ»
 
-Любой сигнал с объекта проходит один путь: `bis/ai/conveyor.py`.
+Общий конвейер `backend/bis/ai/conveyor.py` обслуживает API приёма, Telegram и почту.
+Для подготовки комплекта из рабочего места ПТО см. отдельный [конвейер ИД](EXECUTIVE_PIPELINE.md).
+Экран «Лента ИИ» относится к прежней оболочке платформы.
 
 1. **Приём** — `POST /api/intake` (файл и/или текст, необязательно `object_id`), Telegram, почта.
 2. **Восприятие** — голос → STT, фото → модель зрения (если подключена), документ → текст (PDF, DOCX, XLSX, EML, TXT, CSV).
@@ -99,7 +142,7 @@ cd frontend && VITE_DEMO=1 npx vite build --outDir dist-demo && node scripts/pac
 4. **Специалист** извлекает данные (модель по схеме, без модели — правила) и создаёт действия `AIAction`.
 5. **Политика самостоятельности** решает: выполнить сразу (`auto`, при уверенности ≥ 0,7) или предложить.
    По умолчанию сам: объёмы, расход, привязка сертификатов, поручения, замечания, АОСР, схемы, письма;
-   спрашивает: приход материалов, импорт договоров. Меняется в «ИИ-специалисты» или `PUT /api/ai/autonomy`.
+   спрашивает: приход материалов, импорт договоров. Настройка доступна через `PUT /api/ai/autonomy`.
 6. **Контролёр и инженер ПТО** проверяют выполненное и собирают документы.
 
 API: `GET /api/ai/feed?only=all|pending|issues`, `POST /api/ai/actions/{id}/review`
@@ -121,7 +164,7 @@ export BIS_PUBLIC_URL=https://bis.example.ru # ссылки на ленту в �
   `https://<сервер>/api/telegram/webhook` методом `setWebhook` с `secret_token`.
 - **Опрос** (закрытый контур, только исходящие): `bis telegram-poll`. Для полностью закрытого контура —
   локальный Bot API сервер и `BIS_TELEGRAM_API_BASE`.
-- Сотрудник: «Настройки» → «Подключить мой Telegram» → команда `/start <код>` боту.
+- Авторизованный сотрудник получает код через `POST /api/telegram/link` и отправляет боту `/start <код>`.
   Команды: `/объект ЖК-01`, `/ждут`, `/помощь`. В группе объекта выключите privacy mode бота.
 - Ботам доступны файлы до 20 МБ.
 
@@ -135,10 +178,13 @@ export BIS_PUBLIC_URL=https://bis.example.ru # ссылки на ленту в �
 | `plan_fact` | 1 сут | Отставания от ГПР и прогноз окончания — ответственному и руководителям |
 | `mailbox` | 5 мин | Приём входящей почты по IMAP, разбор агентом «Секретарь» |
 
-Однократный запуск: `bis run-jobs deadlines`; из интерфейса — «Контроль → Фоновые проверки».
+Однократный запуск на стенде разработки — `bis run-jobs deadlines`.
 Уведомления повторно не отправляются (ключ события). Telegram: `BIS_TELEGRAM_BOT_TOKEN` и `telegram_chat_id` у пользователя.
 
 ## Учёт работ и закрытие
+
+Ниже сохранено описание подсистемы и её прежней оболочки. Эти разделы отсутствуют в навигации
+текущего пилота. Контракты API описаны в [works.py](../backend/bis/api/works.py).
 
 1. Смета договора: импорт из Excel (`Работы и закрытие → Импорт сметы`) — заголовки и разделы определяются
    автоматически, скрытые работы помечаются.

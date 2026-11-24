@@ -10,18 +10,18 @@ import sys
 import zipfile
 from pathlib import Path
 
+from check_repository_files import check_files
+
 
 def main() -> None:
     repo = Path(__file__).resolve().parent.parent
     output = Path(sys.argv[1]).resolve()
-    output.mkdir(parents=True, exist_ok=True)
     commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
-    source = subprocess.check_output(["git", "archive", "--format=zip", "HEAD"], cwd=repo)
+    source = subprocess.check_output(["git", "archive", "--format=zip", commit], cwd=repo)
     with zipfile.ZipFile(io.BytesIO(source)) as archive:
-        files = {name: archive.read(name) for name in archive.namelist() if not name.endswith("/")}
-    forbidden = {".env", ".git", ".venv", "venv", "node_modules", "__pycache__", "data"}
-    if any(forbidden.intersection(Path(name).parts) for name in files):
-        raise SystemExit("Refusing to package private settings, dependencies, or data.")
+        names = [name for name in archive.namelist() if not name.endswith("/")]
+        check_files(names, archive.read)
+        files = {name: archive.read(name) for name in names}
     files["INSTALL-WINDOWS.ps1"] = files["deploy/pilot/INSTALL-WINDOWS.ps1"]
     files["FIRST-START.md"] = files["docs/PILOT_WINDOWS.md"]
     files["INSTALL.cmd"] = (
@@ -40,6 +40,7 @@ def main() -> None:
     files["SHA256SUMS.txt"] = "".join(
         f"{hashlib.sha256(content).hexdigest()}  {name}\n" for name, content in sorted(files.items())
     ).encode()
+    output.mkdir(parents=True, exist_ok=True)
     target = output / "BIS-Pilot-Windows.zip"
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
         for name, content in sorted(files.items()):

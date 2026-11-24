@@ -80,12 +80,9 @@ $LauncherText = [regex]::Replace($LauncherText, $RunPattern, [Text.RegularExpres
 Copy-Item -LiteralPath $Launcher -Destination (Join-Path $App 'START-BIS.previous.cmd') -Force
 [IO.File]::WriteAllText($Launcher, $LauncherText, [Text.Encoding]::Default)
 $Encoding = New-Object Text.UTF8Encoding $false
-$Lines = @(Get-Content $EnvFile -Encoding UTF8 | Where-Object { $_ -notmatch '^\s*BIS_AUTO_LOGIN\s*=' })
-$Lines += 'BIS_AUTO_LOGIN=true'
-[IO.File]::WriteAllText($EnvFile, (($Lines -join "`r`n") + "`r`n"), $Encoding)
 $Manifest = @{ release_id = ('pto_' + $SourceCommit.Substring(0, 12)); source_commit = $SourceCommit; frontend_prebuilt = $true } | ConvertTo-Json
 [IO.File]::WriteAllText((Join-Path $App 'RELEASE.json'), $Manifest, $Encoding)
 Remove-Item $TempDir -Recurse -Force
-Write-Host "3/3 Updated to $SourceCommit. Database, documents and AI keys preserved. Local login is automatic." -ForegroundColor Green
+Write-Host "3/3 Updated to $SourceCommit. Database, documents, AI keys and login settings preserved." -ForegroundColor Green
 Write-Host 'BIS-Pilot is starting. Closing its window stops the server and local database.'
 Start-Process $Launcher

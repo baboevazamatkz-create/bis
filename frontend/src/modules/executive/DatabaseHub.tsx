@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { activeProject, api, fetchBlob, type User } from '../../api';
+import { activeProject, api, fetchFile, type User } from '../../api';
 import { ConfirmButton, PageHead } from '../../components';
 
 type Level = 'knowledge' | 'project' | 'organization';
@@ -7,6 +7,72 @@ interface Connection { id: string; name: string; level: Level; path: string; obj
 interface State { connections: Connection[]; allowed_roots: string[]; platform_admin: boolean; strict: boolean }
 interface FileRow { id: string; path: string; state: string; error: string | null; source_id?: string; source_kind?: string; source_status?: string; active_version_id?: string;
   versions?: { id: string; form_kind: string | null; approved_at: string | null }[] }
+interface FormEntry { field: string; target: string; anchor: string; mode: string }
+interface FormMapping { format: string; entries: FormEntry[] }
+interface PreparedForm extends FormMapping {
+  targets: Record<string, string>;
+  fields?: Record<string, string>;
+  origins?: Record<string, string>;
+  modes?: Record<string, string>;
+  target_labels?: Record<string, string>;
+  required?: string[];
+  alternatives?: Record<string, string[]>;
+  example?: boolean;
+}
+interface FormReview { id: string; kind: string; mapping: PreparedForm; previewToken?: string }
+
+function missingFields(mapping: PreparedForm) {
+  const mapped = new Set(mapping.entries.map((entry) => entry.field));
+  return (mapping.required ?? []).filter((field) => !mapped.has(field) &&
+    !mapping.alternatives?.[field]?.every((alternative) => mapped.has(alternative)));
+}
+
+function AosrFields({ mapping, busy, onChange }: {
+  mapping: PreparedForm; busy: boolean; onChange: (entries: FormEntry[]) => void;
+}) {
+  const fields = Object.entries(mapping.fields ?? {});
+  const used = new Set(mapping.entries.map((entry) => entry.target));
+  const missing = missingFields(mapping);
+  const rows = Object.entries(mapping.targets);
+  const label = (target: string) => {
+    const [paragraph, start, end] = target.split(':').map(Number);
+    const anchor = mapping.targets[target] ?? '';
+    const sourceLabel = mapping.target_labels?.[target];
+    if (sourceLabel && !anchor) return `Пустая ячейка · ${sourceLabel}`;
+    const text = mapping.example ? Array.from(anchor).slice(start, end).join('') : sourceLabel ?? anchor;
+    const position = mapping.modes?.[target] === 'slot_span' ? `, пропуск с позиции ${start + 1}` : '';
+    return `Абзац ${paragraph + 1}${position} · ${text.trim() || 'пустой абзац'}`;
+  };
+  const fieldOptions = fields.map(([field, title]) => <option key={field} value={field}>{title}</option>);
+  return <fieldset disabled={busy}>
+    <legend>Соответствия полей АОСР</legend>
+    <p className="small muted">{mapping.example
+      ? 'Текст без соответствий и изображения останутся как в примере. Проверьте пробный DOCX. Лишние значения можно сопоставить с «Очистить значение из примера».'
+      : 'Проверьте реквизит для каждого пропуска или пустой ячейки.'}</p>
+    {mapping.entries.map((entry) => <div key={entry.target} className="row">
+      <label className="field"><span>{label(entry.target)}{mapping.origins?.[entry.target] === 'model' ? ' · предложение ИИ' : ''}</span>
+        <select value={entry.field} onChange={(event) => onChange(mapping.entries.map((row) =>
+          row.target === entry.target ? { ...row, field: event.target.value } : row))}>{fieldOptions}</select>
+      </label>
+      <button className="btn small" aria-label={`Убрать соответствие · ${label(entry.target)}`}
+        onClick={() => onChange(mapping.entries.filter((row) => row.target !== entry.target))}>Убрать</button>
+    </div>)}
+    {missing.length > 0 && <p className="small">Обязательные поля без соответствий — {missing.map((field) => mapping.fields?.[field]).join(', ')}.</p>}
+    {rows.some(([target]) => !used.has(target)) && <label className="field">
+      <span>Добавить соответствие</span>
+      <select value="" onChange={(event) => {
+        const target = event.target.value;
+        if (!target) return;
+        onChange([...mapping.entries, { target, field: missing[0] ?? (mapping.example ? 'clear_example_value' : fields[0][0]),
+          anchor: mapping.targets[target], mode: mapping.modes?.[target] ?? 'append' }]);
+      }}>
+        <option value="">{mapping.example ? 'Выберите значение из примера' : 'Выберите место в бланке'}</option>
+        {rows.filter(([target]) => !used.has(target)).map(([target]) => <option key={target} value={target}>{label(target)}</option>)}
+      </select>
+    </label>}
+  </fieldset>;
+}
+
 type AIProvider = 'anthropic' | 'openai' | 'ollama' | 'compatible' | 'gigachat' | 'yandex';
 interface ReadingStatus { key_configured?: boolean; provider_key_configured?: boolean; selected_provider?: string | null; selected_model?: string | null; selected_base_url?: string | null; ocr_provider?: string; last_model_attempts?: {provider: string; ok: boolean; error?: string; checked_at: string}[]; providers: { name: string; capabilities: string[] }[]; model_error: string | null; text_configured: boolean; vision_configured: boolean; ocr_configured: boolean; folder_id: string | null; local_setup_available: boolean; voice: { stt: boolean } }
 interface ModelCheck { providers: { provider: string; ok: boolean; error?: string; hint?: string; reply?: string }[] }
@@ -45,7 +111,12 @@ export default function DatabaseHub({ user }: { user: User }) {
   const [configure, setConfigure] = useState(false);
   const [check, setCheck] = useState<ModelCheck | null>(null);
   const [unassigned, setUnassigned] = useState<{ id: string; title: string }[]>([]);
-  const [formReview, setFormReview] = useState<{ id: string; kind: string; mapping: Record<string,unknown>; format: string; previewed: boolean } | null>(null);
+  const [formReview, setFormReview] = useState<FormReview | null>(null);
+  const reviewPanel = useRef<HTMLDivElement | null>(null);
+  const reviewId = formReview?.id;
+  useEffect(() => {
+    if (reviewId) reviewPanel.current?.focus();
+  }, [reviewId]);
   const canWrite = user.role === 'admin';
   async function load(signal?: AbortSignal) {
     if (refreshing.current) return;
@@ -118,6 +189,13 @@ export default function DatabaseHub({ user }: { user: User }) {
     try { return await run(controller.signal); }
     finally { checks.current.delete(controller); if (revision !== configRevision.current) throw new Error('Настройки изменились во время проверки. Повторите проверку с новым подключением.'); }
   }
+  function reviewForm(id: string, kind: string, docx = false, example = false) {
+    void action(async () => {
+      const query = kind === 'aosr' && docx ? (example ? '?kind=aosr&example=true' : '?kind=aosr') : '';
+      const mapping = await api<PreparedForm>(`/libraries/versions/${id}/prepare${query}`, { method: 'POST' });
+      setFormReview({ id, kind, mapping });
+    }, 'Проверьте соответствия и откройте пробное заполнение.');
+  }
   async function uploadFiles(list: FileList | null) {
     if (!list?.length) return;
     const selected = Array.from(list);
@@ -173,11 +251,19 @@ export default function DatabaseHub({ user }: { user: User }) {
         <details><summary>Файлы и ошибки чтения · {files[c.id]?.length ?? 0}</summary><div className="database-files">{files[c.id]?.map((f) => <div key={f.id}><strong className="small">{f.path}</strong><span className={f.state === 'error' ? 'text-bad small' : 'muted small'}>{STATES[f.state] ?? f.state}</span>{f.error && <p className="small text-bad">{f.error}</p>}
           {canWrite && (c.level !== 'knowledge' || state?.platform_admin) && <div className="row">
             {f.source_kind === 'norm' && f.source_status === 'unknown' && <button className="btn small" disabled={busy} onClick={() => void action(() => api(`/knowledge/sources/${f.source_id}`, { method: 'PATCH', json: { status: 'active' } }), 'Редакция норматива подтверждена.')}>Подтвердить действующую редакцию</button>}
-            {f.versions?.filter((v) => v.id === f.active_version_id && !v.approved_at &&
-              (v.form_kind || c.level === 'organization' && /\.docx$/i.test(f.path))).map((v) => <button key={v.id} className="btn small" disabled={busy} onClick={() => void action(async () => {
-              const mapping = await api<Record<string,unknown>>(`/libraries/versions/${v.id}/prepare`, { method: 'POST' });
-              setFormReview({ id: v.id, kind: v.form_kind ?? 'letter', mapping, format: String(mapping.format), previewed: false });
-            }, 'Откройте пробное заполнение и проверьте форму.')}>{v.form_kind ? 'Подтвердить форму' : 'Подготовить как форму письма'}</button>)}
+            {f.versions?.filter((v) => v.id === f.active_version_id && !v.approved_at).map((v) => {
+              const docx = /\.docx$/i.test(f.path);
+              return <div className="row" key={v.id}>
+                {docx && (!v.form_kind || v.form_kind === 'aosr') && <>
+                  <button className="btn small" disabled={busy} onClick={() => reviewForm(v.id, 'aosr', true, true)}>Настроить АОСР по примеру</button>
+                  <button className="btn small" disabled={busy} onClick={() => reviewForm(v.id, 'aosr', true)}>Настроить пустой бланк АОСР</button>
+                </>}
+                {((v.form_kind && (v.form_kind !== 'aosr' || !docx)) || (!v.form_kind && c.level === 'organization' && docx)) &&
+                  <button className="btn small" disabled={busy} onClick={() => reviewForm(v.id, v.form_kind ?? 'letter')}>
+                    {v.form_kind ? 'Подтвердить форму' : 'Подготовить как форму письма'}
+                  </button>}
+              </div>;
+            })}
             {f.versions?.some((v) => v.id === f.active_version_id && v.approved_at) && <span className="small muted">Форма подтверждена</span>}
           </div>}
         </div>)}</div></details>
@@ -195,15 +281,30 @@ export default function DatabaseHub({ user }: { user: User }) {
         <button className="btn small" disabled={busy || !activeProject()} onClick={() => void action(() => api(`/libraries/unassigned/${d.id}`, { method: 'POST', json: { level: 'project', object_id: activeProject() } }), 'Документ назначен активному проекту.')}>Для этого проекта</button>
         <button className="btn small" disabled={busy} onClick={() => void action(() => api(`/libraries/unassigned/${d.id}`, { method: 'POST', json: { level: 'organization' } }), 'Документ назначен организации.')}>Для организации</button></div></div>)}
     </details>}
-    {formReview && <div className="panel"><h2>Проверка формы</h2><p className="small muted">Скачайте пробное заполнение и проверьте расположение данных. Ручное заполнение полей акта не требуется.</p><div className="row">
-      <button className="btn" disabled={busy} onClick={() => void action(async () => {
-        const blob = await fetchBlob(`/libraries/versions/${formReview.id}/preview`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: formReview.kind, mapping: formReview.mapping }) });
-        const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = `Проверка_формы.${formReview.format.startsWith('pdf') ? 'pdf' : formReview.format}`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 10000);
-        setFormReview({ ...formReview, previewed: true });
-      }, 'Пробное заполнение скачано.')}>Скачать пробное заполнение</button>
-      <button className="btn primary" disabled={busy || !formReview.previewed} onClick={() => void action(async () => { await api(`/libraries/versions/${formReview.id}/approve`, { method: 'POST', json: { kind: formReview.kind, mapping: formReview.mapping } }); setFormReview(null); }, 'Форма подтверждена.')}>Проверено, использовать форму</button>
-      <button className="btn" onClick={() => setFormReview(null)}>Закрыть</button>
-    </div></div>}
+    {formReview && <div className="panel" ref={reviewPanel} tabIndex={-1}><h2>Проверка формы</h2>
+      {formReview.mapping.fields && <AosrFields mapping={formReview.mapping} busy={busy} onChange={(entries) => {
+        const origins = Object.fromEntries(entries.filter((entry) => formReview.mapping.entries.some((previous) =>
+          entry.field === previous.field && entry.target === previous.target)).map((entry) =>
+          [entry.target, formReview.mapping.origins?.[entry.target] ?? '']));
+        setFormReview({ ...formReview, mapping: { ...formReview.mapping, entries, origins }, previewToken: undefined });
+      }} />}
+      <p className="small muted">Скачайте пробное заполнение и проверьте расположение данных.</p>
+      <div className="row">
+        <button className="btn" disabled={busy || missingFields(formReview.mapping).length > 0} onClick={() => void action(async () => {
+          const { id, kind, mapping: { format, entries } } = formReview;
+          const { blob, headers } = await fetchFile(`/libraries/versions/${id}/preview`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind, mapping: { format, entries } }) });
+          const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = `Проверка_формы.${format.startsWith('pdf') ? 'pdf' : format}`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 10000);
+          const previewToken = formReview.mapping.fields ? headers.get('X-BIS-Form-Preview') ?? undefined : '';
+          setFormReview({ ...formReview, previewToken });
+        }, 'Пробное заполнение скачано.')}>Скачать пробное заполнение</button>
+        <button className="btn primary" disabled={busy || formReview.previewToken === undefined} onClick={() => void action(async () => {
+          const { id, kind, mapping: { format, entries } } = formReview;
+          await api(`/libraries/versions/${id}/approve`, { method: 'POST', json: { kind, mapping: { format, entries }, preview_token: formReview.previewToken } });
+          setFormReview(null);
+        }, 'Форма подтверждена.')}>Проверено, использовать форму</button>
+        <button className="btn" disabled={busy} onClick={() => setFormReview(null)}>Закрыть</button>
+      </div>
+    </div>}
     <details className="panel"><summary>ИИ и качество чтения</summary>
       {Object.entries(pending).filter(([id]) => id !== 'database').map(([id, label]) => <p role="status" key={id}>{label}</p>)}
       <p className="small">Языковая модель: {!reading ? 'получаю состояние…' : reading.text_configured ? 'настройки сохранены' : 'не настроена'} · OCR: {!reading ? 'получаю состояние…' : reading.ocr_configured ? 'настройки сохранены' : 'не настроен'} · чтение чертежей зрением: {reading?.vision_configured ? 'настроено' : 'не подключено'} · голос: {reading?.voice.stt ? 'настроен' : 'не подключён'}</p>

@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from bis.agents.base import AgentContext
+from bis.config import PILOT_BIND
 from bis.db import get_db
 from bis.llm.gateway import get_gateway
 from bis.models import User
@@ -22,11 +23,23 @@ from bis.services.storage import get_storage
 bearer = HTTPBearer(auto_error=False)
 
 
-def auto_login_user(db: Session) -> User | None:
-    """Вход без пароля на время разработки (BIS_AUTO_LOGIN): всегда последний созданный администратор."""
-    from bis.config import get_settings
-
-    if not get_settings().auto_login:
+def auto_login_user(db: Session, request: Request) -> User | None:
+    """В личном пилоте открываем сессию последнего активного администратора."""
+    if not getattr(request.app.state, "local_auto_login", False):
+        return None
+    if request.client is None or request.client.host != PILOT_BIND:
+        return None
+    server = request.scope.get("server")
+    if not server or server[0] != PILOT_BIND:
+        return None
+    # Loopback alone does not protect against browser requests from another site or a reverse proxy.
+    host = request.headers.get("host", "").lower()
+    port = f":{server[1]}" if server[1] != 80 else ""
+    if host not in {f"localhost{port}", f"{PILOT_BIND}{port}"}:
+        return None
+    if request.headers.get("origin") not in (None, f"http://{host}"):
+        return None
+    if any(name == "forwarded" or name.startswith("x-forwarded-") for name in request.headers):
         return None
     return db.scalar(select(User).where(User.is_active.is_(True), User.role == "admin").order_by(User.created_at.desc()).limit(1))
 
@@ -44,7 +57,7 @@ def current_user(
         _source_context(db, user, request)
         return user
     # старый или чужой токен в браузере не должен возвращать форму входа, пока вход отключён
-    if auto := auto_login_user(db):
+    if auto := auto_login_user(db, request):
         _source_context(db, auto, request)
         return auto
     if creds is None:

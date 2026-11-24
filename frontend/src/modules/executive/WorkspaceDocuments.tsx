@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { activeProject, api, DEMO, download, openFile, setActiveProject, STATUS_LABELS, type DocumentRow } from '../../api';
 import { PageHead } from '../../components';
+import AosrForm from '../../pages/AosrForm';
 import { navigate } from '../navigation';
 import TaskComposer from './TaskComposer';
 import RunList from './RunList';
@@ -28,6 +29,7 @@ export default function WorkspaceDocuments({ category, canWrite = false, openPro
   const [creatingProject, setCreatingProject] = useState(false);
   const [deletingProject, setDeletingProject] = useState(false);
   const [checking, setChecking] = useState(false);
+  const [creatingAosr, setCreatingAosr] = useState(false);
   const request = useRef<AbortController | null>(null);
   const [filter, setFilter] = useState('all');
   const [query, setQuery] = useState('');
@@ -96,10 +98,15 @@ export default function WorkspaceDocuments({ category, canWrite = false, openPro
       setCreatingProject(false);
     }
   }
+  if (creatingAosr) return <>
+    <button className="btn" onClick={() => setCreatingAosr(false)}>Вернуться к документам</button>
+    <AosrForm aosrOnly onCreated={() => { setCreatingAosr(false); void load(); }} />
+  </>;
   return <>
     <PageHead title={TITLES[category]} hint={category === 'project' ? 'Рабочие чертежи, спецификации и состояние их чтения. Вопрос можно задать по любому документу.' :
       category === 'contracts' ? 'Генподряд и субподряд выбранного проекта. Условия и ответы — с привязкой к оригиналам.' :
       'Перечень документов, состояние готовности и задания на подготовку — без ручного заполнения реквизитов.'}>
+      {category === 'documents' && canWrite && <button className="btn" onClick={() => setCreatingAosr(true)}>Создать АОСР</button>}
       <button className="btn" disabled={busy} onClick={() => void load()}>Обновить список</button>
       <button className="btn" onClick={() => navigate('id', 'libraries')}>Подключить документы</button>
       {category === 'project' && canWrite && activeProject() &&

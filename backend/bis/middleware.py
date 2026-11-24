@@ -8,6 +8,7 @@ import os
 import threading
 import time
 
+from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 log = logging.getLogger("bis.http")
@@ -44,6 +45,23 @@ def _record_stall(method, path):
         except Exception:  # noqa: BLE001 — diagnosis must not take down the server
             log.exception('Не удалось записать стеки потоков')
 
+
+
+class DenyFramingMiddleware:
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_frame_policy(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                MutableHeaders(scope=message)["X-Frame-Options"] = "DENY"
+            await send(message)
+
+        await self.app(scope, receive, send_frame_policy)
 
 
 class RequestLogMiddleware:

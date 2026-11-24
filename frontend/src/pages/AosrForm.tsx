@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
-import { api, type DocumentRow, type Issue } from "../api";
+import { activeProject, api, type DocumentRow, type Issue } from "../api";
 import { PageHead } from "../components";
 
 const lines = (s: string) => s.split("\n").map((x) => x.trim()).filter(Boolean);
 
-export default function AosrForm({ onCreated }: { onCreated: () => void }) {
+export default function AosrForm({ onCreated, aosrOnly = false }: { onCreated: () => void; aosrOnly?: boolean }) {
   const [actKind, setActKind] = useState<"aosr" | "aook">("aosr");
   const [objects, setObjects] = useState<{ id: string; name: string; code: string | null }[]>([]);
   const [f, setF] = useState({
@@ -19,7 +19,7 @@ export default function AosrForm({ onCreated }: { onCreated: () => void }) {
   useEffect(() => {
     api<{ id: string; name: string; code: string | null }[]>("/objects").then((o) => {
       setObjects(o);
-      if (o[0]) setF((x) => ({ ...x, object_id: o[0].id }));
+      if (o[0]) setF((x) => ({ ...x, object_id: o.find((object) => object.id === activeProject())?.id ?? o[0].id }));
     });
   }, []);
 
@@ -76,9 +76,9 @@ export default function AosrForm({ onCreated }: { onCreated: () => void }) {
         автоматическая по объекту. Тот же акт можно попросить у агента «ПТО» в чате.</>} />
       {error && <div className="alert error">{error}</div>}
       <div className="panel">
-        <div className="field"><label htmlFor="act-kind">Вид акта</label><select id="act-kind" value={actKind} onChange={(e) => { setActKind(e.target.value as "aosr" | "aook"); setIssues(null); setReps({}); }}>
+        {!aosrOnly && <div className="field"><label htmlFor="act-kind">Вид акта</label><select id="act-kind" value={actKind} onChange={(e) => { setActKind(e.target.value as "aosr" | "aook"); setIssues(null); setReps({}); }}>
           <option value="aosr">АОСР — скрытые работы</option><option value="aook">АООК — ответственные конструкции</option>
-        </select></div>
+        </select></div>}
         <div className="row">
           <div className="field">
             <label>Объект</label>
