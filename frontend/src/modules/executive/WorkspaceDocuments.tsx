@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import { activeProject, api, download, openFile, setActiveProject, STATUS_LABELS, type DocumentRow } from '../../api';
+import { activeProject, api, DEMO, download, openFile, setActiveProject, STATUS_LABELS, type DocumentRow } from '../../api';
 import { PageHead } from '../../components';
 import { navigate } from '../navigation';
 import TaskComposer from './TaskComposer';
 import RunList from './RunList';
+import ProjectStructure from './ProjectStructure';
 import { askAssistant } from './assistantTask';
 
 type Category = 'documents' | 'schemes' | 'project' | 'contracts';
@@ -116,6 +117,7 @@ export default function WorkspaceDocuments({ category, canWrite = false, openPro
       </form>
     </details>}
     {data?.needs_project && <div className="note">Выберите объект вверху страницы, чтобы видеть его документы и задавать вопросы по проекту.</div>}
+    {category === 'project' && !DEMO && activeProject() && <ProjectStructure key={activeProject()} projectId={activeProject()} />}
     <TaskComposer placeholder={PLACEHOLDERS[category]} documentId={selected?.id} title={selected?.title} />
     {selected && <button className="btn small" onClick={() => setSelected(null)}>Снять выбор документа</button>}
     {category === 'documents' && <RunList canWrite={canWrite} />}

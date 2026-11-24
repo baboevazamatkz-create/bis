@@ -139,14 +139,15 @@ def create_aosr(body: AOSRArgs, db: Session = Depends(get_db), user: User = Depe
 def check_aosr(body: AOSRArgs, db: Session = Depends(get_db), user: User = Depends(require("documents:read"))):
     """Проверка данных АОСР до формирования: участники, представители, замечания."""
     try:
-        p = docsvc.object_participants(db, user.organization_id, uuid.UUID(body.object_id), body.act_date)
+        p = docsvc.object_participants(db, user.organization_id, uuid.UUID(body.object_id), body.act_date,
+                                       performer_id=body.performer_id)
     except (LookupError, ValueError) as e:
         raise HTTPException(400, str(e)) from e
     if p["developer"] is None:
         return {"issues": [{"level": "error", "field": "developer", "message": "У объекта не указан застройщик"}]}
     data = AOSRData(object_name=p["object_name"], developer=p["developer"], builder=p["builder"],
-                    designer=p["designer"], representatives=p["representatives"],
-                    **body.model_dump(exclude={"object_id", "act_date"}), date=body.act_date)
+                    designer=p["designer"], performer=p["performer"], representatives=p["representatives"],
+                    **body.model_dump(exclude={"object_id", "act_date", "performer_id"}), date=body.act_date)
     return {"issues": [i.model_dump() for i in validate_aosr(data)],
             "representatives": {k: v.format() for k, v in p["representatives"].items()}}
 

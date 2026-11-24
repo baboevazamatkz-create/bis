@@ -837,7 +837,7 @@ def process_run(ctx, event, progress=None):
                 LibraryVersion.id.in_(active_versions(source_scope)), LibraryVersion.form_kind == act_kind,
                 LibraryVersion.approved_at.is_not(None))).all()
             gap(gaps, "form_version_id", str(exc), [{"id": str(v.id), "title": name + " / " + path + " / версия " + str(v.revision)} for v, name, path in choices_forms])
-    participants = docsvc.object_participants(ctx.db, ctx.org_id, obj.id, today)
+    participants = docsvc.object_participants(ctx.db, ctx.org_id, obj.id, dt.date.fromisoformat(plan["act_date"]))
     doc = None
     if participants["developer"] is None:
         gap(gaps, "developer", "У объекта не указан застройщик/технический заказчик. Заполните участника объекта.")
@@ -896,7 +896,7 @@ def _save_draft(ctx, event, obj, participants, plan, gaps, attachments, evidence
     kind = plan["act_kind"]
     model = AOOKData if kind == "aook" else AOSRData
     data = model(object_name=participants["object_name"], developer=participants["developer"], builder=participants["builder"],
-        designer=participants["designer"], representatives=participants["representatives"], other_representatives=participants["other_representatives"],
+        designer=participants["designer"], performer=participants["performer"], representatives=participants["representatives"], other_representatives=participants["other_representatives"],
         works=plan["works"], project_docs=plan["project_docs"], materials=plan["materials"], executive_docs=plan["executive_docs"],
         work_start=plan["work_start"], work_end=plan["work_end"], date=plan["act_date"], norms=plan["norms"],
         next_works=plan["next_works"], attachments=[a["title"] for a in attachments],

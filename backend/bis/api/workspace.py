@@ -12,9 +12,45 @@ from sqlalchemy.orm import Session
 from bis.api.deps import require
 from bis.api.schemas import DocumentOut
 from bis.db import get_db
-from bis.models import Contract, Document, KnowledgeChunk, KnowledgeSource, User
+from bis.models import ConstructionObject, Contract, Document, KnowledgeChunk, KnowledgeSource, User
+from bis.security import has_scope
+from bis.services import project_participants
 
 router = APIRouter(prefix='/workspace', tags=['workspace'])
+
+
+def _active_project(db, user):
+    scope = db.info.get('source_context')
+    if not scope or not scope.object_id:
+        raise HTTPException(409, 'Выберите проект')
+    project = db.scalar(select(ConstructionObject).where(
+        ConstructionObject.id == scope.object_id, ConstructionObject.organization_id == user.organization_id))
+    if project is None:
+        raise HTTPException(404, 'Проект не найден')
+    return project
+
+
+@router.get('/project-structure')
+def project_structure(db: Session = Depends(get_db), user: User = Depends(require('registry:read'))):
+    project = _active_project(db, user)
+    return {**project_participants.proposal(db, project),
+            'can_edit': has_scope(user.role, 'registry:write'), 'can_edit_organization': has_scope(user.role, 'settings:write')}
+
+
+@router.put('/project-structure')
+def confirm_structure(body: project_participants.Confirmation, db: Session = Depends(get_db),
+                      user: User = Depends(require('registry:write'))):
+    project = _active_project(db, user)
+    edit_org = has_scope(user.role, 'settings:write')
+    try:
+        project = project_participants.confirm(db, project, body, user, edit_org=edit_org)
+        result = project_participants.proposal(db, project)
+    except project_participants.StaleStructure as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    db.commit()
+    return {**result, 'can_edit': True, 'can_edit_organization': edit_org}
 
 
 @router.get('/documents')
