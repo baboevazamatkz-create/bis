@@ -1,4 +1,4 @@
-name: Publish BIS AOSR Windows trial
+name: Publish BIS Project Structure and AOSR Windows trial
 
 on:
   push:
@@ -12,11 +12,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: aosr-trial-dbaae77
+  group: project-structure-aosr-331f56a
 
 env:
-  SOURCE_SHA: dbaae7720b2ec6f964da02dc536c859949006638
-  TRIAL_TAG: aosr-trial-dbaae77
+  SOURCE_SHA: 331f56a9e7514987058be1f7d9d7585c5b40ef0c
+  TRIAL_TAG: project-structure-aosr-331f56a
 
 jobs:
   bundle:
@@ -29,7 +29,7 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
-          ref: dbaae7720b2ec6f964da02dc536c859949006638
+          ref: 331f56a9e7514987058be1f7d9d7585c5b40ef0c
           path: bis-source
           persist-credentials: false
       - uses: actions/setup-python@v5
@@ -54,14 +54,14 @@ jobs:
           python -m pip install ./bis-source/backend
           python .github/scripts/aosr-trial/sample.py "$GITHUB_WORKSPACE/bis-source" "$output"
           python .github/scripts/aosr-trial/bundle.py "$stage" "$GITHUB_WORKSPACE/bis-source" "$output"
-          cp "$stage/BIS-AOSR-Windows11.zip" "$output/"
-          (cd "$output" && sha256sum BIS-AOSR-Windows11.zip > BIS-AOSR-Windows11.zip.sha256)
+          cp "$stage/BIS-Project-Structure-AOSR-Windows11.zip" "$output/"
+          (cd "$output" && sha256sum BIS-Project-Structure-AOSR-Windows11.zip > BIS-Project-Structure-AOSR-Windows11.zip.sha256)
       - uses: actions/upload-artifact@v4
         with:
           name: bis-aosr-windows-trial
           path: |
-            ${{ runner.temp }}/aosr-bundle/BIS-AOSR-Windows11.zip
-            ${{ runner.temp }}/aosr-bundle/BIS-AOSR-Windows11.zip.sha256
+            ${{ runner.temp }}/aosr-bundle/BIS-Project-Structure-AOSR-Windows11.zip
+            ${{ runner.temp }}/aosr-bundle/BIS-Project-Structure-AOSR-Windows11.zip.sha256
           if-no-files-found: error
           compression-level: 0
           retention-days: 3
@@ -69,10 +69,26 @@ jobs:
   publish:
     needs: bundle
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 20
     permissions:
+      actions: read
       contents: write
     steps:
+      - name: Wait for CI on the merged revision
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          run_id=''
+          for attempt in {1..15}; do
+            run_id=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --branch codex/project-structure \
+              --commit "$SOURCE_SHA" --event push --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+            if [[ -n "$run_id" ]]; then break; fi
+            sleep 10
+          done
+          test -n "$run_id"
+          gh run watch "$run_id" --repo "$GITHUB_REPOSITORY" --exit-status --interval 15
       - uses: actions/download-artifact@v4
         with:
           name: bis-aosr-windows-trial
@@ -82,13 +98,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          sha256sum -c BIS-AOSR-Windows11.zip.sha256
+          sha256sum -c BIS-Project-Structure-AOSR-Windows11.zip.sha256
           if gh release view "$TRIAL_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "Release $TRIAL_TAG already exists. Inspect it before updating any assets."
             exit 1
           fi
           gh release create "$TRIAL_TAG" --repo "$GITHUB_REPOSITORY" --target "$SOURCE_SHA" --draft --prerelease --latest=false \
-            --title "BIS АОСР · пробная версия для Windows" \
-            --notes 'Скачайте и извлеките весь BIS-AOSR-Windows11.zip, затем дважды щёлкните Install-BIS.cmd. Пробная копия использует C:\BIS-AOSR-Trial и http://localhost:8082. Учебный бланк в папке «Примеры». Установщик проверен на облачном стенде, запуск под Windows отдельно не проверен.'
-          gh release upload "$TRIAL_TAG" BIS-AOSR-Windows11.zip BIS-AOSR-Windows11.zip.sha256 --repo "$GITHUB_REPOSITORY"
+            --title "BIS · Структура проекта и АОСР · пробная сборка Windows" \
+            --notes 'Закройте работающую пробную копию BIS. Извлеките весь BIS-Project-Structure-AOSR-Windows11.zip, затем дважды щёлкните Install-BIS.cmd. Пробная копия использует C:\BIS-AOSR-Trial и http://localhost:8082. В папке «Примеры» лежат два учебных бланка и заполненный DOCX. Данные и настройки существующей пробной копии сохраняются. Установщик проверен на облачном стенде, запуск под Windows отдельно не проверен.'
+          gh release upload "$TRIAL_TAG" BIS-Project-Structure-AOSR-Windows11.zip BIS-Project-Structure-AOSR-Windows11.zip.sha256 --repo "$GITHUB_REPOSITORY"
           gh release edit "$TRIAL_TAG" --draft=false --prerelease --latest=false --repo "$GITHUB_REPOSITORY"

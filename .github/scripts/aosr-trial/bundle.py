@@ -1,6 +1,7 @@
 import hashlib
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZIP_STORED, ZipFile
@@ -10,7 +11,7 @@ with ZipFile(stage / 'BIS-Pilot-Windows.zip') as base:
     files = {name.removeprefix('bis-install/'): base.read(name) for name in base.namelist()}
 
 release = json.loads(files['RELEASE.json'])
-assert release['source_commit'] == 'dbaae7720b2ec6f964da02dc536c859949006638'
+assert release['source_commit'] == subprocess.check_output(['git', '-C', str(repo), 'rev-parse', 'HEAD'], text=True).strip()
 assert files['backend/bis/services/library_forms.py'] == (repo / 'backend/bis/services/library_forms.py').read_bytes()
 release.update(trial=True, trial_port=8082, trial_python='3.12.10-win-amd64',
                python_auto_install=False, offline_dependencies=True, bundled_ffmpeg=False)
@@ -21,7 +22,9 @@ frontend = repo / 'frontend/dist'
 for path in frontend.rglob('*'):
     if path.is_file():
         files['deploy/web/' + path.relative_to(frontend).as_posix()] = path.read_bytes()
-assert any('Настроить АОСР'.encode() in content for name, content in files.items() if name.startswith('deploy/web/assets/') and name.endswith('.js'))
+web_scripts = b''.join(content for name, content in files.items() if name.startswith('deploy/web/assets/') and name.endswith('.js'))
+for label in ('Настроить АОСР по примеру', 'Настроить пустой бланк АОСР', 'Структура проекта'):
+    assert label.encode() in web_scripts, label
 files['RELEASE.json'] = (json.dumps(release, indent=2) + '\n').encode()
 runtime = (stage / 'python-3.12.10.nupkg').read_bytes()
 files['python-runtime.zip'] = runtime
@@ -52,6 +55,10 @@ if (Test-Path -LiteralPath $BisRoot) {
         }
     }
 }
+$Running = @(Get-Process python, postgres -ErrorAction SilentlyContinue | Where-Object {
+    $_.Path -and $_.Path.StartsWith($BisRoot + '\\', [StringComparison]::OrdinalIgnoreCase)
+})
+if ($Running.Count) { throw 'Close the BIS AOSR trial window and wait for its local database to stop.' }
 $Listener = New-Object Net.Sockets.TcpListener ([Net.IPAddress]::Loopback), $Port
 try { $Listener.Start() } catch {
     throw 'Port 8082 is in use. Close the BIS AOSR trial window and try again.'
@@ -86,6 +93,13 @@ if (-not (Test-Path -LiteralPath $Python -PathType Leaf)) {
 if ($LASTEXITCODE -ne 0) { throw 'Bundled Python did not start.' }
 & $Python -I -m pip --isolated --disable-pip-version-check install --no-index --find-links $Wheelhouse --only-binary ':all:' --upgrade 'bis==0.1.0' 'pgserver==0.1.4' colorama tzdata
 if ($LASTEXITCODE -ne 0) { throw 'Offline dependency installation failed. Keep the error text shown above.' }
+# Different trial builds may have the same Python package version.
+& $Python -I -m pip --isolated --disable-pip-version-check install --no-index --no-deps --force-reinstall (Join-Path $Wheelhouse 'bis-0.1.0-py3-none-any.whl')
+if ($LASTEXITCODE -ne 0) { throw 'The bundled BIS revision could not be installed.' }
+$InstalledForms = Join-Path $PythonFolder 'Lib\\site-packages\\bis\\services\\library_forms.py'
+if ((Get-FileHash -LiteralPath $InstalledForms -Algorithm SHA256).Hash -ne '""" + hashlib.sha256(files['backend/bis/services/library_forms.py']).hexdigest() + """') {
+    throw 'The installed BIS backend does not match this bundle.'
+}
 & $Python -I -m pip --isolated --disable-pip-version-check check
 if ($LASTEXITCODE -ne 0) { throw 'The local Python dependencies failed verification.' }
 """ + stock[end:]
@@ -127,20 +141,20 @@ echo BIS setup stopped. See the message above.
 pause
 exit /b 1
 """
-guide = rf"""BIS · пробная версия АОСР для Windows 11 x64
+guide = rf"""BIS · Структура проекта и АОСР · пробная сборка для Windows 11 x64
 
-1. Извлеките весь ZIP в одну папку.
-2. Дважды щёлкните Install-BIS.cmd. После установки BIS откроется на http://localhost:8082.
-3. Для следующего запуска используйте ярлык BIS-AOSR-Trial на рабочем столе.
-4. Откройте «Базы данных» → «База организаций» → «Загрузить файлы».
-5. Выберите Учебный-бланк-АОСР.docx из папки Примеры. Раскройте «Файлы и ошибки чтения» и нажмите «Настроить АОСР».
-6. Проверьте карту, скачайте пробный DOCX и утвердите. Если модель не подключена, назначьте «Выполненные работы» абзацу «Описание результата на участке».
+1. Если пробная копия BIS открыта, закройте её окно и дождитесь остановки базы.
+2. Извлеките весь ZIP и дважды щёлкните Install-BIS.cmd. BIS откроется на http://localhost:8082.
+3. Выберите объект и откройте «Проект» → «Структура проекта».
+4. Для проверки АОСР загрузите DOCX из папки «Примеры» в «Базы данных». Раскройте «Файлы и ошибки чтения», выберите настройку пустого бланка или заполненного примера, скачайте пробник и подтвердите карту.
+5. Новый акт можно создать через «Исполнительная документация» → «Создать АОСР».
 
-Пробная установка использует C:\BIS-AOSR-Trial и отдельную базу. Для подсказок ИИ настройте модель в пробной копии.
-В этом комплекте нет встроенного FFmpeg для голосового режима.
+Пробная копия использует C:\BIS-AOSR-Trial. При обновлении сохраняются её данные и настройки.
+Для следующих запусков используйте ярлык BIS-AOSR-Trial на рабочем столе.
+В комплекте нет встроенного FFmpeg для голосового режима.
 SHA: {release['source_commit']} (также в bis-install\RELEASE.json).
 """
-output = downloads / 'BIS-AOSR-Windows11.zip'
+output = downloads / 'BIS-Project-Structure-AOSR-Windows11.zip'
 temporary = stage / output.name
 with ZipFile(temporary, 'w', ZIP_DEFLATED) as z:
     z.writestr('Install-BIS.cmd', cmd.replace('\n', '\r\n').encode('ascii'))
