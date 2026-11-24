@@ -134,6 +134,8 @@ class Settings(BaseSettings):
     stt_model: str = "Systran/faster-whisper-large-v3"
     stt_language: str = "ru"
     stt_api_key: str | None = None
+    stt_yandex_folder_id: str | None = None  # отдельный каталог SpeechKit, если он отличается от OCR
+    stt_yandex_api_key: str | None = None
     tts_url: str | None = None
     tts_model: str = "tts-1"
     tts_voice: str = "alloy"

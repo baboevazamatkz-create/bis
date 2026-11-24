@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { activeProject, api, fetchBlob, type User } from '../../api';
 import { ConfirmButton, PageHead } from '../../components';
+import VoiceSetup from './VoiceSetup';
 
 type Level = 'knowledge' | 'project' | 'organization';
 interface Connection { id: string; name: string; level: Level; path: string; object_id: string | null; enabled: boolean; status: string; error: string | null; synced_at: string | null }
@@ -14,7 +15,7 @@ interface Imports { total: number; documents: { id: string; title: string; state
 const LABELS = { knowledge: 'База знаний', project: 'База проекта', organization: 'База организаций' };
 const STATES: Record<string,string> = { ready: 'Текст доступен', partial: 'Есть ошибки чтения', pending: 'Подключена, ожидает чтения', reading: 'Читаю документы…', error: 'Ошибка', empty: 'Очищена', removed: 'Удалён из папки' };
 
-export default function DatabaseHub({ user }: { user: User }) {
+export default function DatabaseHub({ user, openVoiceSetup = false }: { user: User; openVoiceSetup?: boolean }) {
   const filePicker = useRef<HTMLInputElement | null>(null);
   const folderPicker = useRef<HTMLInputElement | null>(null);
   const [level, setLevel] = useState<Level>('project');
@@ -204,6 +205,13 @@ export default function DatabaseHub({ user }: { user: User }) {
       <button className="btn primary" disabled={busy || !formReview.previewed} onClick={() => void action(async () => { await api(`/libraries/versions/${formReview.id}/approve`, { method: 'POST', json: { kind: formReview.kind, mapping: formReview.mapping } }); setFormReview(null); }, 'Форма подтверждена.')}>Проверено, использовать форму</button>
       <button className="btn" onClick={() => setFormReview(null)}>Закрыть</button>
     </div></div>}
+    <VoiceSetup open={openVoiceSetup} canWrite={canWrite} available={reading?.local_setup_available}
+      configured={reading?.voice.stt} usesOpenAI={reading?.selected_base_url?.replace(/\/+$/, '') === 'https://api.openai.com/v1'}
+      onSave={(stt) => {
+        configRevision.current++;
+        setReading((current) => current && { ...current, voice: { ...current.voice, stt } });
+        refresh();
+      }} />
     <details className="panel"><summary>ИИ и качество чтения</summary>
       {Object.entries(pending).filter(([id]) => id !== 'database').map(([id, label]) => <p role="status" key={id}>{label}</p>)}
       <p className="small">Языковая модель: {!reading ? 'получаю состояние…' : reading.text_configured ? 'настройки сохранены' : 'не настроена'} · OCR: {!reading ? 'получаю состояние…' : reading.ocr_configured ? 'настройки сохранены' : 'не настроен'} · чтение чертежей зрением: {reading?.vision_configured ? 'настроено' : 'не подключено'} · голос: {reading?.voice.stt ? 'настроен' : 'не подключён'}</p>

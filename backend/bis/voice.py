@@ -18,7 +18,7 @@ from pathlib import Path
 
 import httpx
 
-from bis.config import get_settings
+from bis.config import Settings, get_settings
 
 _UNIT_WORDS: list[tuple[str, str]] = [
     (r"\b(?:кубическ\w+ метр\w*|кубометр\w*|куб\w*|м\s?куб\w*)\b", "м3"),
@@ -46,13 +46,50 @@ class VoiceError(Exception):
     pass
 
 
-def status() -> dict[str, bool]:
-    s = get_settings()
-    stt = bool(s.stt_url) if s.stt_provider == "openai" else all(s.yandex()) and bool(ffmpeg_exe())
-    return {"stt": stt, "tts": bool(s.tts_url)}
-
-
+OPENAI_STT_URL = "https://api.openai.com/v1"
+OPENAI_STT_MODEL = "whisper-1"
 YANDEX_STT = "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize"
+
+
+def _openai_chat_key(settings: Settings) -> str | None:
+    try:
+        providers = {p.name: p for p in settings.llm_providers()
+                     if p.kind != "offline" and "text" in p.capabilities}
+        routes = settings.llm_routes()
+    except (ValueError, OSError):
+        return None
+    names = routes.get("chat") or routes.get("default") or providers
+    selected = next((providers[name] for name in names if name in providers), None)
+    if (selected and selected.kind == "openai_compat" and selected.auth_scheme == "Bearer"
+            and (selected.base_url or "").rstrip("/") == OPENAI_STT_URL):
+        return selected.resolved_api_key()
+    return None
+
+
+def _openai_stt(settings: Settings) -> tuple[str | None, str | None]:
+    if settings.stt_url:
+        url = settings.stt_url.rstrip("/")
+        key = settings.stt_api_key
+        if not key and url == OPENAI_STT_URL:
+            key = os.environ.get("BIS_OPENAI_API_KEY") or _openai_chat_key(settings)
+        return url, key
+    key = _openai_chat_key(settings)
+    return (OPENAI_STT_URL, key) if key else (None, None)
+
+
+def _speechkit_credentials(settings: Settings) -> tuple[str | None, str | None]:
+    folder, key = settings.yandex()
+    return settings.stt_yandex_folder_id or folder, settings.stt_yandex_api_key or key
+
+
+def status() -> dict[str, bool]:
+    settings = get_settings()
+    if settings.stt_provider == "yandex":
+        ready = all(_speechkit_credentials(settings)) and bool(ffmpeg_exe())
+    else:
+        url, key = _openai_stt(settings)
+        ready = bool(url and (url != OPENAI_STT_URL or key))
+    return {"stt": ready, "tts": bool(settings.tts_url)}
 
 
 def ffmpeg_exe() -> str | None:
@@ -68,6 +105,8 @@ def _ogg_chunks(audio: bytes, seconds: int = 25) -> list[bytes]:
                "-b:a", "24k", "-f", "segment", "-segment_time", str(seconds), str(Path(tmp) / "part%03d.ogg")]
         try:
             subprocess.run(cmd, check=True, capture_output=True, timeout=120)
+        except OSError as e:
+            raise VoiceError("FFmpeg для SpeechKit недоступен") from e
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             raise VoiceError("Не удалось прочитать аудиофайл") from e
         return [p.read_bytes() for p in sorted(Path(tmp).glob("part*.ogg"))]
@@ -75,7 +114,7 @@ def _ogg_chunks(audio: bytes, seconds: int = 25) -> list[bytes]:
 
 def _transcribe_yandex(audio: bytes, client: httpx.Client | None) -> str:
     s = get_settings()
-    folder, key = s.yandex()
+    folder, key = _speechkit_credentials(s)
     if not folder:
         raise VoiceError("Не задан каталог Yandex Cloud (BIS_YANDEX_FOLDER_ID)")
     if not key:
@@ -106,18 +145,21 @@ def transcribe(audio: bytes, filename: str = "audio.webm", mime: str | None = No
     s = get_settings()
     if s.stt_provider == "yandex":
         return normalize_dictation(_transcribe_yandex(audio, client))
-    if not s.stt_url:
+    url, key = _openai_stt(s)
+    if not url:
         raise VoiceError("Распознавание речи не настроено (BIS_STT_URL)")
-    key = s.stt_api_key
-    if not key and s.stt_url.rstrip("/") == "https://api.openai.com/v1":
-        key = os.environ.get("BIS_OPENAI_API_KEY")
+    if url == OPENAI_STT_URL and not key:
+        raise VoiceError("Не задан API-ключ OpenAI для распознавания речи")
+    model = s.stt_model
+    if url == OPENAI_STT_URL and (not s.stt_url or "stt_model" not in s.model_fields_set):
+        model = OPENAI_STT_MODEL
     headers = {"Authorization": f"Bearer {key}"} if key else {}
     http = client or httpx.Client(timeout=120)
     try:
         try:
-            r = http.post(s.stt_url.rstrip("/") + "/audio/transcriptions", headers=headers,
+            r = http.post(url + "/audio/transcriptions", headers=headers,
                           files={"file": (filename, audio, mime or "application/octet-stream")},
-                          data={"model": s.stt_model, "language": s.stt_language, "response_format": "json"})
+                          data={"model": model, "language": s.stt_language, "response_format": "json"})
         except httpx.HTTPError as e:
             raise VoiceError(f"Сервер распознавания недоступен: {e}") from e
         if r.status_code >= 400:
