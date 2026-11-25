@@ -1,0 +1,68 @@
+{
+  "originals": [
+    {
+      "query": "KLAB471",
+      "name": "RD-TRAIN-17.pdf",
+      "expected": "/api/knowledge/project/sources/c0015eee-3851-4f84-8bed-86649926cdb2/file",
+      "actual": "/api/knowledge/project/sources/c0015eee-3851-4f84-8bed-86649926cdb2/file",
+      "status": 200,
+      "expectedSha256": "afbf1f1baf2a2b6962141f14d309e3ad092724377558101ac558de95b0cf44c2",
+      "actualSha256": "afbf1f1baf2a2b6962141f14d309e3ad092724377558101ac558de95b0cf44c2",
+      "location": "Физическая страница 2"
+    },
+    {
+      "query": "SPECLAB082",
+      "name": "Specification.xlsx",
+      "expected": "/api/knowledge/project/sources/1192de6a-6f37-4bf4-9037-154472d2ada3/file",
+      "actual": "/api/knowledge/project/sources/1192de6a-6f37-4bf4-9037-154472d2ada3/file",
+      "status": 200,
+      "expectedSha256": "c579bcb873660317b3ffb8b135c0ebfdfd1f856b20036ef9b989ab5b892fc0da",
+      "actualSha256": "c579bcb873660317b3ffb8b135c0ebfdfd1f856b20036ef9b989ab5b892fc0da",
+      "location": "Лист «Кабели»"
+    },
+    {
+      "query": "QUALITYLAB309",
+      "name": "Quality.pdf",
+      "expected": "/api/knowledge/project/sources/04a02dce-1f3b-4f52-aa06-834817182481/file",
+      "actual": "/api/knowledge/project/sources/04a02dce-1f3b-4f52-aa06-834817182481/file",
+      "status": 200,
+      "expectedSha256": "08257ae30bf57c26172dcfeb95e3cb60c45248da3b7aeb51607e7bcda7f175cc",
+      "actualSha256": "08257ae30bf57c26172dcfeb95e3cb60c45248da3b7aeb51607e7bcda7f175cc",
+      "location": "Физическая страница 1 · Неполное чтение"
+    }
+  ],
+  "denied": [
+    {
+      "strict": false,
+      "url": "/api/knowledge/project/sources/a3121f7d-ccbe-4a84-90e0-5f9cafcae390/file",
+      "expected": 404,
+      "actual": 404
+    },
+    {
+      "strict": true,
+      "url": "/api/knowledge/project/sources/a3121f7d-ccbe-4a84-90e0-5f9cafcae390/file",
+      "expected": 404,
+      "actual": 404
+    }
+  ],
+  "revision": {
+    "syncStatus": 202,
+    "oldLink": "/api/knowledge/project/sources/c0015eee-3851-4f84-8bed-86649926cdb2/file",
+    "oldLinkStatus": 404,
+    "replacement": "121 m",
+    "disableStatus": 200
+  },
+  "checks": [
+    "upload-and-reload",
+    "pdf-page-2",
+    "xlsx-download",
+    "partial",
+    "three-empty-in-A",
+    "exact-identifiers",
+    "A-to-B-during-search",
+    "object-B-375m",
+    "no-project-prompt",
+    "revised-after-reload",
+    "disabled-after-reload"
+  ]
+}

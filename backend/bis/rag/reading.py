@@ -2,6 +2,14 @@
 from bis.rag.parsers import text_quality
 
 
+def coverage_status(report):
+    if not report:
+        return 'unknown'
+    if report.get('complete') is False or report.get('empty_pages') or report.get('warnings'):
+        return 'partial'
+    return 'ready' if report.get('complete') is True else 'unknown'
+
+
 def reading_report(pages, method):
     empty = [p.number for p in pages if p.number is not None and not p.text.strip()]
     sparse = [p.number for p in pages if p.number is not None and len(p.text.strip()) < 50]

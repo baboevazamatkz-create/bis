@@ -16,6 +16,7 @@ class Page:
     number: int | None
     text: str
     warning: str | None = None
+    sheet_name: str | None = None
 
 
 @dataclass
@@ -262,7 +263,7 @@ def parse_xlsx(data: bytes) -> ParsedDocument:
                 warnings.append(f'Лист «{ws.title}»: формул без сохранённого результата: {len(missing_formulas) - first_missing}')
             if ws.title in truncated:
                 warnings.append(f'Лист «{ws.title}» прочитан не полностью')
-            pages.append(Page(None, "\n".join(lines) if len(lines) > 1 else '', '; '.join(warnings) or None))
+            pages.append(Page(None, "\n".join(lines) if len(lines) > 1 else '', '; '.join(warnings) or None, ws.title))
     finally:
         wb.close()
         formulas.close()
