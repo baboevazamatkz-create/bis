@@ -1020,6 +1020,21 @@ def validate_sources(db, storage, doc):
             LibraryVersion.id.in_(active_versions(scope)), LibraryVersion.approved_at.is_not(None)))
         if version is None or hashlib.sha256(storage.get(version.file_key)).hexdigest() != form["sha256"]:
             raise ValueError("Форма отозвана или изменена. Повторите сборку по подтверждённой форме")
+        fill = doc.data.get('form_fill')
+        if fill is not None:
+            from types import SimpleNamespace
+
+            from bis.services import form_sources, library_forms
+
+            try:
+                mapping = library_forms.Mapping.model_validate(version.mapping)
+                current = form_sources.resolve(db, SimpleNamespace(organization_id=doc.organization_id), mapping,
+                    object_id=doc.object_id, act_date=doc.date, as_of=dt.date.fromisoformat(fill['as_of']),
+                    values=fill['values'], selections=fill['selections'])
+            except (LookupError, ValueError) as exc:
+                raise ValueError('Источники заполнения изменились. Сформируйте черновик заново') from exc
+            if current != doc.data['form_resolution']:
+                raise ValueError('Источники заполнения изменились. Сформируйте черновик заново')
     for attachment in (doc.data or {}).get("package_attachments", []):
         if not isinstance(attachment, dict) or not attachment.get("sha256"):
             continue

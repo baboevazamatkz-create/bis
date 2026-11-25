@@ -649,7 +649,7 @@ def test_docx_aosr_api_reviews_manual_correction_and_reuses_version(client, auth
     assert "Монтаж кабельного лотка" in forms.paragraphs(Word(io.BytesIO(output.content)))[int(target)].text
     version = db.scalar(select(LibraryVersion).where(LibraryVersion.approved_at.is_not(None)))
     assert get_storage().get(version.file_key) == original
-    assert version.mapping == {**mapping, "profile": "aosr_docx"}
+    assert {key: version.mapping[key] for key in ("format", "entries", "profile")} == {**mapping, "profile": "aosr_docx"}
 
     source = next(tmp_path.glob(f"uploads/*/*/{filename}"))
     source.write_bytes(_aosr_training_doc())

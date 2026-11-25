@@ -91,12 +91,13 @@ class Entry(BaseModel):
     target: str
     anchor: str = ''
     mode: str = 'append'
+    source: Literal['auto', 'registry', 'project', 'documents', 'manual'] | None = None
 
 
 class Mapping(BaseModel):
     format: str
     entries: list[Entry] = Field(default_factory=list, max_length=200)
-    profile: Literal['aosr_docx'] | None = None
+    profile: Literal['aosr_docx', 'docx_fields'] | None = None
 
 
 class Proposal(BaseModel):
@@ -257,11 +258,83 @@ def blank_target_mode(target, anchor):
     return 'slot_span' if ':' in target else aosr_target_mode(anchor)
 
 
+DOCX_KINDS = frozenset({'aosr', 'aook', 'letter'})
+DOCX_PROFILES = frozenset({'aosr_docx', 'docx_fields'})
+
+
+def docx_fields(kind, *, example=False):
+    from bis.services.form_sources import SOURCE_FIELD_LABELS
+
+    if kind == 'aosr':
+        primary = EXAMPLE_FIELDS if example else AOSR_FIELDS
+    elif kind == 'aook':
+        primary = {key: FIELDS[key] for key in REQUIRED['aook'] | {
+            'next_works', 'attachments', 'conditions', 'load_percent', 'other_representatives',
+        }}
+    else:
+        primary = {key: FIELDS[key] for key in ('number', 'date', 'subject', 'body', 'addressee', 'sender_text',
+                                                'signer_name', 'signer_position', 'attachments', 'in_reply_to')}
+    common_act = {} if kind == 'letter' else {key: EXAMPLE_FIELDS[key] for key in EXAMPLE_FIELDS
+                                           if key.startswith(('representative_', 'signature_'))}
+    return {**primary, **common_act, **{key: label for key, label in SOURCE_FIELD_LABELS.items()
+                                       if key not in primary and key not in common_act}}
+
+
+def docx_labels(kind, fields):
+    from bis.services.form_sources import PARTY_DETAILS
+
+    labels = {label.casefold(): field for field, label in fields.items()}
+    names = {'org': ('нашей организации', 'организации'), 'developer': ('заказчика', 'застройщика'),
+             'builder': ('подрядчика', 'генподрядчика'), 'designer': ('проектировщика',),
+             'performer': ('исполнителя',), 'subcontractor': ('субподрядчика',)}
+    for prefix, aliases in names.items():
+        for attribute, description in PARTY_DETAILS.items():
+            field = f'{prefix}_{attribute}'
+            if field in fields:
+                labels.update({f'{description.casefold()} {alias}': field for alias in aliases})
+    if kind != 'letter':
+        labels.update(AOSR_LABELS)
+        labels.update({meta['title'].casefold(): f'representative_{role}' for role, meta in REPRESENTATIVE_ROLES.items()})
+    return {**labels, 'инн нашей организации': 'org_inn', 'адрес нашей организации': 'org_address'}
+
+
+
+def normalized_blank_anchor(text):
+    return ' '.join(SLOT.sub('__', text).split())
+
+
+def _reuse_binding(binding, places, lines):
+    index = int(binding.target.partition(':')[0])
+    if not 0 <= index < len(lines):
+        return None
+    anchor = lines[index].text
+    if normalized_blank_anchor(anchor) != normalized_blank_anchor(binding.anchor):
+        return None
+    target = binding.target
+    if binding.mode == 'slot_span':
+        _, start, end = span_address(target)
+        old_spans = [match.span() for match in BLANK.finditer(binding.anchor)]
+        new_spans = [match.span() for match in BLANK.finditer(anchor)]
+        if (start, end) not in old_spans or len(old_spans) != len(new_spans):
+            return None
+        new_start, new_end = new_spans[old_spans.index((start, end))]
+        target = f'{index}:{new_start}:{new_end}'
+    if target in places:
+        return binding.model_copy(update={'target': target, 'anchor': anchor})
+    return None
+
+
 def prepare_aosr(data, filename, get_gateway, *, target_labels=None):
+    return prepare_docx(data, filename, 'aosr', get_gateway, target_labels=target_labels)
+
+
+def prepare_docx(data, filename, kind, get_gateway, *, target_labels=None, confirmed=None):
     from docx import Document
 
     if not filename.lower().endswith('.docx'):
-        raise ValueError('Настройка полей АОСР поддерживает DOCX')
+        raise ValueError('Настройка полей поддерживает DOCX')
+    fields = docx_fields(kind)
+    labels = docx_labels(kind, fields)
     lines = paragraphs(Document(io.BytesIO(data)), existing_parts_only=True)
     places = {str(index): p.text for index, p in enumerate(lines)}
     entries, origins, ambiguous = {}, {}, {}
@@ -272,11 +345,11 @@ def prepare_aosr(data, filename, get_gateway, *, target_labels=None):
             anchor = places[target]
             normalized = ' '.join(label.split()).rstrip(':：').strip().casefold()
             key = re.sub(r'^\d+[.)]\s+', '', normalized)
-            field = location.field if location.field is not None else AOSR_LABELS.get(key)
+            field = location.field if location.field is not None else labels.get(key)
             mode = blank_target_mode(target, anchor)
             if target_labels is not None and (mode == 'slot_span' or not anchor):
                 target_labels[target] = label[:160] or 'Пропуск без подписи'
-            if field in AOSR_FIELDS:
+            if field in fields:
                 entries[target] = Entry(field=field, target=target, anchor=anchor, mode=mode)
                 origins[target] = 'rule'
             elif location.field is None and normalized and (mode != 'append' or not anchor):
@@ -285,7 +358,13 @@ def prepare_aosr(data, filename, get_gateway, *, target_labels=None):
                           (blank_target_mode(other.target, places[other.target]) != 'append' or not places[other.target])]
                 ambiguous[target] = {'target': target, 'label': label[:160], 'neighbours': nearby, 'section': section}
 
-    if ambiguous:
+    profile = 'aosr_docx' if kind == 'aosr' else 'docx_fields'
+    if confirmed:
+        learned = [_reuse_binding(binding, places, lines) for binding in confirmed.entries if binding.field in fields]
+        if len(learned) == len(confirmed.entries) and all(learned):
+            mapping = Mapping(format='docx', entries=learned, profile=profile)
+            return mapping, dict.fromkeys((entry.target for entry in mapping.entries), 'learned'), places
+    if ambiguous and get_gateway is not None:
         task = 'executive_document'
         try:
             gateway = get_gateway()
@@ -296,19 +375,19 @@ def prepare_aosr(data, filename, get_gateway, *, target_labels=None):
         if providers:
             text_gateway = replace(gateway, entries={name: gateway.entries[name] for name in providers})
             result = extract(text_gateway, AOSRProposal, '\n'.join(json.dumps(item, ensure_ascii=False) for item in candidates.values()),
-                task=task, retries=0, instructions='Сопоставь неоднозначные подписи АОСР. '
+                task=task, retries=0, instructions=f'Сопоставь неоднозначные подписи документа ({kind}). '
                 'target — адрес из записи JSON. Соседние подписи и заголовок только уточняют смысл. Сомнительные пропускай. Допустимые field: ' +
-                ', '.join(f'{field} ({label})' for field, label in AOSR_FIELDS.items())).data
+                ', '.join(f'{field} ({label})' for field, label in fields.items())).data
             if result:
                 counts = Counter(pair.target for pair in result.entries)
                 for pair in result.entries:
-                    if pair.target not in candidates or counts[pair.target] != 1 or pair.field not in AOSR_FIELDS:
+                    if pair.target not in candidates or counts[pair.target] != 1 or pair.field not in fields:
                         continue
                     anchor = places[pair.target]
                     entries[pair.target] = Entry(field=pair.field, target=pair.target, anchor=anchor,
                         mode=blank_target_mode(pair.target, anchor))
                     origins[pair.target] = 'model'
-    return Mapping(format='docx', entries=list(entries.values()), profile='aosr_docx'), origins, places
+    return Mapping(format='docx', entries=list(entries.values()), profile=profile), origins, places
 
 
 def prepare_aosr_example(data, filename):
@@ -342,8 +421,13 @@ def missing_fields(kind, fields, *, aosr_docx=False):
 
 
 def preview_aosr(data, filename, mapping):
-    validate_mapping(data, filename, mapping, 'aosr')
-    samples = {field: 'ПРИМЕР: ' + title for field, title in EXAMPLE_FIELDS.items()}
+    return preview_docx(data, filename, mapping, 'aosr')
+
+
+def preview_docx(data, filename, mapping, kind):
+    validate_mapping(data, filename, mapping, kind)
+    fields = docx_fields(kind, example=kind == 'aosr')
+    samples = {field: 'ПРИМЕР: ' + title for field, title in fields.items()}
     samples['clear_example_value'] = ''
     date_examples = {'work_start': '12.01.2026', 'work_end': '15.01.2026', 'date': '17.01.2026'}
     for entry in mapping.entries:
@@ -354,30 +438,33 @@ def preview_aosr(data, filename, mapping):
     for entry in mapping.entries:
         paragraph_index = entry.target.partition(':')[0]
         if samples[entry.field] not in places.get(paragraph_index, ''):
-            raise ValueError('Пробное заполнение не внесло поле: ' + EXAMPLE_FIELDS[entry.field])
+            raise ValueError('Пробное заполнение не внесло поле: ' + fields[entry.field])
     return content
 
 
-def validate_mapping(data, filename, mapping, kind):
+def validate_mapping(data, filename, mapping, kind, *, require_complete=True):
     if kind not in REQUIRED:
         raise ValueError('Вид формы пока не поддерживает автозаполнение')
     aosr_docx = mapping.profile == 'aosr_docx'
+    docx_profile = mapping.profile in DOCX_PROFILES
     if aosr_docx and any(entry.mode == 'span' for entry in mapping.entries):
         from bis.services.aosr_example import check_source
 
         check_source(data)
-    fmt, places = targets(data, filename, existing_parts_only=aosr_docx)
+    fmt, places = targets(data, filename, existing_parts_only=docx_profile)
     if mapping.format not in (fmt, 'pdf_coordinates' if fmt == 'pdf' else fmt):
         raise ValueError('Формат карты не соответствует исходному файлу')
-    if aosr_docx and (kind != 'aosr' or fmt != 'docx'):
-        raise ValueError('Эта карта предназначена для бланка АОСР в DOCX')
+    if (aosr_docx and kind != 'aosr') or (docx_profile and (fmt != 'docx' or kind not in DOCX_KINDS)):
+        raise ValueError('Эта карта предназначена для поддерживаемого вида DOCX')
+    allowed_fields = docx_fields(kind) if docx_profile else FIELDS
+    sample_fields = docx_fields(kind, example=True) if aosr_docx else {}
     used = set()
     spans = defaultdict(list)
     for e in mapping.entries:
-        supported_slot = aosr_docx and e.mode in ('slot', 'token') and e.mode == aosr_target_mode(e.anchor)
-        is_span = aosr_docx and e.mode in ('span', 'slot_span')
-        allowed_fields = EXAMPLE_FIELDS if is_span and e.mode == 'span' else AOSR_FIELDS if aosr_docx else FIELDS
-        if (e.field not in allowed_fields or e.target in used
+        supported_slot = docx_profile and e.mode in ('slot', 'token') and e.mode == aosr_target_mode(e.anchor)
+        is_span = (docx_profile and e.mode == 'slot_span') or (aosr_docx and e.mode == 'span')
+        fields = sample_fields if e.mode == 'span' else allowed_fields
+        if (e.field not in fields or e.target in used
                 or not (e.mode in ('append', 'replace') or supported_slot or is_span)):
             raise ValueError('Неизвестное поле, повтор адреса или недопустимый способ заполнения')
         used.add(e.target)
@@ -419,8 +506,8 @@ def validate_mapping(data, filename, mapping, kind):
         ranges.sort()
         if paragraph in used or any(left[1] > right[0] for left, right in zip(ranges, ranges[1:], strict=False)):
             raise ValueError('Поля пересекаются в абзаце: ' + paragraph)
-    missing = missing_fields(kind, {e.field for e in mapping.entries}, aosr_docx=aosr_docx)
-    if missing:
+    missing = missing_fields(kind, {e.field for e in mapping.entries}, aosr_docx=docx_profile and kind != 'letter')
+    if require_complete and missing:
         raise ValueError('Не сопоставлены обязательные поля: ' + ', '.join(FIELDS[k] for k in sorted(missing)))
 
 
@@ -477,9 +564,13 @@ def replace_paragraph_ranges(paragraph, anchor, target, ranges):
         offset = next_offset
 
 
-def filled(data, filename, mapping, values):
+def filled(data, filename, mapping, values, *, target_values=None):
+    def entry_value(entry):
+        chosen = (target_values or {}).get(entry.target, values.get(entry.field))
+        return value_text(chosen)
+
     def text(entry):
-        value = value_text(values.get(entry.field))
+        value = entry_value(entry)
         token = re.compile(r'{{\s*' + re.escape(entry.field) + r'\s*}}')
         if token.search(entry.anchor):
             return token.sub(lambda _: value, entry.anchor)
@@ -490,17 +581,17 @@ def filled(data, filename, mapping, values):
     if mapping.format == 'docx':
         from docx import Document
         doc = Document(io.BytesIO(data))
-        lines = paragraphs(doc, existing_parts_only=mapping.profile == 'aosr_docx')
+        lines = paragraphs(doc, existing_parts_only=mapping.profile in DOCX_PROFILES)
         spans = defaultdict(list)
         for e in mapping.entries:
             if e.mode in ('span', 'slot_span'):
                 index, start, end = span_address(e.target)
-                value = '' if e.field == 'clear_example_value' else value_text(values.get(e.field))
+                value = '' if e.field == 'clear_example_value' else entry_value(e)
                 spans[index].append((start, end, value))
                 continue
             paragraph = lines[int(e.target)]
-            if mapping.profile == 'aosr_docx':
-                fill_paragraph(paragraph, e, value_text(values.get(e.field)))
+            if mapping.profile in DOCX_PROFILES:
+                fill_paragraph(paragraph, e, entry_value(e))
             elif paragraph.runs:
                 paragraph.runs[0].text = text(e)
                 for run in paragraph.runs[1:]:

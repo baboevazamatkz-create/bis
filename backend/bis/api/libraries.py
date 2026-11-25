@@ -4,6 +4,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import hmac
+import json
 import os
 import shutil
 import uuid
@@ -22,6 +23,8 @@ from bis.config import get_settings
 from bis.db import get_db
 from bis.models import ConstructionObject, Document, Organization, User
 from bis.models.libraries import LibraryConnection, LibraryFile, LibraryVersion
+from bis.security import has_scope
+from bis.services import docx_review
 from bis.services import library_forms as forms
 from bis.services import library_sync as sync
 from bis.services.audit import audit
@@ -41,10 +44,18 @@ class PolicyIn(BaseModel):
     strict: bool
 
 
+class FillContext(BaseModel):
+    object_id: uuid.UUID | None = None
+    act_date: dt.date | None = None
+    values: dict[str, str] = Field(default_factory=dict, max_length=200)
+    selections: dict[str, str] = Field(default_factory=dict, max_length=200)
+
+
 class Approval(BaseModel):
     kind: Literal['aosr', 'aook', 'letter', 'work_journal', 'id_registry']
     mapping: forms.Mapping
     preview_token: str = Field(default='', max_length=64)
+    context: FillContext | None = None
 
 
 class Assignment(BaseModel):
@@ -286,27 +297,35 @@ def original(version_id: uuid.UUID, db: Session = Depends(get_db), user: User = 
 
 
 @router.post('/versions/{version_id}/prepare')
-def prepare(version_id: uuid.UUID, kind: Literal['aosr'] | None = None, example: bool = False,
+def prepare(version_id: uuid.UUID, kind: Literal['aosr', 'aook', 'letter'] | None = None, example: bool = False,
             db: Session = Depends(get_db), user: User = Depends(require('settings:write'))):
-    v, item, _ = version_owned(db, user, version_id, write=True)
+    v, item, connection = version_owned(db, user, version_id, write=True)
+    _check_review_project(db, connection)
     if v.approved_at:
         raise HTTPException(409, 'Эта версия уже подтверждена; сначала отмените подтверждение')
     from bis.llm.gateway import get_gateway
     try:
         raw = get_storage().get(v.file_key)
-        if example or kind == 'aosr' or (v.form_kind == 'aosr' and item.relative_path.lower().endswith('.docx')):
+        chosen = kind or ('aosr' if v.form_kind == 'aosr' else None)
+        if example or (chosen in forms.DOCX_KINDS and _is_docx(item)):
+            chosen = chosen or 'aosr'
+            if example and chosen != 'aosr':
+                raise ValueError('Настройка по заполненному примеру поддерживает АОСР в DOCX')
             check_template_version(raw, v)
-            target_labels: dict[str, str] = {}
+            labels: dict[str, str] = {}
             if example:
                 mapping, origins, places = forms.prepare_aosr_example(raw, item.relative_path)
+                confirmed = _confirmed_mapping(db, connection, chosen, raw, example=True)
+                if confirmed:
+                    mapping = confirmed
+                    origins = dict.fromkeys((entry.target for entry in mapping.entries), 'learned')
             else:
-                mapping, origins, places = forms.prepare_aosr(raw, item.relative_path, get_gateway, target_labels=target_labels)
-            return {**mapping.model_dump(), 'targets': places, 'origins': origins, 'example': example,
-                    'fields': forms.EXAMPLE_FIELDS if example else forms.AOSR_FIELDS, 'target_labels': target_labels,
-                    'required': sorted(forms.REQUIRED['aosr']),
-                    'alternatives': {'representatives': sorted(forms.REPRESENTATIVE_FIELDS)} if example else {},
-                    'modes': {target: 'span' if example else forms.blank_target_mode(target, anchor)
-                              for target, anchor in places.items()}}
+                confirmed = _confirmed_mapping(db, connection, chosen, raw)
+                mapping, origins, places = forms.prepare_docx(raw, item.relative_path, chosen, get_gateway,
+                                                              target_labels=labels, confirmed=confirmed)
+            return _review_payload(raw, chosen, mapping, places, origins, labels, example=example)
+        if kind is not None:
+            raise ValueError('Это действие предназначено для DOCX')
         mapping = forms.prepare(raw, item.relative_path, get_gateway())
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -319,31 +338,255 @@ def prepare(version_id: uuid.UUID, kind: Literal['aosr'] | None = None, example:
     return {**v.mapping, "targets": places}
 
 
+def _is_docx(item):
+    return item.relative_path.lower().endswith('.docx')
+
+
+def _semantic_docx(item, kind, mapping):
+    return _is_docx(item) and (kind == 'aosr' or mapping.profile == 'docx_fields')
+
+
+def _review_payload(raw, kind, mapping, places, origins, labels, *, example=False):
+    return {**mapping.model_dump(exclude_none=True), 'kind': kind, 'targets': places, 'origins': origins, 'example': example,
+            'fields': forms.docx_fields(kind, example=example), 'target_labels': labels,
+            'required': sorted(forms.REQUIRED[kind]),
+            'alternatives': {'representatives': sorted(forms.REPRESENTATIVE_FIELDS)} if kind in ('aosr', 'aook') else {},
+            'modes': {target: 'span' if example else forms.blank_target_mode(target, anchor)
+                      for target, anchor in places.items()},
+            'layout': docx_review.outline(raw, precise=mapping.profile in forms.DOCX_PROFILES)}
+
+
+def _confirmed_mapping(db, connection, kind, raw, *, example=False):
+    signature = docx_review.fingerprint(raw, example=example)
+    scope = [LibraryConnection.enabled.is_(True), LibraryConnection.level == connection.level]
+    if connection.level == 'knowledge':
+        scope.append(LibraryConnection.id == connection.id)
+    else:
+        scope.extend((LibraryConnection.organization_id == connection.organization_id,
+                      LibraryConnection.object_id == connection.object_id))
+    saved = db.scalars(select(LibraryVersion.mapping).join(LibraryFile, LibraryFile.id == LibraryVersion.file_id)
+                       .join(LibraryConnection, LibraryConnection.id == LibraryFile.connection_id)
+                       .where(*scope, LibraryVersion.form_kind == kind, LibraryVersion.approved_at.is_not(None),
+                              LibraryVersion.mapping['layout_key'].astext == signature)).all()
+    candidates = {}
+    for payload in saved:
+        mapping = forms.Mapping.model_validate(payload)
+        if example == any(entry.mode == 'span' for entry in mapping.entries):
+            key = tuple(sorted(entry.model_dump_json() for entry in mapping.entries))
+            candidates[key] = mapping
+    return next(iter(candidates.values())) if len(candidates) == 1 else None
+
+
+@router.get('/versions/{version_id}/review')
+def review(version_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(require('knowledge:read'))):
+    version, item, connection = version_owned(db, user, version_id)
+    _check_review_project(db, connection)
+    if not version.approved_at or version.form_kind not in forms.DOCX_KINDS or not _is_docx(item):
+        raise HTTPException(404, 'У этой версии нет утверждённой карты DOCX')
+    raw = get_storage().get(version.file_key)
+    mapping = forms.Mapping.model_validate(version.mapping)
+    try:
+        check_template_version(raw, version)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    places = {entry.target: entry.anchor for entry in mapping.entries}
+    example = any(entry.mode == 'span' for entry in mapping.entries)
+    return _review_payload(raw, version.form_kind, mapping, places, {}, {}, example=example)
+
+
+class Resolution(FillContext):
+    kind: Literal['aosr', 'aook', 'letter']
+    mapping: forms.Mapping
+
+
+def _check_review_project(db, connection):
+    scope = db.info.get('source_context')
+    if scope and scope.object_id and connection.level == 'project' and connection.object_id != scope.object_id:
+        raise HTTPException(404, 'Выберите проект этой библиотеки')
+
+
+def _effective_act_date(mapping, context):
+    from bis.services.executive_pipeline import dates_in
+
+    dates = set()
+    for entry in mapping.entries:
+        if entry.field != 'date' or entry.target not in context.values:
+            continue
+        parsed = dates_in(context.values[entry.target])
+        if len(parsed) != 1:
+            raise ValueError('Укажите дату документа в формате ДД.ММ.ГГГГ')
+        dates.add(parsed[0][1])
+    if context.act_date:
+        dates.add(context.act_date)
+    if len(dates) > 1:
+        raise ValueError('В карте указаны разные даты документа')
+    return next(iter(dates), None)
+
+
+def _resolve_context(db, user, connection, mapping, context, *, as_of=None):
+    from bis.services import form_sources
+
+    _check_review_project(db, connection)
+    current_scope = db.info.get('source_context')
+    object_id = context.object_id or connection.object_id or (current_scope.object_id if current_scope else None)
+    if connection.object_id is not None and object_id != connection.object_id:
+        raise LookupError('Утверждённая форма относится к другому проекту')
+    return form_sources.resolve(db, user, mapping, object_id=object_id, act_date=_effective_act_date(mapping, context),
+                                values=context.values, selections=context.selections, as_of=as_of), object_id
+
+
+@router.post('/versions/{version_id}/resolve')
+def resolve(version_id: uuid.UUID, body: Resolution, db: Session = Depends(get_db),
+            user: User = Depends(require('documents:write'))):
+    version, item, connection = version_owned(db, user, version_id)
+    if not _is_docx(item):
+        raise HTTPException(400, 'Заполнение по источникам поддерживает DOCX')
+    mapping = forms.Mapping.model_validate(version.mapping) if version.approved_at else body.mapping
+    if version.approved_at and version.form_kind != body.kind:
+        raise HTTPException(409, 'Вид утверждённой формы изменился')
+    raw = get_storage().get(version.file_key)
+    try:
+        check_template_version(raw, version)
+        forms.validate_mapping(raw, item.relative_path, mapping, body.kind, require_complete=False)
+        resolved, _ = _resolve_context(db, user, connection, mapping, body)
+        return resolved
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+def _render_resolved(raw, item, mapping, resolved):
+    values = {target: result['value'] for target, result in resolved['fields'].items()}
+    content = forms.filled(raw, item.relative_path, mapping, {}, target_values=values)
+    if mapping.profile in forms.DOCX_PROFILES:
+        docx_review.verify_geometry(raw, content)
+    return content
+
+
+def _fill_issues(resolved, kind):
+    from bis.services.executive_pipeline import dates_in
+
+    labels = forms.docx_fields(kind, example=kind == 'aosr')
+    required = set(forms.REQUIRED[kind])
+    results = list(resolved['fields'].values())
+    if 'representatives' in required and not any(row['field'] == 'representatives' for row in results):
+        required.update(forms.REPRESENTATIVE_FIELDS)
+    issues = []
+    dates = {}
+    for result in results:
+        field = result['field']
+        if result['state'] == 'resolved':
+            if kind != 'letter' and field in ('work_start', 'work_end', 'date'):
+                parsed = dates_in(result['value'])
+                if len(parsed) != 1 or (field in dates and dates[field] != parsed[0][1]):
+                    issues.append({'level': 'error', 'field': field, 'message': 'Проверьте дату: ' + labels[field]})
+                else:
+                    dates[field] = parsed[0][1]
+            continue
+        missing = result['state'] == 'missing'
+        message = ('Нет данных: ' if missing else 'Требуется выбор: ') + labels.get(field, field)
+        if result.get('issues'):
+            message += ' · ' + ', '.join(result['issues'])
+        issues.append({'level': 'warning' if missing and field not in required else 'error', 'field': field, 'message': message})
+    for first, last in (('work_start', 'work_end'), ('work_end', 'date')):
+        if first in dates and last in dates and dates[first] > dates[last]:
+            issues.append({'level': 'error', 'field': last, 'message': f'{labels[last]} раньше: {labels[first]}'})
+    return issues
+
+
+@router.post('/versions/{version_id}/generate')
+def generate(version_id: uuid.UUID, body: FillContext, db: Session = Depends(get_db),
+             user: User = Depends(require('documents:write'))):
+    from bis.services.documents import save_document
+
+    version, item, connection = version_owned(db, user, version_id)
+    kind = version.form_kind
+    if not version.approved_at or kind not in forms.DOCX_KINDS or not _is_docx(item):
+        raise HTTPException(409, 'Сначала утвердите карту DOCX')
+    if not connection.enabled or item.active_version_id != version.id or item.state != 'ready' or version.state != 'ready':
+        raise HTTPException(409, 'Выбранная версия шаблона уже не действует')
+    raw = get_storage().get(version.file_key)
+    mapping = forms.Mapping.model_validate(version.mapping)
+    try:
+        check_template_version(raw, version)
+        forms.validate_mapping(raw, item.relative_path, mapping, kind)
+        as_of = dt.date.today()
+        resolved, object_id = _resolve_context(db, user, connection, mapping, body, as_of=as_of)
+        conflicts = [target for target, row in resolved['fields'].items() if row['state'] == 'conflict']
+        if conflicts:
+            labels = forms.docx_fields(kind)
+            raise HTTPException(409, 'Требуется выбор: ' + ', '.join(labels.get(resolved['fields'][t]['field'], t) for t in conflicts))
+        issues = _fill_issues(resolved, kind)
+        content = _render_resolved(raw, item, mapping, resolved)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except (ValueError, OSError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    stem = Path(item.relative_path).stem
+    name = stem + ' — заполнено.docx'
+    mime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    document = save_document(db, get_storage(), org_id=user.organization_id, kind=kind, title=stem,
+                             data={'form_resolution': resolved, 'form_fill': {**body.model_dump(mode='json', exclude={'object_id'}),
+                                   'as_of': as_of.isoformat()}, 'library_form': {'version_id': str(version.id),
+                                   'sha256': version.sha256}}, file_bytes=content, file_name=name, mime=mime,
+                             created_by=f'user:{user.id}', object_id=object_id, doc_date=_effective_act_date(mapping, body),
+                             issues=issues)
+    db.commit()
+    return Response(content, media_type=mime, headers={
+        'Content-Disposition': "attachment; filename*=UTF-8''" + quote(name),
+        'X-BIS-Document-Id': str(document.id),
+        'X-BIS-Document-Issues': quote(json.dumps(issues[:12], ensure_ascii=False)),
+    })
+
+
 def check_template_version(raw, version):
     if hashlib.sha256(raw).hexdigest() != version.sha256:
         raise ValueError('Сохранённый оригинал формы изменился')
 
 
-def form_preview_token(version, user, mapping):
-    payload = f'aosr-preview:{version.id}:{version.sha256}:{user.id}:{mapping.model_dump_json()}'
+def form_preview_token(version, user, mapping, kind):
+    payload = f'docx-preview:{kind}:{version.id}:{version.sha256}:{user.id}:{mapping.model_dump_json()}'
     return hmac.new(get_settings().secret_key.encode(), payload.encode(), hashlib.sha256).hexdigest()
 
 
 @router.post('/versions/{version_id}/preview')
 def preview(version_id: uuid.UUID, body: Approval, db: Session = Depends(get_db),
-            user: User = Depends(require('settings:write'))):
-    v, item, _ = version_owned(db, user, version_id, write=True)
+            user: User = Depends(require('documents:write'))):
+    v, item, connection = version_owned(db, user, version_id)
+    _check_review_project(db, connection)
+    proposed = body.mapping
+    if v.approved_at:
+        if v.form_kind != body.kind:
+            raise HTTPException(409, 'Вид утверждённой формы изменился')
+        proposed = forms.Mapping.model_validate(v.mapping)
+    else:
+        if not has_scope(user.role, 'settings:write'):
+            raise HTTPException(403, 'Настройка карты доступна администратору')
+        v, item, connection = version_owned(db, user, version_id, write=True)
     headers = {}
     try:
         raw = get_storage().get(v.file_key)
-        if body.kind == 'aosr' and item.relative_path.lower().endswith('.docx'):
+        if _semantic_docx(item, body.kind, proposed) or (v.approved_at and _is_docx(item) and body.kind in forms.DOCX_KINDS):
             check_template_version(raw, v)
-            mapping = body.mapping.model_copy(update={'profile': 'aosr_docx'})
-            content = forms.preview_aosr(raw, item.relative_path, mapping)
-            headers['X-BIS-Form-Preview'] = form_preview_token(v, user, mapping)
+            mapping = proposed.model_copy(update={'profile': 'aosr_docx'}) if body.kind == 'aosr' and not v.approved_at else proposed
+            if body.context is not None:
+                forms.validate_mapping(raw, item.relative_path, mapping, body.kind)
+                resolved, _ = _resolve_context(db, user, connection, mapping, body.context)
+                content = _render_resolved(raw, item, mapping, resolved)
+                headers['X-BIS-Document-Issues'] = quote(json.dumps(_fill_issues(resolved, body.kind)[:12], ensure_ascii=False))
+            elif mapping.profile in forms.DOCX_PROFILES:
+                content = forms.preview_docx(raw, item.relative_path, mapping, body.kind)
+                docx_review.verify_geometry(raw, content)
+            else:
+                forms.validate_mapping(raw, item.relative_path, mapping, body.kind)
+                content = forms.filled(raw, item.relative_path, mapping, {k: 'ПРИМЕР: ' + label for k, label in forms.FIELDS.items()})
+            headers['X-BIS-Form-Preview'] = form_preview_token(v, user, mapping, body.kind)
         else:
-            forms.validate_mapping(raw, item.relative_path, body.mapping, body.kind)
-            content = forms.filled(raw, item.relative_path, body.mapping, {k: 'ПРИМЕР: ' + label for k, label in forms.FIELDS.items()})
+            forms.validate_mapping(raw, item.relative_path, proposed, body.kind)
+            content = forms.filled(raw, item.relative_path, proposed, {k: 'ПРИМЕР: ' + label for k, label in forms.FIELDS.items()})
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
     except (ValueError, OSError) as exc:
         raise HTTPException(400, str(exc)) from exc
     return Response(content, media_type=v.mime or 'application/octet-stream', headers=headers)
@@ -352,22 +595,27 @@ def preview(version_id: uuid.UUID, body: Approval, db: Session = Depends(get_db)
 @router.post('/versions/{version_id}/approve')
 def approve(version_id: uuid.UUID, body: Approval, db: Session = Depends(get_db),
             user: User = Depends(require('settings:write'))):
-    v, item, _ = version_owned(db, user, version_id, write=True, lock=True)
+    v, item, connection = version_owned(db, user, version_id, write=True, lock=True)
+    _check_review_project(db, connection)
     if v.approved_at:
         raise HTTPException(409, 'Карта этой версии уже подтверждена')
     mapping = body.mapping
     try:
         raw = get_storage().get(v.file_key)
-        if body.kind == 'aosr' and item.relative_path.lower().endswith('.docx'):
+        if _semantic_docx(item, body.kind, mapping):
             check_template_version(raw, v)
-            mapping = mapping.model_copy(update={'profile': 'aosr_docx'})
-            if not hmac.compare_digest(body.preview_token.encode(), form_preview_token(v, user, mapping).encode()):
+            if body.kind == 'aosr':
+                mapping = mapping.model_copy(update={'profile': 'aosr_docx'})
+            if not hmac.compare_digest(body.preview_token.encode(), form_preview_token(v, user, mapping, body.kind).encode()):
                 raise ValueError('Скачайте пробное заполнение для текущей карты полей')
         else:
             forms.validate_mapping(raw, item.relative_path, mapping, body.kind)
     except (ValueError, OSError) as exc:
         raise HTTPException(400, str(exc)) from exc
-    v.form_kind, v.mapping, v.approved_at, v.approved_by_id = body.kind, mapping.model_dump(exclude_none=True), dt.datetime.now(dt.UTC), user.id
+    payload = mapping.model_dump(exclude_none=True)
+    if mapping.profile in forms.DOCX_PROFILES:
+        payload['layout_key'] = docx_review.fingerprint(raw, example=any(entry.mode == 'span' for entry in mapping.entries))
+    v.form_kind, v.mapping, v.approved_at, v.approved_by_id = body.kind, payload, dt.datetime.now(dt.UTC), user.id
     audit(db, user.organization_id, actor_type='user', actor=str(user.id), action='library.form_approve',
           entity_type='library_version', entity_id=v.id, details={'sha256': v.sha256, 'kind': body.kind})
     db.commit()
