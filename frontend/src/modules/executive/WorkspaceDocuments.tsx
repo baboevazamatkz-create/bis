@@ -5,6 +5,7 @@ import AosrForm from '../../pages/AosrForm';
 import { navigate } from '../navigation';
 import TaskComposer from './TaskComposer';
 import RunList from './RunList';
+import ProjectFragments from './ProjectFragments';
 import ProjectStructure from './ProjectStructure';
 import { askAssistant } from './assistantTask';
 
@@ -41,6 +42,7 @@ export default function WorkspaceDocuments({ category, canWrite = false, openPro
   const request = useRef<AbortController | null>(null);
   const [filter, setFilter] = useState('all');
   const [query, setQuery] = useState('');
+  const [searchMode, setSearchMode] = useState<'documents' | 'fragments'>('documents');
   const [appliedQuery, setAppliedQuery] = useState('');
   const [selected, setSelected] = useState<Item | null>(null);
   const [check, setCheck] = useState<PackageCheck | null>(null);
@@ -141,6 +143,11 @@ export default function WorkspaceDocuments({ category, canWrite = false, openPro
     {category === 'project' && !DEMO && activeProject() && <ProjectStructure key={activeProject()} projectId={activeProject()} />}
     <div className="document-workbench">
     <div className="panel document-register">
+      {category === 'project' && <div className="tabs" role="group" aria-label="Режим поиска">
+        <button className={`tab ${searchMode === 'documents' ? 'active' : ''}`} aria-pressed={searchMode === 'documents'} onClick={() => setSearchMode('documents')}>Поиск по списку</button>
+        <button className={`tab ${searchMode === 'fragments' ? 'active' : ''}`} aria-pressed={searchMode === 'fragments'} onClick={() => setSearchMode('fragments')}>Поиск фрагментов</button>
+      </div>}
+      {searchMode === 'fragments' ? <ProjectFragments /> : <>
       <div className="row workspace-search"><input aria-label="Поиск документов" placeholder="Имя файла, номер документа или фрагмент текста" value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') searchNow(); }} />
         <button className="btn" disabled={busy} onClick={searchNow}>Найти в списке</button>{appliedQuery && <button className="btn small" onClick={() => { setQuery(''); setAppliedQuery(''); }}>Сбросить поиск</button>}</div>
       <div className="row section-list-header"><h2>Документы {data ? `· ${data.total}` : ''}</h2>
@@ -163,6 +170,7 @@ export default function WorkspaceDocuments({ category, canWrite = false, openPro
         </div>
       </article>)}</div>
       {data?.has_more && <button className="btn" disabled={busy} onClick={() => void load(true)}>Показать ещё</button>}
+      </>}
     </div>
     <aside className="document-tools" aria-label="Документы и задания">
       {category === 'documents' && check && <section className="panel package-check" aria-label="Результат проверки комплектности">

@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import date
 from typing import Literal
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
@@ -14,12 +15,18 @@ from bis.api.deps import require
 from bis.api.libraries import can_manage_knowledge
 from bis.api.uploads import read_upload
 from bis.db import get_db
-from bis.models import KnowledgeChunk, KnowledgeSource, User
+from bis.models import Document, KnowledgeChunk, KnowledgeSource, User
 from bis.rag.embeddings import get_embedder, get_query_embedder
 from bis.rag.ingest import KNOWLEDGE_KINDS, ingest_bytes
 from bis.rag.parsers import UnsupportedFormat
 from bis.rag.search import hybrid_search
 from bis.services.audit import audit
+from bis.services.library_access import (
+    ProjectSelectionRequired,
+    project_source_predicate,
+    search_scope_options,
+    selected_project,
+)
 from bis.services.storage import get_storage
 
 router = APIRouter(prefix="/knowledge", tags=["knowledge"])
@@ -152,13 +159,41 @@ def source_chunks(source_id: uuid.UUID, limit: int = 50, offset: int = 0, db: Se
 
 @router.get("/search")
 def search(q: str, scope: Literal["norms", "organization", "project", "all"] = "all", k: int = 8,
+           fragments: bool = False,
            db: Session = Depends(get_db), user: User = Depends(require("knowledge:read"))):
     from bis.agents.builtin_tools import SCOPE_KINDS
 
-    policy = db.info.get("source_context")
-    level = {"norms": "knowledge", "organization": "organization", "project": "project"}.get(scope) if policy and policy.strict else None
-    hits = hybrid_search(db, get_query_embedder(), q, org_id=user.organization_id, kinds=SCOPE_KINDS[scope], library_level=level, k=min(k, 30))
+    try:
+        options = search_scope_options(db, user.organization_id, scope)
+    except ProjectSelectionRequired as exc:
+        raise HTTPException(409, str(exc)) from exc
+    fragments = fragments and scope == "project"
+    hits = hybrid_search(db, None if fragments else get_query_embedder(), q,
+                         org_id=user.organization_id, kinds=SCOPE_KINDS[scope], k=min(k, 30),
+                         fragments_only=fragments, **options)
     return {"query": q, "results": [h.to_dict() for h in hits]}
+
+
+@router.get("/project/sources/{source_id}/file")
+def project_source_file(source_id: uuid.UUID, db: Session = Depends(get_db),
+                        user: User = Depends(require("knowledge:read"))):
+    try:
+        scope = selected_project(db, user.organization_id)
+    except ProjectSelectionRequired as exc:
+        raise HTTPException(409, str(exc)) from exc
+    src = db.scalar(select(KnowledgeSource).where(KnowledgeSource.id == source_id, project_source_predicate(scope)))
+    if src is None:
+        raise HTTPException(404, "Источник недоступен")
+    original = src if src.file_key else db.get(Document, src.document_id) if src.document_id else None
+    if original and original.file_key:
+        mime = original.mime
+        if mime in (None, "", "application/octet-stream") and (original.file_name or "").lower().endswith(".pdf"):
+            mime = "application/pdf"
+        try:
+            return _original_response(original.file_key, original.file_name, mime)
+        except FileNotFoundError:
+            pass
+    raise HTTPException(404, "Оригинал недоступен")
 
 
 @router.get("/sources/{source_id}/file")
@@ -166,7 +201,9 @@ def source_file(source_id: uuid.UUID, db: Session = Depends(get_db), user: User 
     src = db.scalar(select(KnowledgeSource).where(KnowledgeSource.id == source_id))
     if src is None or src.organization_id not in (None, user.organization_id) or not src.file_key:
         raise HTTPException(404, "Источник недоступен")
-    from urllib.parse import quote
+    return _original_response(src.file_key, src.file_name, src.mime)
 
-    return Response(get_storage().get(src.file_key), media_type=src.mime or "application/octet-stream",
-        headers={"Content-Disposition": "attachment; filename*=UTF-8''" + quote(src.file_name or "source")})
+
+def _original_response(key, filename, mime):
+    return Response(get_storage().get(key), media_type=mime or "application/octet-stream",
+        headers={"Content-Disposition": "attachment; filename*=UTF-8''" + quote(filename or "source")})

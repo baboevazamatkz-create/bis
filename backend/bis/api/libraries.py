@@ -21,13 +21,19 @@ from sqlalchemy.orm import Session
 from bis.api.deps import require
 from bis.config import get_settings
 from bis.db import get_db
-from bis.models import ConstructionObject, Document, Organization, User
+from bis.models import ConstructionObject, Document, KnowledgeSource, Organization, User
 from bis.models.libraries import LibraryConnection, LibraryFile, LibraryVersion
+from bis.rag.reading import coverage_status
 from bis.security import has_scope
 from bis.services import docx_review
 from bis.services import library_forms as forms
 from bis.services import library_sync as sync
 from bis.services.audit import audit
+from bis.services.library_access import (
+    ProjectSelectionRequired,
+    project_connection_predicate,
+    selected_project,
+)
 from bis.services.storage import get_storage
 
 router = APIRouter(prefix='/libraries', tags=['libraries'])
@@ -273,13 +279,13 @@ def files(connection_id: uuid.UUID, db: Session = Depends(get_db), user: User = 
     for f in db.scalars(select(LibraryFile).where(LibraryFile.connection_id == connection_id).order_by(LibraryFile.relative_path)):
         versions = db.scalars(select(LibraryVersion).where(LibraryVersion.file_id == f.id).order_by(LibraryVersion.revision.desc())).all()
         active = next((v for v in versions if v.id == f.active_version_id), None)
-        from bis.models import KnowledgeSource
-
         source = db.get(KnowledgeSource, active.source_id) if active and active.source_id else None
         reading = (source.meta or {}).get('reading') or {} if source else {}
-        partial = f.state == 'ready' and (reading.get('warnings') or reading.get('empty_pages'))
+        status = coverage_status(reading) if f.state == 'ready' else f.state
+        partial = status == 'partial'
         result.append({'id': f.id, 'path': f.relative_path, 'state': 'partial' if partial else f.state,
             'error': f.error or '; '.join(reading.get('warnings', [])) or None, 'reading': reading,
+            'reading_status': status,
             'source_id': str(source.id) if source else None, 'source_kind': source.kind if source else None,
             'source_status': source.status if source else None,
             'active_version_id': f.active_version_id, 'versions': [
@@ -287,6 +293,25 @@ def files(connection_id: uuid.UUID, db: Session = Depends(get_db), user: User = 
                  'mapping': v.mapping, 'approved_at': v.approved_at, 'source_id': v.source_id,
                  'created_at': v.created_at} for v in versions]})
     return result
+
+
+@router.get('/project/coverage')
+def project_coverage(db: Session = Depends(get_db), user: User = Depends(require('knowledge:read'))):
+    try:
+        scope = selected_project(db, user.organization_id)
+    except ProjectSelectionRequired as exc:
+        raise HTTPException(409, str(exc)) from exc
+    rows = db.execute(select(LibraryFile.state, KnowledgeSource.meta).select_from(LibraryFile)
+        .join(LibraryConnection).outerjoin(LibraryVersion, LibraryVersion.id == LibraryFile.active_version_id)
+        .outerjoin(KnowledgeSource, KnowledgeSource.id == LibraryVersion.source_id)
+        .where(project_connection_predicate(scope), LibraryConnection.enabled.is_(True),
+               LibraryFile.state != 'removed'))
+    counts = dict(files=0, ready=0, partial=0, error=0, unknown=0)
+    for state, meta in rows:
+        status = coverage_status((meta or {}).get('reading')) if state == 'ready' else state
+        counts['files'] += 1
+        counts[status if status in counts else 'unknown'] += 1
+    return counts
 
 
 @router.get('/versions/{version_id}/file')

@@ -209,14 +209,17 @@ class GenericChunker:
             size = 0
             for p in paras:
                 if buf and size + len(p) > self.max_chars:
-                    chunks.append(ChunkData(ord=len(chunks), content="\n".join(buf), page=page.number))
+                    chunks.append(ChunkData(ord=len(chunks), content="\n".join(buf), page=page.number,
+                                            section_path=page.sheet_name))
                     buf = buf[-self.overlap :] if self.overlap else []
                     size = sum(len(x) for x in buf)
                 while len(p) > self.max_chars * 1.5:  # очень длинный абзац
-                    chunks.append(ChunkData(ord=len(chunks), content=p[: self.max_chars], page=page.number))
+                    chunks.append(ChunkData(ord=len(chunks), content=p[: self.max_chars], page=page.number,
+                                            section_path=page.sheet_name))
                     p = p[self.max_chars :]
                 buf.append(p)
                 size += len(p)
             if buf:
-                chunks.append(ChunkData(ord=len(chunks), content="\n".join(buf), page=page.number))
+                chunks.append(ChunkData(ord=len(chunks), content="\n".join(buf), page=page.number,
+                                        section_path=page.sheet_name))
         return chunks

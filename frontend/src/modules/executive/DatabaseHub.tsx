@@ -6,14 +6,28 @@ import DocumentFormReview, { type FormReview, type PreparedForm } from './Docume
 type Level = 'knowledge' | 'project' | 'organization';
 interface Connection { id: string; name: string; level: Level; path: string; object_id: string | null; enabled: boolean; status: string; error: string | null; synced_at: string | null }
 interface State { connections: Connection[]; allowed_roots: string[]; platform_admin: boolean; strict: boolean }
+interface CoverageReport { complete?: boolean; segments?: number; with_text?: number; empty_pages?: number[]; sparse_pages?: number[] }
 interface FileRow { id: string; path: string; state: string; error: string | null; source_id?: string; source_kind?: string; source_status?: string; active_version_id?: string;
+  reading_status?: string; reading?: CoverageReport;
   versions?: { id: string; form_kind: string | null; approved_at: string | null }[] }
 type AIProvider = 'anthropic' | 'openai' | 'ollama' | 'compatible' | 'gigachat' | 'yandex';
 interface ReadingStatus { key_configured?: boolean; provider_key_configured?: boolean; selected_provider?: string | null; selected_model?: string | null; selected_base_url?: string | null; ocr_provider?: string; last_model_attempts?: {provider: string; ok: boolean; error?: string; checked_at: string}[]; providers: { name: string; capabilities: string[] }[]; model_error: string | null; text_configured: boolean; vision_configured: boolean; ocr_configured: boolean; folder_id: string | null; local_setup_available: boolean; voice: { stt: boolean } }
 interface ModelCheck { providers: { provider: string; ok: boolean; error?: string; hint?: string; reply?: string }[] }
-interface Imports { total: number; documents: { id: string; title: string; state: string; error: string | null }[]; has_more: boolean }
+interface Imports { total: number; documents: { id: string; title: string; file_name?: string | null; state: string; error: string | null; reading?: CoverageReport }[]; has_more: boolean }
 const LABELS = { project: 'База проекта', organization: 'База организаций', knowledge: 'База знаний' };
-const STATES: Record<string,string> = { ready: 'Текст доступен', partial: 'Есть ошибки чтения', pending: 'Подключена, ожидает чтения', reading: 'Читаю документы…', error: 'Ошибка', empty: 'Очищена', removed: 'Удалён из папки' };
+const STATES: Record<string,string> = { ready: 'Текст доступен', partial: 'Частичное чтение', unknown: 'Охват чтения неизвестен', pending: 'Подключена, ожидает чтения', reading: 'Читаю документы…', error: 'Ошибка чтения', empty: 'Очищена', removed: 'Удалён из папки' };
+
+function FileCoverage({ file }: { file: Pick<FileRow, 'path' | 'state' | 'reading'> }) {
+  const reading = file.reading;
+  if (reading?.segments == null || reading.with_text == null || file.state === 'error') return null;
+  const unit = /\.xls[xm]$/i.test(file.path) ? 'листов' : /\.pdf$/i.test(file.path) ? 'страниц' : 'сегментов';
+  const sparse = reading.sparse_pages?.filter((page) => !reading.empty_pages?.includes(page));
+  return <>
+    <p className="small muted">{reading.with_text}/{reading.segments} {unit} с текстом</p>
+    {!!reading.empty_pages?.length && <p className="small text-bad">Нет текста на страницах: {reading.empty_pages.join(', ')}</p>}
+    {!!sparse?.length && <p className="small text-bad">Мало текста на страницах: {sparse.join(', ')}</p>}
+  </>;
+}
 
 export default function DatabaseHub({ user }: { user: User }) {
   const filePicker = useRef<HTMLInputElement | null>(null);
@@ -146,7 +160,7 @@ export default function DatabaseHub({ user }: { user: User }) {
   }
   const connections = state?.connections.filter((c) => c.level === level && (level !== 'project' || c.object_id === activeProject())) ?? [];
   const allFiles = connections.flatMap((c) => files[c.id] ?? []);
-  const readingProblems = allFiles.filter((f) => f.state === 'error' || f.state === 'partial');
+  const readingProblems = allFiles.filter((f) => f.state === 'error' || f.state === 'partial' || f.reading_status === 'unknown');
   return <>
     <PageHead title="Базы данных" description="Подключения, состояние документов и настройки чтения." />
     {(error || message) && <div className="workspace-feedback">{error && <div className="alert error" role="alert">{error}</div>}{message && <div className="note" role="status">{message}</div>}</div>}
@@ -185,7 +199,7 @@ export default function DatabaseHub({ user }: { user: User }) {
           </div>}
         </div>
         {c.error && <p className="small text-bad">{c.error}</p>}
-        <details><summary>Файлы и ошибки чтения · {files[c.id]?.length ?? 0}</summary><div className="database-files">{files[c.id]?.map((f) => <div key={f.id}><strong className="small">{f.path}</strong><span className={f.state === 'error' ? 'text-bad small' : 'muted small'}>{STATES[f.state] ?? f.state}</span>{f.error && <p className="small text-bad">{f.error}</p>}
+        <details open={level === 'project' || undefined}><summary>Файлы и ошибки чтения · {files[c.id]?.length ?? 0}</summary><div className="database-files">{files[c.id]?.map((f) => <div key={f.id}><strong className="small">{f.path}</strong><span className={['error', 'partial'].includes(f.state) ? 'text-bad small' : 'muted small'}>{STATES[f.reading_status ?? f.state] ?? f.state}</span><FileCoverage file={f} />{f.error && <p className="small text-bad">{f.error}</p>}
           <div className="row">
             {canWrite && (c.level !== 'knowledge' || state?.platform_admin) && f.source_kind === 'norm' && f.source_status === 'unknown' && <button className="btn small" disabled={busy} onClick={() => void action(() => api(`/knowledge/sources/${f.source_id}`, { method: 'PATCH', json: { status: 'active' } }), 'Редакция норматива подтверждена.')}>Подтвердить действующую редакцию</button>}
             {f.versions?.filter((v) => v.id === f.active_version_id).map((v) => {
@@ -218,17 +232,22 @@ export default function DatabaseHub({ user }: { user: User }) {
     </div>
     <aside className="panel reading-overview">
       <h2>Качество чтения</h2>
-      <p className="muted">Файлов: {allFiles.length} · прочитано: {allFiles.filter((f) => f.state === 'ready').length} · ошибок: {allFiles.filter((f) => f.state === 'error').length}</p>
+      <p className="muted">Файлов: {allFiles.length} · с полным охватом: {allFiles.filter((f) => f.reading_status === 'ready').length} · частично: {allFiles.filter((f) => f.state === 'partial').length} · ошибок: {allFiles.filter((f) => f.state === 'error').length}</p>
       {readingProblems.length > 0 && <details>
         <summary>Требуют внимания · {readingProblems.length}</summary>
-        <ul>{readingProblems.map((f) => <li key={f.id}><strong>{f.path}</strong><p className="small text-bad">{f.error || STATES[f.state]}</p></li>)}</ul>
+        <ul>{readingProblems.map((f) => <li key={f.id}><strong>{f.path}</strong><p className="small text-bad">{f.error || STATES[f.reading_status ?? f.state]}</p></li>)}</ul>
       </details>}
     </aside>
     </div>
     {!!imports[level]?.total && <div className="panel"><div className="row section-list-header"><h2>Загруженные файлы · {imports[level]?.total}</h2>
       {canWrite && <div className="row"><button className="btn small" disabled={busy} onClick={() => void action(() => api(`/workspace/imports/reread?level=${level}`, { method: 'POST' }), 'Началось перечитывание сохранённых оригиналов. Повторно загружать файлы не нужно.')}>Перечитать загруженные файлы</button>
         <ConfirmButton disabled={busy} label="Очистить загруженные файлы" confirmLabel="Удалить импортированные данные этой базы?" onConfirm={() => void action(() => api(`/workspace/imports?level=${level}`, { method: 'DELETE' }), 'Импортированные данные очищены. Созданные в BIS акты сохранены.')} /></div>}
-      </div><details><summary>Состояние чтения</summary><div className="database-files">{imports[level]?.documents.map((d) => <div key={d.id}><strong className="small">{d.title}</strong><span className="small muted">{({ stored: 'Оригинал загружен', queued: 'Ожидает перечитывания', running: 'Читаю…', ready: 'Текст перечитан', error: 'Ошибка чтения' } as Record<string,string>)[d.state] ?? d.state}</span>{d.error && <p className="small text-bad">{d.error}</p>}</div>)}</div></details>
+      </div><details><summary>Состояние чтения</summary><div className="database-files">{imports[level]?.documents.map((d) => <div key={d.id}><strong className="small">{d.file_name || d.title}</strong><span className="small muted">{({ stored: 'Оригинал загружен', queued: 'Ожидает перечитывания', running: 'Читаю…', ready: 'Текст перечитан', error: 'Ошибка чтения' } as Record<string,string>)[d.state] ?? d.state}</span>
+        {level === 'project' && d.state !== 'error' && <>
+          {d.reading?.complete !== true && <p className="small muted">{d.reading?.complete === false ? STATES.partial : STATES.unknown}</p>}
+          <FileCoverage file={{ path: d.file_name || d.title, state: d.state, reading: d.reading }} />
+        </>}
+        {d.error && <p className="small text-bad">{d.error}</p>}</div>)}</div></details>
       {imports[level]?.has_more && <p className="small muted">Здесь показаны первые 200 файлов. Перечитывание применяется ко всем {imports[level]?.total} файлам этой базы.</p>}
     </div>}
     {canWrite && unassigned.length > 0 && <details className="panel"><summary>Нужно привязать документы · {unassigned.length}</summary><p className="small muted">Эти файлы ещё не назначены проекту или организации. Выберите, где их использовать.</p>

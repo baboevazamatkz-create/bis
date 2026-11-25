@@ -38,17 +38,22 @@ def _doc_ref(doc: Document) -> dict:
 
 class SearchArgs(BaseModel):
     query: str = Field(description="Поисковый запрос своими словами или ссылка «СП 70.13330.2012 п. 5.16»")
-    scope: Literal["norms", "organization", "project", "all"] = Field("all", description="norms — нормативы; organization — документы компании")
+    scope: Literal["norms", "organization", "project", "all"] = Field(
+        "all", description="norms — нормативы; organization — документы компании; project — выбранный объект")
     k: int = Field(6, ge=1, le=15)
 
 
 @tool("search_knowledge", "Поиск по базе знаний: нормативы (СП, ГОСТ, СНиП) и документы организации. "
       "Возвращает фрагменты с номером [n] для ссылок.", scopes=("knowledge:read",))
 def search_knowledge(ctx: AgentContext, args: SearchArgs) -> dict:
-    policy = ctx.db.info.get("source_context")
-    level = {"norms": "knowledge", "organization": "organization", "project": "project"}.get(args.scope) if policy and policy.strict else None
-    hits = hybrid_search(ctx.db, ctx.embedder, args.query, org_id=ctx.org_id, kinds=SCOPE_KINDS[args.scope], library_level=level,
-                         include_global=args.scope != "organization", k=args.k)
+    from bis.services.library_access import ProjectSelectionRequired, search_scope_options
+
+    try:
+        options = search_scope_options(ctx.db, ctx.org_id, args.scope, include_global=args.scope != "organization")
+    except ProjectSelectionRequired as exc:
+        return {"error": str(exc), "results": []}
+    hits = hybrid_search(ctx.db, ctx.embedder, args.query, org_id=ctx.org_id,
+                         kinds=SCOPE_KINDS[args.scope], k=args.k, **options)
     results = []
     for h in hits:
         d = h.to_dict()
