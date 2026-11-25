@@ -3,6 +3,7 @@ import { api, download, fetchBlob, openFile, streamChat, type ChatReply, type Ci
 import Icon from "../components/Icon";
 import { PTO_SUGGESTIONS } from "../modules/executive/config";
 import { takeAssistantTask } from '../modules/executive/assistantTask';
+import { navigate } from '../modules/navigation';
 
 interface Msg {
   role: "user" | "assistant";
@@ -147,10 +148,21 @@ export default function Chat({ workspace = "platform" }: { workspace?: "platform
     if (recorder.current) { recorder.current.onstop = null; if (recorder.current.state !== 'inactive') recorder.current.stop(); }
     audioStream.current?.getTracks().forEach((track) => track.stop());
   }; }, []);
-  const [voice, setVoice] = useState({ stt: false, tts: false });
+  const [voice, setVoice] = useState<{ stt: boolean; tts: boolean } | null>(null);
+  const [voiceStatusFailed, setVoiceStatusFailed] = useState(false);
   const [speakReplies, setSpeakReplies] = useState(false);
   const [recording, setRecording] = useState(false);
   const recorder = useRef<MediaRecorder | null>(null);
+  async function loadVoiceStatus() {
+    setVoiceStatusFailed(false);
+    try {
+      const status = await api<{ stt: boolean; tts: boolean }>("/voice/status");
+      if (!disposed.current) setVoice(status);
+    } catch {
+      if (!disposed.current) setVoiceStatusFailed(true);
+    }
+  }
+
   useEffect(() => {
     const timer = setTimeout(() => { const task = takeAssistantTask(); if (task) {
       setDocumentId(task.document_id ?? null); setDocumentTitle(task.title ?? '');
@@ -163,7 +175,7 @@ export default function Chat({ workspace = "platform" }: { workspace?: "platform
 
   useEffect(() => {
     api<Agent[]>("/agents").then((list) => setAgents(executive ? list.filter((a) => ["pto", "cad", "norms", "assistant"].includes(a.name)) : list)).catch(() => {});
-    api<{ stt: boolean; tts: boolean }>("/voice/status").then(setVoice).catch(() => {});
+    void loadVoiceStatus();
     loadSessions();
   }, []);
 
@@ -185,6 +197,7 @@ export default function Chat({ workspace = "platform" }: { workspace?: "platform
       recorder.current?.stop();
       return;
     }
+    setError('');
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       if (disposed.current) { stream.getTracks().forEach((track) => track.stop()); return; }
@@ -303,7 +316,7 @@ export default function Chat({ workspace = "platform" }: { workspace?: "platform
               ))}
             </select>
           </div>}
-          {voice.tts && (
+          {voice?.tts && (
             <div className="field" style={{ flex: "0 0 auto" }}>
               <label>
                 <input type="checkbox" style={{ width: "auto" }} checked={speakReplies} onChange={(e) => setSpeakReplies(e.target.checked)} /> Озвучивать ответы
@@ -370,8 +383,14 @@ export default function Chat({ workspace = "platform" }: { workspace?: "platform
               }
             }}
           />
-          {(voice.stt || executive) && (
-            <button className={`btn ${recording ? "recording" : ""}`} title="Голосовая команда" aria-label="Голосовая команда" onClick={() => voice.stt ? void toggleRecording() : setError('Голос не подключён. Откройте «Базы данных» → «ИИ и качество чтения» и настройте распознавание.')} disabled={busy}>
+          {(voice?.stt || executive) && (
+            <button type="button" className={`btn ${recording ? "recording" : ""}`}
+              title={voiceStatusFailed ? "Повторить проверку распознавания речи" : voice?.stt === false ? "Настроить распознавание речи" : "Голосовая команда"}
+              aria-label="Голосовая команда" disabled={busy || (!voice && !voiceStatusFailed)} onClick={() => {
+                if (voice?.stt) void toggleRecording();
+                else if (voice) navigate("id", "libraries/voice");
+                else void loadVoiceStatus();
+              }}>
               {recording ? "Стоп" : <><Icon name="mic" />{startPage && <span>Голос</span>}</>}
             </button>
           )}

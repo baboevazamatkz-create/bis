@@ -1,8 +1,13 @@
 """Голосовое управление: распознавание, голосовая команда (→ агенты), озвучивание ответа."""
 
+import os
+import re
+from pathlib import Path
+from typing import Literal
+
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 from sqlalchemy.orm import Session
 
 from bis import voice
@@ -18,6 +23,37 @@ MAX_AUDIO = 25 * 1024 * 1024
 @router.get("/status")
 def status(user: User = Depends(require("knowledge:read"))):
     return voice.status()
+
+
+class VoiceSetup(BaseModel):
+    provider: Literal["openai", "yandex"]
+    api_key: SecretStr
+    folder_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]+$", max_length=100)
+
+
+@router.post("/setup")
+def setup(body: VoiceSetup, user: User = Depends(require("settings:write")), db: Session = Depends(get_db)):
+    from bis.services.local_config import LOCK, save
+
+    db.close()
+    home = os.environ.get("BIS_LOCAL_DIR")
+    if not home or not (Path(home) / ".env").is_file():
+        raise HTTPException(409, "Настройка распознавания через интерфейс доступна в локальном BIS-Pilot")
+    key = body.api_key.get_secret_value().strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.~+/-]{1,512}={0,2}", key):
+        raise HTTPException(422, "Проверьте формат API-ключа для распознавания")
+    if body.provider == "yandex" and not body.folder_id:
+        raise HTTPException(422, "Укажите Folder ID для SpeechKit")
+    values = {"BIS_STT_PROVIDER": body.provider}
+    if body.provider == "openai":
+        values.update(BIS_STT_URL=voice.OPENAI_STT_URL, BIS_STT_MODEL=voice.OPENAI_STT_MODEL, BIS_STT_API_KEY=key)
+    else:
+        values.update(BIS_STT_YANDEX_FOLDER_ID=body.folder_id, BIS_STT_YANDEX_API_KEY=key)
+    with LOCK:
+        save(values)
+        result = voice.status()
+    return {**result, "message": "Настройки распознавания сохранены." if result["stt"]
+            else "Настройки сохранены. Для запуска SpeechKit установите FFmpeg."}
 
 
 def _read(file: UploadFile) -> bytes:

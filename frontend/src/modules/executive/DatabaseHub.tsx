@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { activeProject, api, type User } from '../../api';
 import { ConfirmButton, PageHead } from '../../components';
 import DocumentFormReview, { type FormReview, type PreparedForm } from './DocumentFormReview';
+import VoiceSetup from './VoiceSetup';
 
 type Level = 'knowledge' | 'project' | 'organization';
 interface Connection { id: string; name: string; level: Level; path: string; object_id: string | null; enabled: boolean; status: string; error: string | null; synced_at: string | null }
@@ -29,7 +30,7 @@ function FileCoverage({ file }: { file: Pick<FileRow, 'path' | 'state' | 'readin
   </>;
 }
 
-export default function DatabaseHub({ user }: { user: User }) {
+export default function DatabaseHub({ user, openVoiceSetup = false }: { user: User; openVoiceSetup?: boolean }) {
   const filePicker = useRef<HTMLInputElement | null>(null);
   const folderPicker = useRef<HTMLInputElement | null>(null);
   const [level, setLevel] = useState<Level>('project');
@@ -258,6 +259,13 @@ export default function DatabaseHub({ user }: { user: User }) {
     {formReview && <DocumentFormReview key={JSON.stringify([formReview.id, formReview.kind, !!formReview.mapping.example, !!formReview.approved])}
       form={formReview} canPreview={canWrite}
       onClose={() => setFormReview(null)} onApproved={refresh} />}
+    <VoiceSetup open={openVoiceSetup} canWrite={canWrite} available={reading?.local_setup_available}
+      configured={reading?.voice.stt} usesOpenAI={reading?.selected_base_url?.replace(/\/+$/, '') === 'https://api.openai.com/v1'}
+      onSave={(stt) => {
+        configRevision.current++;
+        setReading((current) => current && { ...current, voice: { ...current.voice, stt } });
+        refresh();
+      }} />
     <details className="panel"><summary>ИИ и качество чтения</summary>
       {Object.entries(pending).filter(([id]) => id !== 'database').map(([id, label]) => <p role="status" key={id}>{label}</p>)}
       <p className="small">Языковая модель: {!reading ? 'получаю состояние…' : reading.text_configured ? 'настройки сохранены' : 'не настроена'} · OCR: {!reading ? 'получаю состояние…' : reading.ocr_configured ? 'настройки сохранены' : 'не настроен'} · чтение чертежей зрением: {reading?.vision_configured ? 'настроено' : 'не подключено'} · голос: {reading?.voice.stt ? 'настроен' : 'не подключён'}</p>

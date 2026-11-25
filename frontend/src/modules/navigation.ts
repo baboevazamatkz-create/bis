@@ -16,7 +16,7 @@ export function parseRoute(hash: string): Route {
   const parts = hash.replace(/^#\/?/, "").split("/");
   const requested = parts[0] === "id" || parts[0] === "platform" ? parts.slice(1).join("/") : parts.join("/");
   const page = ALIASES[requested] ?? requested;
-  const subpage = ["project/new", "documents/registry", "documents/schemes"].includes(page);
+  const subpage = ["project/new", "documents/registry", "documents/schemes", "libraries/voice"].includes(page);
   return { workspace: "id", page: subpage || ID_NAV.some((group) => group.items.some(([id]) => id === page)) ? page : "chat" };
 }
 export function navigate(workspace: Workspace, page: string) { window.location.hash = `/${workspace}/${page}`; }
