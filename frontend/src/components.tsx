@@ -146,10 +146,13 @@ export function Hint({ children, wide }: { children: ReactNode; wide?: boolean }
 }
 
 /** Заголовок страницы: название, подсказка, действия справа. */
-export function PageHead({ title, hint, children }: { title: ReactNode; hint?: ReactNode; children?: ReactNode }) {
+export function PageHead({ title, hint, description, children }: { title: ReactNode; hint?: ReactNode; description?: ReactNode; children?: ReactNode }) {
   return (
     <div className="page-head">
-      <h1>{title}{hint && <Hint wide>{hint}</Hint>}</h1>
+      <div>
+        <h1>{title}{hint && <Hint wide>{hint}</Hint>}</h1>
+        {description && <p className="page-description">{description}</p>}
+      </div>
       {children && <div className="page-actions">{children}</div>}
     </div>
   );

@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from bis.models import ConstructionObject, Contract, Counterparty
 
@@ -59,10 +59,12 @@ def obj_row(ctx, value: str | None) -> ConstructionObject:
         f"{o.code or ''} {o.name}".strip() for o in found[:15]), candidates)
 
 
-def contract_row(ctx, value: str | None) -> Contract:
+def contract_row(ctx, value: str | None, *, object_id: uuid.UUID | None = None) -> Contract:
     value = value or ctx.focus.get("contract")
-    contracts = ctx.db.scalars(select(Contract).where(Contract.organization_id == ctx.org_id)
-                               .order_by(Contract.created_at)).all()
+    statement = select(Contract).where(Contract.organization_id == ctx.org_id)
+    if object_id:
+        statement = statement.where(or_(Contract.object_id == object_id, Contract.object_id.is_(None)))
+    contracts = ctx.db.scalars(statement.order_by(Contract.created_at)).all()
     if value and (u := _as_uuid(value)):
         found = [c for c in contracts if c.id == u]
     elif value:

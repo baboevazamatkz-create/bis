@@ -20,7 +20,7 @@ def intent(text):
     for kind, words in TYPES.items():
         if any(word in text.lower() for word in words):
             return kind
-    return 'administrative' if re.search(r'записк|регламент|положени|инструкц|документ', text, re.I) else None
+    return 'administrative' if re.search(r'записк|регламент|положени|инструкц|документ|акт\s+осмотра', text, re.I) else None
 
 
 def prepare(ctx, user_text, previous, rows):
