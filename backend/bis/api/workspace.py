@@ -17,6 +17,55 @@ from bis.models import Contract, Document, KnowledgeChunk, KnowledgeSource, User
 router = APIRouter(prefix='/workspace', tags=['workspace'])
 
 
+@router.get('/id-structure')
+def id_structure(db: Session = Depends(get_db), user: User = Depends(require('documents:read'))):
+    from bis.services.id_work_index import declared_works, work_index
+    from bis.services.library_access import document_predicate
+
+    scope = db.info.get('source_context')
+    if scope is None or scope.object_id is None:
+        return {'needs_project': True, 'areas': [], 'acts': [], 'unassigned_act_ids': [], 'indexed_documents': 0}
+
+    scoped = (
+        document_predicate(scope), Document.object_id == scope.object_id,
+        Document.status.notin_(['cancelled', 'replaced', 'rejected']),
+    )
+    act_docs = db.scalars(select(Document).where(*scoped, Document.kind.in_(['aosr', 'aook']))
+                          .order_by(Document.created_at.desc(), Document.id)).all()
+    act_text = {doc.id: set() for doc in act_docs if not (doc.data or {}).get('works')}
+    index_query = select(Document.id, KnowledgeChunk.page, KnowledgeChunk.content).join(
+        KnowledgeSource, KnowledgeSource.document_id == Document.id
+    ).join(KnowledgeChunk, KnowledgeChunk.source_id == KnowledgeSource.id).where(
+        *scoped, KnowledgeSource.organization_id == user.organization_id,
+        KnowledgeSource.status.notin_(['cancelled', 'replaced']),
+        func.coalesce(KnowledgeSource.meta['vision'].astext, 'false') != 'true',
+    )
+    if act_text:
+        for doc_id, _, content in db.execute(index_query.where(Document.id.in_(act_text))):
+            act_text[doc_id].update(declared_works(content))
+
+    acts = []
+    for doc in act_docs:
+        indexed = act_text.get(doc.id, set())
+        work = (doc.data or {}).get('works') or (next(iter(indexed)) if len(indexed) == 1 else '')
+        acts.append({'id': str(doc.id), 'title': doc.title, 'status': doc.status,
+                     'file_name': doc.file_name, 'works': work if isinstance(work, str) else ''})
+
+    indexed_docs = set()
+
+    def project_chunks():
+        rows = db.execute(index_query.where(Document.kind == 'project_doc')
+                          .order_by(Document.id, KnowledgeChunk.page, KnowledgeChunk.ord)
+                          .execution_options(yield_per=128))
+        for doc_id, page, content in rows:
+            indexed_docs.add(doc_id)
+            yield str(doc_id), page, content
+
+    index = work_index(project_chunks(), acts)
+    return {**index, 'acts': [{k: v for k, v in act.items() if k != 'works'} for act in acts],
+            'indexed_documents': len(indexed_docs), 'needs_project': False}
+
+
 @router.get('/documents')
 def documents(category: Literal['documents', 'schemes', 'project', 'contracts'], limit: int = 200,
               offset: int = 0, q: str | None = Query(None, max_length=300), db: Session = Depends(get_db), user: User = Depends(require('documents:read'))):

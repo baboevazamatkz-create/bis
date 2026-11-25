@@ -30,7 +30,7 @@ async def main():
             o["id"] == fixture["object_id"] and o["name"].startswith("Учебный:")
             for o in objects
         )
-        await expect(page.locator("#app-navigation .nav-item")).to_have_count(6)
+        await expect(page.locator("#app-navigation .nav-item")).to_have_count(5)
         assert await page.locator("input[type=email]").count() == 0
         await page.select_option("#active-project", fixture["object_id"])
         await page.get_by_role("link", name="Базы данных", exact=True).click()
@@ -53,6 +53,7 @@ async def main():
         await page.get_by_role(
             "link", name="Исполнительная документация", exact=True
         ).click()
+        await page.get_by_role("link", name="Общий реестр", exact=True).click()
         await expect(page.locator(".workspace-document")).to_have_count(1)
         await expect(page.locator(".workspace-document")).to_contain_text("АОСР_17")
         assert not await page.get_by_label("Номер акта", exact=True).count()
