@@ -28,11 +28,15 @@ export default function ExecutiveSettings({ user }: { user: User }) {
       await upload("/templates", form); await loadTemplates(); setFile(null); setMessage("Шаблон АОСР загружен");
     } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
   }
-  return <><PageHead title="Настройки профиля" hint="Профиль пользователя, реквизиты организации и шаблоны актов." />
-    <div className="panel"><h2>Профиль</h2><p>{user.full_name}</p>{user.email && <p className="muted">{user.email}</p>}</div>
+  return <><PageHead title="Настройки профиля" description="Профиль пользователя, реквизиты для актов и шаблоны." />
     {error && <div className="alert error">{error}</div>}{message && <div className="alert ok">{message}</div>}
-    <div className="panel"><h2>Реквизиты для актов</h2>{!org ? <p className="muted">Загрузка…</p> : <><div className="row">{fields.map(([key, label]) => <div className="field" key={key}><label htmlFor={`id-org-${key}`}>{label}</label><input id={`id-org-${key}`} value={org[key] ?? ""} onChange={(e) => setOrg({ ...org, [key]: e.target.value })} /></div>)}</div><button className="btn primary" disabled={busy} onClick={() => void save()}>Сохранить реквизиты</button></>}</div>
+    <div className="document-workbench">
+    <div className="panel"><h2>Реквизиты для актов</h2>{!org ? <p className="muted">Загрузка…</p> : <><div className="profile-fields">{fields.map(([key, label]) => <div className="field" key={key}><label htmlFor={`id-org-${key}`}>{label}</label><input id={`id-org-${key}`} value={org[key] ?? ""} onChange={(e) => setOrg({ ...org, [key]: e.target.value })} /></div>)}</div><button className="btn primary" disabled={busy} onClick={() => void save()}>Сохранить реквизиты</button></>}</div>
+    <aside className="document-tools">
+    <div className="panel"><h2>Профиль</h2><p>{user.full_name}</p>{user.email && <p className="muted">{user.email}</p>}</div>
     <div className="panel"><h2>Шаблоны АОСР</h2><p className="muted">DOCX с полями шаблона BIS, например {"{{ number }}"}, {"{{ date_text }}"}, {"{{ developer_text }}"}.</p><div className="row"><div className="field"><label htmlFor="aosr-template">Файл шаблона</label><input id="aosr-template" type="file" accept=".docx" onChange={(e) => setFile(e.target.files?.[0] ?? null)} /></div><button className="btn primary" disabled={!file || busy} onClick={() => void addTemplate()}>Загрузить шаблон</button></div>
       {templates.length ? <ul>{templates.map((t) => <li key={t.id}>{t.name}{t.is_default && " · по умолчанию"}</li>)}</ul> : <p className="muted">Используется встроенная форма АОСР.</p>}
+    </div>
+    </aside>
     </div></>;
 }

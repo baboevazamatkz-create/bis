@@ -11,7 +11,7 @@ type AIProvider = 'anthropic' | 'openai' | 'ollama' | 'compatible' | 'gigachat' 
 interface ReadingStatus { key_configured?: boolean; provider_key_configured?: boolean; selected_provider?: string | null; selected_model?: string | null; selected_base_url?: string | null; ocr_provider?: string; last_model_attempts?: {provider: string; ok: boolean; error?: string; checked_at: string}[]; providers: { name: string; capabilities: string[] }[]; model_error: string | null; text_configured: boolean; vision_configured: boolean; ocr_configured: boolean; folder_id: string | null; local_setup_available: boolean; voice: { stt: boolean } }
 interface ModelCheck { providers: { provider: string; ok: boolean; error?: string; hint?: string; reply?: string }[] }
 interface Imports { total: number; documents: { id: string; title: string; state: string; error: string | null }[]; has_more: boolean }
-const LABELS = { knowledge: 'База знаний', project: 'База проекта', organization: 'База организаций' };
+const LABELS = { project: 'База проекта', organization: 'База организаций', knowledge: 'База знаний' };
 const STATES: Record<string,string> = { ready: 'Текст доступен', partial: 'Есть ошибки чтения', pending: 'Подключена, ожидает чтения', reading: 'Читаю документы…', error: 'Ошибка', empty: 'Очищена', removed: 'Удалён из папки' };
 
 export default function DatabaseHub({ user }: { user: User }) {
@@ -132,12 +132,14 @@ export default function DatabaseHub({ user }: { user: User }) {
   }
   const connections = state?.connections.filter((c) => c.level === level && (level !== 'project' || c.object_id === activeProject())) ?? [];
   const allFiles = connections.flatMap((c) => files[c.id] ?? []);
+  const readingProblems = allFiles.filter((f) => f.state === 'error' || f.state === 'partial');
   return <>
-    <PageHead title="Базы данных" hint="Подключите свои папки. Оркестратор читает эти документы и использует их в ответах и заданиях." />
+    <PageHead title="Базы данных" description="Подключения, состояние документов и настройки чтения." />
     {(error || message) && <div className="workspace-feedback">{error && <div className="alert error" role="alert">{error}</div>}{message && <div className="note" role="status">{message}</div>}</div>}
     <div className="row"><p className="small muted">{state?.strict ? 'Ответы и формы — только из подключённых баз и документов активного проекта.' : 'Строгий режим источников выключен.'}</p>
       {canWrite && state && <button className="btn small" disabled={busy} onClick={() => void action(() => api('/libraries/policy', { method: 'PUT', json: { strict: !state.strict } }), 'Режим источников обновлён.')}>{state.strict ? 'Изменить режим источников' : 'Использовать только мои базы'}</button>}</div>
-    <div className="database-tabs">{(Object.entries(LABELS) as [Level,string][]).map(([id,label]) => <button key={id} className={`database-tab ${level === id ? 'active' : ''}`} onClick={() => { setLevel(id); setConnecting(false); }}>{label}</button>)}</div>
+    <div className="database-tabs">{(Object.entries(LABELS) as [Level,string][]).map(([id,label]) => <button key={id} className={`database-tab ${level === id ? 'active' : ''}`} aria-pressed={level === id} onClick={() => { setLevel(id); setConnecting(false); }}>{label}</button>)}</div>
+    <div className="document-workbench">
     <div className="panel">
       <div className="section-list-header row"><div><h2>{LABELS[level]}</h2><p className="small muted">{level === 'knowledge' ? 'Нормативы, стандарты, шаблоны и формы.' : level === 'project' ? 'РД, журналы, акты, схемы, сертификаты и договоры активного объекта.' : 'Реквизиты, регламенты и документы вашей организации.'}</p></div>
         {canWrite && <button className="btn primary" disabled={level === 'project' && !activeProject() || level === 'knowledge' && !state?.platform_admin} onClick={() => setConnecting(!connecting)}>Подключить базу</button>}</div>
@@ -157,7 +159,6 @@ export default function DatabaseHub({ user }: { user: User }) {
           setConnecting(false); setPath('');
         }, 'Папка подключена. Началось чтение файлов.')}>Подключить и прочитать</button></div>
         <p className="small muted">Разрешённые каталоги: {state?.allowed_roots.join(', ') || 'не настроены'}</p></div>}
-      <p className="small muted">Файлов: {allFiles.length} · прочитано: {allFiles.filter((f) => f.state === 'ready').length} · ошибок: {allFiles.filter((f) => f.state === 'error').length}</p>
       {!connections.length && <p className="muted">База пока не подключена.</p>}
       {connections.map((c) => <div className="database-connection" key={c.id}>
         <div className="row section-list-header"><div><strong>{c.name}</strong><p className="small muted">{c.path}</p><span className="small">{c.enabled ? STATES[c.status] ?? c.status : c.status === 'empty' ? 'Очищена' : 'Отключена'}</span></div>
@@ -183,6 +184,15 @@ export default function DatabaseHub({ user }: { user: User }) {
         </div>)}</div></details>
       </div>)}
       <p className="small muted">Очистка удаляет записи выбранного подключения из BIS и отключает автоматическую синхронизацию. Исходные файлы на диске сохраняются.</p>
+    </div>
+    <aside className="panel reading-overview">
+      <h2>Качество чтения</h2>
+      <p className="muted">Файлов: {allFiles.length} · прочитано: {allFiles.filter((f) => f.state === 'ready').length} · ошибок: {allFiles.filter((f) => f.state === 'error').length}</p>
+      {readingProblems.length > 0 && <details>
+        <summary>Требуют внимания · {readingProblems.length}</summary>
+        <ul>{readingProblems.map((f) => <li key={f.id}><strong>{f.path}</strong><p className="small text-bad">{f.error || STATES[f.state]}</p></li>)}</ul>
+      </details>}
+    </aside>
     </div>
     {!!imports[level]?.total && <div className="panel"><div className="row section-list-header"><h2>Загруженные файлы · {imports[level]?.total}</h2>
       {canWrite && <div className="row"><button className="btn small" disabled={busy} onClick={() => void action(() => api(`/workspace/imports/reread?level=${level}`, { method: 'POST' }), 'Началось перечитывание сохранённых оригиналов. Повторно загружать файлы не нужно.')}>Перечитать загруженные файлы</button>

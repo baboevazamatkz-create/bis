@@ -86,6 +86,7 @@ export default function App() {
   if (!user) return <div className="login"><h1>BIS</h1><p>Не удалось открыть рабочее пространство.</p><p className="muted">{startError || "Перезапустите локальный BIS-Pilot."}</p><button className="btn primary" onClick={() => window.location.reload()}>Повторить подключение</button></div>;
   setOrganizationScope(user.organization_id);
   const groups = ID_NAV;
+  const section = route.page.split("/")[0];
   return (
     <div className={`layout workspace-${route.workspace}`}>
       <a className="skip-link" href="#main-content" onClick={(e) => { e.preventDefault(); document.getElementById("main-content")?.focus(); }}>Перейти к содержимому</a>
@@ -99,14 +100,13 @@ export default function App() {
           if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); }
           else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
         }}>
-        <div className="brand"><a href={`#/${route.workspace}/overview`} aria-label="BIS — рабочий стол"><span className="brand-mark">b<span>i</span>s</span><span className="brand-caption">Construction intelligence</span></a>
+        <div className="brand"><a href={`#/${route.workspace}/overview`} aria-label="BIS — рабочий стол"><span className="brand-symbol"><Icon name="project" size={19} /></span><span className="brand-mark">BIS</span></a>
           {mobile && <button className="icon-button" aria-label="Закрыть меню" onClick={() => { setMenuOpen(false); menuButton.current?.focus(); }}><Icon name="close" /></button>}</div>
-        <div className="workspace-label"><span className="workspace-dot" />{route.workspace === "id" ? "Исполнительная документация" : "Платформа"}</div>
         <div className="nav-scroll">{groups.map((group, i) => {
           const secondary = route.workspace === "id" && i === 3;
-          const links = group.items.map(([id, title]) => <a key={id} href={`#/${route.workspace}/${id}`} onClick={() => { setMenuOpen(false); if (mobile) requestAnimationFrame(() => document.getElementById("main-content")?.focus()); }} className={`nav-item ${route.page === id ? "active" : ""}`} aria-current={route.page === id ? "page" : undefined}><Icon name={id} /><span>{id === "overview" ? "Обзор" : title}</span>{route.page === id && <span className="nav-active-dot" />}</a>);
+          const links = group.items.map(([id, title]) => <a key={id} href={`#/${route.workspace}/${id}`} onClick={() => { setMenuOpen(false); if (mobile) requestAnimationFrame(() => document.getElementById("main-content")?.focus()); }} className={`nav-item ${section === id ? "active" : ""}`} aria-current={section === id ? "page" : undefined}><Icon name={id} /><span>{id === "overview" ? "Обзор" : title}</span>{section === id && <span className="nav-active-dot" />}</a>);
           return secondary ? <details key={i} className="nav-block nav-reference" open={group.items.some(([id]) => id === route.page) || undefined}><summary><Icon name="registry" />Справочники<Icon name="chevron" size={14} /></summary>{links}</details> :
-            <div className={`nav-block ${!group.title ? "nav-bottom" : ""}`} key={i}>{group.title && <div className="nav-group">{i === 0 && route.workspace === "id" ? "Рабочее пространство" : group.title}</div>}{links}</div>;
+            <div className={`nav-block ${!group.title ? "nav-bottom" : ""}`} key={i}>{links}</div>;
         })}</div>
         <div className="sidebar-footer"><div className="user-avatar">{user.full_name.split(" ").slice(0, 2).map((s) => s[0]).join("")}</div><div className="user-info"><span className="user-name">{user.full_name}</span><small>{orgName || "Текущая организация"}</small></div>
 </div>
@@ -114,11 +114,11 @@ export default function App() {
       <main className="main">
         <header className="app-header">
           <div className="header-location">{mobile && <button ref={menuButton} className="icon-button" aria-label="Открыть меню" aria-expanded={menuOpen} aria-controls="app-navigation" onClick={() => setMenuOpen(true)}><Icon name="menu" size={22} /></button>}
-            <span className="header-workspace">{route.workspace === "id" ? "Рабочее пространство" : "Платформа"}</span><span className="header-divider">/</span><span className="header-page">{groups.flatMap((g) => g.items).find(([id]) => id === route.page)?.[1] ?? "Обзор"}</span></div>
-          <div className="header-tools"><div className="project-switcher"><Icon name="project" size={17} /><label className="sr-only" htmlFor="active-project">Активный проект</label>
+            <div className="project-switcher"><Icon name="project" size={17} /><label className="sr-only" htmlFor="active-project">Активный проект</label>
             <select id="active-project" value={project} onChange={(e) => setActiveProject(e.target.value)} title={objects.find((o) => o.id === project)?.name ?? "Выбрать проект"}>
               <option value="">Без проекта</option>{objects.map((o) => <option key={o.id} value={o.id}>{o.code ? o.code + " · " : ""}{o.name}</option>)}
-            </select><Icon name="down" size={13} /></div>
+            </select><Icon name="down" size={13} /></div></div>
+          <div className="header-tools">
             {project && <button className="icon-button" aria-label="Сбросить выбор проекта" title="Сбросить выбор проекта" onClick={() => setActiveProject("")}><Icon name="close" size={17} /></button>}
             {user.role !== "viewer" && <button className="icon-button" aria-label="Добавить проект" title="Добавить проект" onClick={() => navigate("id", "project/new")}><Icon name="plus" size={18} /></button>}
             <button className="icon-button theme-toggle" aria-label={theme === "dark" ? "Светлая тема" : "Тёмная тема"} title={theme === "dark" ? "Светлая тема" : "Тёмная тема"} onClick={() => setTheme(theme === "dark" ? "light" : "dark")}><Icon name={theme === "dark" ? "sun" : "moon"} size={18} /></button>
