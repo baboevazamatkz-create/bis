@@ -169,20 +169,20 @@ function responseFilename(res: Response): string | null {
   return /filename="([^"\r\n]+)"/i.exec(disposition)?.[1] ?? null;
 }
 
-async function fetchFile(path: string, init: RequestOptions = {}): Promise<{ blob: Blob; filename: string | null }> {
+export async function fetchFile(path: string, init: RequestOptions = {}): Promise<{ blob: Blob; filename: string | null; headers: Headers }> {
+  if (DEMO) return { blob: await mockBlob(path), filename: null, headers: new Headers() };
   const headers = new Headers(init.headers);
   projectHeader(headers);
   const token = getToken();
   if (token) headers.set('Authorization', `Bearer ${token}`);
   return request(path, { timeoutMs: 90_000, ...init, headers }, async (res) => {
     if (!res.ok) throw new ApiError(res.status, detail(await res.json().catch(() => null), res.status));
-    return { blob: await res.blob(), filename: responseFilename(res) };
+    return { blob: await res.blob(), filename: responseFilename(res), headers: res.headers };
   });
 }
 
 /** Файл/предпросмотр с авторизацией как Blob (для изображений и аудио). */
 export async function fetchBlob(path: string, init: RequestOptions = {}): Promise<Blob> {
-  if (DEMO) return mockBlob(path);
   return (await fetchFile(path, init)).blob;
 }
 

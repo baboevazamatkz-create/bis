@@ -31,12 +31,12 @@ class AOOKArgs(AOSRArgs):
 
 def build_aook(ctx: AgentContext, args: AOOKArgs) -> tuple[AOOKData, ConstructionObject]:
     obj = _object(ctx, args.object_id)
-    p = docsvc.object_participants(ctx.db, ctx.org_id, obj.id, args.act_date)
+    p = docsvc.object_participants(ctx.db, ctx.org_id, obj.id, args.act_date, performer_id=args.performer_id)
     if p["developer"] is None:
         raise ValueError("У объекта не указан застройщик/технический заказчик — заполните карточку объекта")
     data = AOOKData(
         number=args.number, date=args.act_date, object_name=p["object_name"], developer=p["developer"],
-        builder=p["builder"], designer=p["designer"], representatives=p["representatives"],
+        builder=p["builder"], designer=p["designer"], performer=p["performer"], representatives=p["representatives"],
         other_representatives=p["other_representatives"], works=args.works, project_docs=args.project_docs,
         materials=args.materials, executive_docs=args.executive_docs, work_start=args.work_start,
         work_end=args.work_end, norms=args.norms, next_works=args.next_works, additional_info=args.additional_info,

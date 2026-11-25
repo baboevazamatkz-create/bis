@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from collections import defaultdict
 from datetime import UTC, date, datetime
 from typing import Any
 
@@ -53,42 +54,70 @@ def party_from_counterparty(cp: Counterparty) -> Party:
                  phone=cp.phone, email=cp.email, sro=cp.sro)
 
 
-def object_participants(db: Session, org_id: uuid.UUID, object_id: uuid.UUID, on_date: date | None = None) -> dict[str, Any]:
+def object_participants(db: Session, org_id: uuid.UUID, object_id: uuid.UUID, on_date: date | None = None,
+                        *, performer_id: uuid.UUID | None = None) -> dict[str, Any]:
     """Участники объекта и действующие представители по приказам — для заполнения ИД."""
+    from bis.services.project_participants import Role, registered_parties
+
     obj = db.get(ConstructionObject, object_id)
     if obj is None or obj.organization_id != org_id:
         raise LookupError("Объект не найден")
     org = db.get(Organization, org_id)
     on_date = on_date or date.today()
-    reps: dict[str, Representative] = {}
+    parties = registered_parties(db, obj)
+    subcontractors = {p['counterparty_id']: p for p in parties if p['role'] == Role.subcontractor and p['name']}
+    if performer_id and str(performer_id) not in subcontractors:
+        raise ValueError("Указанный исполнитель отсутствует среди субподрядчиков проекта")
+    candidates = defaultdict(dict)
     others: list[Representative] = []
-    rows = db.scalars(select(Appointment).where(Appointment.organization_id == org_id, Appointment.object_id == object_id))
+    performers = set()
+    rows = db.scalars(select(Appointment).where(Appointment.organization_id == org_id, Appointment.object_id == object_id)
+                      .order_by(Appointment.order_date.desc().nulls_last(), Appointment.id))
     for ap in rows:
         if (ap.valid_from and ap.valid_from > on_date) or (ap.valid_to and ap.valid_to < on_date):
             continue
         person: Person = ap.person
-        org_name = None
-        if person.counterparty_id:
-            cp = db.get(Counterparty, person.counterparty_id)
-            org_name = cp.name if cp else None
+        if person.organization_id != org_id or not person.full_name:
+            continue
+        if ap.role == 'performer':
+            if performer_id and person.counterparty_id != performer_id:
+                continue
+            performers.add(person.counterparty_id)
+        cp = db.get(Counterparty, person.counterparty_id) if person.counterparty_id else None
+        org_name = cp.name if cp and cp.organization_id == org_id else None
         order = None
         if ap.order_number:
             order = f"приказ № {ap.order_number}" + (f" от {fmt_date(ap.order_date)}" if ap.order_date else "")
         rep = Representative(position=person.position or "", full_name=person.full_name, nrs_id=person.nrs_id,
                              order=order, organization=org_name)
         if ap.role in REPRESENTATIVE_ROLES:
-            reps[ap.role] = rep
+            candidates[ap.role].setdefault(person.id, rep)
         else:
             others.append(rep)
-    developer = db.get(Counterparty, obj.developer_id) if obj.developer_id else None
-    designer = db.get(Counterparty, obj.designer_id) if obj.designer_id else None
+
+    def party_for(role, preferred_id=None):
+        matching = [p for p in parties if p['role'] == role and p['name']]
+        if preferred_id:
+            preferred = next((p for p in matching if p['counterparty_id'] == str(preferred_id)), None)
+            if preferred:
+                return Party.model_validate(preferred)
+        return Party.model_validate(matching[0]) if len(matching) == 1 else None
+
+    contractor = party_for(Role.contractor)
+    if contractor is None:
+        ambiguous = sum(p['role'] == Role.contractor and bool(p['name']) for p in parties) > 1
+        contractor = Party(name="") if ambiguous else party_from_org(org)
+    inferred_performer = next(iter(performers)) if len(performers) == 1 else None
+    performer = subcontractors.get(str(performer_id or inferred_performer))
     return {
         "object": obj,
         "object_name": obj.name + (f", {obj.address}" if obj.address else ""),
-        "builder": party_from_org(org),
-        "developer": party_from_counterparty(developer) if developer else None,
-        "designer": party_from_counterparty(designer) if designer else None,
-        "representatives": reps,
+        "builder": contractor,
+        "developer": party_for(Role.developer, obj.developer_id),
+        "designer": party_for(Role.designer, obj.designer_id),
+        "performer": Party.model_validate(performer) if performer else None,
+        "representatives": {role: next(iter(reps.values())) for role, reps in candidates.items() if len(reps) == 1},
+        "ambiguous_representative_roles": [role for role, reps in candidates.items() if len(reps) > 1],
         "other_representatives": others,
     }
 

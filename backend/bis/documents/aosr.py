@@ -121,6 +121,8 @@ def validate_aosr(d: AOSRData) -> list[Issue]:
     def warn(f: str, m: str) -> None:
         issues.append(Issue(level="warning", field=f, message=m))
 
+    if not d.builder.name.strip():
+        err("builder", "Укажите подрядчика, выполняющего строительство")
     if not d.works.strip():
         err("works", "Не указаны работы, предъявленные к освидетельствованию")
     if not d.project_docs.strip():
