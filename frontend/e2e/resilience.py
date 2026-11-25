@@ -122,8 +122,9 @@ async def main():
         assert (await event.value).suggested_filename == "act.docx"
         assert len(downloads) == 1
         checks["single_download_with_filename"] = True
+        await page.get_by_role("link", name="Исполнительная документация", exact=True).click()
         for label in (
-            "Исполнительная документация",
+            "Общий реестр",
             "Исполнительные схемы",
             "Проект",
             "Договоры",

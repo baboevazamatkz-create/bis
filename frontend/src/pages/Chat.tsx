@@ -28,7 +28,18 @@ const SUGGESTIONS = [
   "Подготовь письмо заказчику о направлении исполнительной документации",
 ];
 
-function Citations({ items, text, onError }: { items: Citation[]; text: string; onError: (message: string) => void }) {
+function citationPath(item: Citation) {
+  if (item.fact_snapshot_id) return `/brain/facts/snapshots/${item.fact_snapshot_id}/file${item.object_id ? `?object_id=${item.object_id}` : ''}`;
+  if (item.document_id) return `/documents/${item.document_id}/file`;
+  return item.source_id ? `/knowledge/sources/${item.source_id}/file` : null;
+}
+
+function openCitation(item: Citation, onError: (message: string) => void) {
+  const path = citationPath(item);
+  if (path) void openFile(path, item.title, item.page).catch((error: Error) => onError(error.message));
+}
+
+function Citations({ items, text, onError, expanded }: { items: Citation[]; text: string; onError: (message: string) => void; expanded?: boolean }) {
   const refs = new Set<number>();
   for (const match of text.matchAll(/\[([0-9][0-9,;\s]*(?:стр\.\s*\d+)?)\]/g)) {
     for (const number of (match[1].split('стр')[0].match(/\d+/g) ?? [])) refs.add(Number(number));
@@ -48,12 +59,12 @@ function Citations({ items, text, onError }: { items: Citation[]; text: string; 
   if (!groups.size) return null;
   const n = groups.size;
   const label = n % 10 === 1 && n % 100 !== 11 ? 'документ' : n % 10 >= 2 && n % 10 <= 4 && !(n % 100 >= 12 && n % 100 <= 14) ? 'документа' : 'документов';
-  return <details className="citations"><summary className="muted">Основания · {n} {label}</summary>
+  return <details className="citations" open={expanded}><summary>Основания · {n} {label}</summary>
     {[...groups].map(([key, group]) => <div key={key} className="citation-document"><strong className="small">{group.title}</strong>
       {[...group.pages].map(([page, {item, numbers, content}]) => <details key={page}>
         <summary>[{numbers.join(', ')}] {item.page ? `Страница ${item.page}` : 'Фрагмент'}
-          {(item.fact_snapshot_id || item.document_id || item.source_id) && <button className="link small" onClick={(event) => {
-            event.preventDefault(); void openFile(item.fact_snapshot_id ? `/brain/facts/snapshots/${item.fact_snapshot_id}/file${item.object_id ? `?object_id=${item.object_id}` : ''}` : item.document_id ? `/documents/${item.document_id}/file` : `/knowledge/sources/${item.source_id}/file`, item.title, item.page).catch((error) => onError(error.message));
+          {citationPath(item) && <button className="link small" onClick={(event) => {
+            event.preventDefault(); openCitation(item, onError);
           }}>Открыть{item.page ? ` стр. ${item.page}` : ''}</button>}
         </summary><div className="small" style={{whiteSpace: 'pre-wrap', marginTop: 6}}>{content.join('\n\n')}</div>
       </details>)}
@@ -80,11 +91,24 @@ const DOC_LINK = /^(?:document:|\/?(?:api\/)?documents\/)([0-9a-f-]{36})(?:\/fil
 const MD = /\[([^\]]+)\]\(([^)\s]+)\)|\*\*([^*]+)\*\*/g;
 
 /** Текст ответа: ссылки на документы — кнопки «открыть», внешние — ссылки, **жирный** — жирный. */
-function Rich({ text, onError }: { text: string; onError: (message: string) => void }) {
+function Rich({ text, citations, onError }: { text: string; citations: Citation[]; onError: (message: string) => void }) {
   const out: ReactNode[] = [];
+  function appendText(value: string, offset: number) {
+    let position = 0;
+    for (const match of value.matchAll(/\[(\d+)(?:\s+стр\.\s*\d+)?\]/g)) {
+      const item = citations[Number(match[1]) - 1];
+      if (!item || !citationPath(item)) continue;
+      const index = match.index ?? 0;
+      out.push(value.slice(position, index));
+      out.push(<button className="citation-link" key={`ref-${offset + index}`} aria-label={`Открыть основание ${match[1]}: ${item.title}`}
+        onClick={() => openCitation(item, onError)}>{match[0]}</button>);
+      position = index + match[0].length;
+    }
+    out.push(value.slice(position));
+  }
   let last = 0;
   for (const m of text.matchAll(MD)) {
-    if (m.index! > last) out.push(text.slice(last, m.index));
+    if (m.index! > last) appendText(text.slice(last, m.index), last);
     const [, label, url, bold] = m;
     if (bold) out.push(<b key={m.index}>{bold}</b>);
     else if (DOC_LINK.test(url)) {
@@ -95,7 +119,7 @@ function Rich({ text, onError }: { text: string; onError: (message: string) => v
     } else out.push(label);
     last = m.index! + m[0].length;
   }
-  out.push(text.slice(last));
+  appendText(text.slice(last), last);
   return <>{out}</>;
 }
 
@@ -249,8 +273,10 @@ export default function Chat({ workspace = "platform" }: { workspace?: "platform
 
   const agentTitle = (name?: string | null) => agents.find((a) => a.name === name)?.title ?? name;
 
+  const startPage = executive && messages.length === 0 && !busy;
+
   return (
-    <div className={`chat ${showHistory ? "history-open" : ""}`}>
+    <div className={`chat ${showHistory ? "history-open" : ""} ${startPage ? "chat-start" : ""}`}>
       <div className="chat-sessions"><div className="chat-history-heading">ДИАЛОГИ</div>
         <button
           className="btn new-chat"
@@ -276,7 +302,8 @@ export default function Chat({ workspace = "platform" }: { workspace?: "platform
       </div>
       <div className="chat-main">
         <div className="chat-toolbar">
-          <div className="chat-identity"><span className="synapse-avatar"><Icon name="spark" size={18} /></span><div><strong>Оркестратор</strong><span>Помощник {executive ? "инженера ПТО" : "по проекту"}</span></div></div>
+          {startPage ? <div className="chat-start-title"><h1>Помощник ПТО</h1><p className="muted">Акты, схемы и ответы по документации выбранного проекта.</p></div> :
+            <div className="chat-identity"><span className="synapse-avatar"><Icon name="spark" size={18} /></span><div><strong>Оркестратор</strong><span>Помощник {executive ? "инженера ПТО" : "по проекту"}</span></div></div>}
           <button className="btn small chat-history-toggle" aria-expanded={showHistory} onClick={() => setShowHistory(!showHistory)}><Icon name="chat" size={15} />{showHistory ? "Закрыть историю" : "История"}</button>
           {!executive && <div className="field agent-picker">
             <label className="sr-only" htmlFor="chat-agent">Специалист</label>
@@ -298,16 +325,13 @@ export default function Chat({ workspace = "platform" }: { workspace?: "platform
           )}
         </div>
         <div className="messages">
-          {messages.length === 0 && (
+          {!executive && messages.length === 0 && (
             <div className="chat-welcome">
               <div className="welcome-symbol"><Icon name="spark" size={30} /></div><span className="welcome-eyebrow">ВАШ ПРОЕКТ. ВЕСЬ КОНТЕКСТ.</span>
               <h2>С чего начнём?</h2>
-              <p className="muted">
-                {executive ? "Помогу собрать акт, найти документ или проверить комплект. Начните с вопроса или выберите задачу."
-                  : "Найду основания в документах, подготовлю черновик или помогу разобраться в проекте."}
-              </p>
+              <p className="muted">Найду основания в документах, подготовлю черновик или помогу разобраться в проекте.</p>
               <div className="suggestions">
-                {(executive ? PTO_SUGGESTIONS : SUGGESTIONS).slice(0, 4).map((s, index) => (
+                {SUGGESTIONS.slice(0, 4).map((s, index) => (
                   <button key={s} className="suggestion-card" onClick={() => send(s)}><Icon name={["check", "documents", "project", "sources"][index]} size={19} />
                     <span>{s}</span><Icon name="arrow" size={16} />
                   </button>
@@ -317,11 +341,11 @@ export default function Chat({ workspace = "platform" }: { workspace?: "platform
           )}
           {messages.map((m, i) => (
             <div key={i} className={`msg ${m.role}`}>
-              <div className="bubble">{m.role === "assistant" ? <Rich onError={setError} text={m.content.replace(/^Источники:\s*\[\d[^\n]*$/gm, '').trim() || m.content} /> : m.content}</div>
+              <div className="bubble">{m.role === "assistant" ? <Rich onError={setError} citations={m.meta?.citations ?? []} text={m.content.replace(/^Источники:\s*\[\d[^\n]*$/gm, '').trim() || m.content} /> : m.content}</div>
               {m.role === "assistant" && (
                 <>
                   <Docs items={m.meta?.documents ?? []} onError={setError} />
-                  <Citations items={m.meta?.citations ?? []} text={m.content} onError={setError} />
+                  <Citations items={m.meta?.citations ?? []} text={m.content} onError={setError} expanded={executive && i === messages.length - 1 ? true : undefined} />
                   {(m.meta?.provider === "offline" || m.meta?.model === "offline") && <p className="small text-bad">Ответ получен без языковой модели. Проверьте подключение ИИ; поиск по документам доступен отдельно в разделе «Оркестратор».</p>}
                   <div className="meta">{agentTitle(m.agent) || "Оркестратор"}
                     {(m.meta?.provider || !!m.meta?.trace?.length) && <details className="chat-tech"><summary>Детали ответа</summary><p>{m.meta?.provider}{m.meta?.routed_by ? ` · ${m.meta.routed_by}` : ""}</p>{m.meta?.trace?.map((t, n) => <span key={n}>{t.tool}{t.error ? " · ошибка" : ""}<br /></span>)}</details>}
@@ -343,7 +367,9 @@ export default function Chat({ workspace = "platform" }: { workspace?: "platform
           <div ref={bottom} />
         </div>
         {error && <div className="alert error">{error}</div>}
-        <div className="chat-compose-area"><div className="composer">
+        <div className="chat-compose-area">
+          {startPage && <h2>С чем помочь по проекту?</h2>}
+          <div className="composer">
           <textarea
             aria-label="Сообщение Оркестратору"
             rows={2}
@@ -365,13 +391,32 @@ export default function Chat({ workspace = "platform" }: { workspace?: "platform
                 else if (voice) navigate("id", "libraries/voice");
                 else void loadVoiceStatus();
               }}>
-              {recording ? "Стоп" : <Icon name="mic" />}
+              {recording ? "Стоп" : <><Icon name="mic" />{startPage && <span>Голос</span>}</>}
             </button>
           )}
           <button className="btn primary" aria-label="Отправить сообщение" disabled={busy || !text.trim()} onClick={() => send(text)}>
             <span>Отправить</span><Icon name="arrow" size={18} />
           </button>
-        </div>{documentTitle && <div className="small muted">Документ: {documentTitle}</div>}<div className="composer-caption"><span>Основания — в ваших документах. Решение — за вами.</span><span className="composer-keyboard">Enter ↵</span></div></div>
+        </div>
+          {documentTitle && <p className="chat-document-context">{documentTitle}</p>}
+          {startPage ? <div className="suggestions chat-start-suggestions">
+            {[
+              ["Подготовить АОСР", PTO_SUGGESTIONS[1], "documents"],
+              ["Проверить комплект ИД", PTO_SUGGESTIONS[0], "check"],
+              ["Найти нужный чертёж", "Помоги найти рабочий чертёж по проекту. Уточни, какие сведения нужны для поиска.", "project"],
+              ["Найти недостающие схемы", "Проверь, каких исполнительных схем не хватает по актам выбранного проекта.", "schemes"],
+            ].map(([label, question, icon]) => <button className="suggestion-card" key={label} onClick={() => void send(question)}>
+              <Icon name={icon} size={17} /><span>{label}</span>
+            </button>)}
+          </div> : <div className="composer-caption"><span className="composer-keyboard">Enter ↵</span></div>}
+        </div>
+        {startPage && <aside className="panel chat-recent">
+          <h2>Продолжить работу</h2>
+          {sessions.length && !showHistory ? sessions.slice(0, 4).map((s) => <button key={s.id} className="chat-recent-item" onClick={() => void openSession(s.id)}>
+            <Icon name="chat" size={17} /><span>{s.title}</span>
+          </button>) : <p className="muted">{showHistory ? "Выберите диалог в истории." : "Здесь появятся диалоги по проекту."}</p>}
+          <a className="chat-recent-link" href="#/id/documents"><Icon name="documents" size={17} />Перейти к актам и схемам</a>
+        </aside>}
       </div>
     </div>
   );

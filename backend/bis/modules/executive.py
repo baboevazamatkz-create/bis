@@ -6,7 +6,7 @@ AGENTS = ("pto", "cad", "norms", "assistant", "contracts", "secretary")
 WRITE_TOOLS = frozenset({"create_document_draft", "create_letter_draft", "create_aosr_draft", "create_aook_draft", "create_executive_scheme", "prepare_executive_package"})
 READ_TOOLS = frozenset({"find_document_examples", "read_project_document", "compare_act_with_project","query_project_facts", "investigate_project","search_knowledge", "find_documents", "list_documents", "get_document", "document_card",
     "find_objects", "find_counterparties", "find_contracts", "get_contract_details", "get_organization_info",
-    "get_object_participants", "find_persons", "id_registry", "work_journal", "check_id_archive", "data_coverage",
+    "get_object_participants", "get_project_structure", "find_persons", "id_registry", "work_journal", "check_id_archive", "data_coverage",
     "parse_survey_document", "find_estimate_items", "list_volumes", "find_materials", "pd_completeness", "extract_specification",
     "calc_penalty", "delegate_to_agent"})
 INSTRUCTIONS = """Рабочее пространство: исполнительная документация, инженер ПТО.

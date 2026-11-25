@@ -45,8 +45,8 @@ def _owned(db: Session, user: User, doc_id: uuid.UUID) -> Document:
     return doc
 
 
-def _form_ctx(db: Session, user: User) -> AgentContext:
-    ctx = agent_context(db, user)
+def _form_ctx(db: Session, user: User, *, query_only: bool = False) -> AgentContext:
+    ctx = agent_context(db, user, query_only=query_only)
     ctx.agent_name = "form"
     return ctx
 
@@ -132,21 +132,22 @@ def download_dwg(doc_id: uuid.UUID, db: Session = Depends(get_db), user: User = 
 @router.post("/aosr", response_model=DocumentOut, status_code=201)
 def create_aosr(body: AOSRArgs, db: Session = Depends(get_db), user: User = Depends(require("documents:write"))):
     """Формирование АОСР по структурированной форме (без языковой модели)."""
-    return _run_tool(create_aosr_draft, _form_ctx(db, user), body)
+    return _run_tool(create_aosr_draft, _form_ctx(db, user, query_only=True), body)
 
 
 @router.post("/aosr/check")
 def check_aosr(body: AOSRArgs, db: Session = Depends(get_db), user: User = Depends(require("documents:read"))):
     """Проверка данных АОСР до формирования: участники, представители, замечания."""
     try:
-        p = docsvc.object_participants(db, user.organization_id, uuid.UUID(body.object_id), body.act_date)
+        p = docsvc.object_participants(db, user.organization_id, uuid.UUID(body.object_id), body.act_date,
+                                       performer_id=body.performer_id)
     except (LookupError, ValueError) as e:
         raise HTTPException(400, str(e)) from e
     if p["developer"] is None:
         return {"issues": [{"level": "error", "field": "developer", "message": "У объекта не указан застройщик"}]}
     data = AOSRData(object_name=p["object_name"], developer=p["developer"], builder=p["builder"],
-                    designer=p["designer"], representatives=p["representatives"],
-                    **body.model_dump(exclude={"object_id", "act_date"}), date=body.act_date)
+                    designer=p["designer"], performer=p["performer"], representatives=p["representatives"],
+                    **body.model_dump(exclude={"object_id", "act_date", "performer_id"}), date=body.act_date)
     return {"issues": [i.model_dump() for i in validate_aosr(data)],
             "representatives": {k: v.format() for k, v in p["representatives"].items()}}
 

@@ -1,0 +1,119 @@
+.project-structure {
+  --structure-line: var(--border, #d4dce4);
+}
+
+.project-structure h2,
+.project-structure h3,
+.project-structure p {
+  margin-block: 0 .35rem;
+}
+
+.structure-diagram {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-block: 1rem;
+}
+
+.structure-root {
+  min-width: min(20rem, 100%);
+  max-width: 100%;
+}
+
+.structure-branches {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  width: 100%;
+  gap: .75rem;
+  margin: 1.25rem 0 0;
+  padding: .75rem 0 0;
+  list-style: none;
+  border-top: 1px solid var(--structure-line);
+}
+
+.structure-branches::before {
+  content: '';
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  height: 1.25rem;
+  border-left: 1px solid var(--structure-line);
+}
+
+.structure-branch {
+  padding: .75rem;
+  border: 1px solid var(--structure-line);
+  border-radius: .65rem;
+  min-width: 0;
+}
+
+.structure-branch h3,
+.structure-section h3 {
+  font-size: .95rem;
+}
+
+.structure-card {
+  margin: 0 0 .45rem;
+  padding: .55rem .7rem;
+  border: 1px solid var(--structure-line);
+  border-radius: .5rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.structure-card summary {
+  display: list-item;
+  cursor: pointer;
+}
+
+.structure-card summary > .small {
+  display: block;
+}
+
+.structure-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(11rem, 100%), 1fr));
+  gap: .6rem;
+  margin-block: .7rem;
+}
+
+.structure-fields input,
+.structure-fields select,
+.structure-role select {
+  width: 100%;
+  min-width: 0;
+}
+
+.structure-sources,
+.structure-contracts,
+.structure-warnings {
+  padding-inline-start: 1.25rem;
+}
+
+.structure-sources li + li,
+.structure-section {
+  margin-top: .75rem;
+}
+
+.structure-sources span {
+  display: block;
+}
+
+.structure-own {
+  display: flex;
+  gap: .45rem;
+  margin-block: .65rem;
+}
+
+@media (max-width: 980px) {
+  .structure-branches {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 575px) {
+  .structure-branches {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

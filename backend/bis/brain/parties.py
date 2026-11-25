@@ -59,7 +59,9 @@ def parse_parties(text: str) -> list[dict[str, Any]]:
         head = _f(r"([А-ЯЁ]\.\s?[А-ЯЁ]\.\s?[А-ЯЁ][а-яё]+|[А-ЯЁ][а-яё]+\s[А-ЯЁ]\.\s?[А-ЯЁ]\.)", block)
         out.append({"role": role, "kind": ROLES[role], "name": name.group(1) if name else None, "inn": inn,
                     "kpp": _f(r"КПП\s*:?\s*(\d{9})\b", block), "ogrn": _f(r"ОГРНИ?П?\s*:?\s*(\d{13}|\d{15})\b", block),
-                    "address": addr, "head_position": pos, "head_name": head})
+                    "address": addr, "head_position": pos, "head_name": head,
+                    "email": _f(r"(?:e-mail|email|электронная почта)\s*:?\s*([^\s;,]+@[^\s;,]+)", block),
+                    "phone": _f(r"(?:телефон|тел\.)[ \t]*:?[ \t]*(\+?[\d ()-]{6,})", block)})
     return out
 
 

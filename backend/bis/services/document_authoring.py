@@ -229,13 +229,13 @@ def adapt_layout(db, storage, org_id, kind, content, purpose='', sample_id=None,
         return content, basis
 
 
-def render_administrative(org, document_type, subject, paragraphs, signer_position, signer_name, fields):
+def render_administrative(org, document_type, subject, paragraphs, signer_position, signer_name, fields, *, doc_date=None):
     from bis.documents.common import new_document, para, to_bytes
 
     doc = new_document()
     para(doc, org.name, bold=True)
     para(doc, document_type.upper(), bold=True)
-    para(doc, f'{date.today():%d.%m.%Y} № [присвоить номер]')
+    para(doc, f'{doc_date or date.today():%d.%m.%Y} № [присвоить номер]')
     para(doc, subject, bold=True)
     for label, value in fields.items():
         para(doc, f'{label}: {value}')

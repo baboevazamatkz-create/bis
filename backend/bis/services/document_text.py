@@ -10,7 +10,7 @@ from bis.models import KnowledgeChunk, KnowledgeSource
 from bis.rag.search import _hit
 
 
-def document_chunks(db, doc):
+def document_chunks(db, doc, *, include_vision=True):
     rows = db.execute(select(KnowledgeChunk, KnowledgeSource).join(
         KnowledgeSource, KnowledgeSource.id == KnowledgeChunk.source_id).where(
         KnowledgeSource.organization_id == doc.organization_id, KnowledgeSource.document_id == doc.id,
@@ -18,7 +18,7 @@ def document_chunks(db, doc):
         .order_by(KnowledgeSource.created_at, KnowledgeSource.id, KnowledgeChunk.ord)).all()
     # Text and vision are separate sources: never interleave their chunk ordinals.
     rows.sort(key=lambda row: bool((row[1].meta or {}).get("vision")))
-    return [_hit(chunk, source) for chunk, source in rows]
+    return [_hit(chunk, source) for chunk, source in rows if include_vision or not (source.meta or {}).get('vision')]
 
 
 def document_text(db, doc, storage=None):
