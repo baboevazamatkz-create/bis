@@ -144,6 +144,7 @@ async def main():
         await page.get_by_role(
             "link", name="Исполнительная документация", exact=True
         ).click()
+        await page.get_by_role("link", name="Общий реестр", exact=True).click()
         await page.get_by_text(
             "Нужны данные · Проложен кабель на участке 123", exact=True
         ).click()

@@ -1,10 +1,12 @@
-import { useEffect, useRef, useState } from 'react';
-import { activeProject, api, download, openFile, setActiveProject, STATUS_LABELS, type DocumentRow } from '../../api';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { activeProject, api, DEMO, download, openFile, setActiveProject, STATUS_LABELS, type DocumentRow } from '../../api';
 import { PageHead } from '../../components';
+import AosrForm from '../../pages/AosrForm';
 import { navigate } from '../navigation';
 import TaskComposer from './TaskComposer';
 import RunList from './RunList';
 import ProjectFragments from './ProjectFragments';
+import ProjectStructure from './ProjectStructure';
 import { askAssistant } from './assistantTask';
 
 type Category = 'documents' | 'schemes' | 'project' | 'contracts';
@@ -17,9 +19,17 @@ const PLACEHOLDERS = {
   project: 'Например: какие кабели и объёмы предусмотрены проектом на участке 123?',
   contracts: 'Например: какие сроки, аванс и гарантийные обязательства установлены генподрядом?',
 };
+interface PackageCheck {
+  acts: number;
+  complete: number;
+  missing_refs: number;
+  items?: { document_id: string; title: string; complete: boolean; issues: string[];
+    refs: { kind: string; title: string; number: string; found: boolean; document_id: string | null }[] }[];
+}
+
 const READ: Record<string, string> = { indexed: 'Текст доступен', partial: 'Прочитано частично', unread: 'Текст не прочитан', reading: 'Перечитывается…' };
 
-export default function WorkspaceDocuments({ category, canWrite = false, openProjectForm = false }: { category: Category; canWrite?: boolean; openProjectForm?: boolean }) {
+export default function WorkspaceDocuments({ category, canWrite = false, openProjectForm = false, navigation }: { category: Category; canWrite?: boolean; openProjectForm?: boolean; navigation?: ReactNode }) {
   const [data, setData] = useState<Result | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -28,13 +38,14 @@ export default function WorkspaceDocuments({ category, canWrite = false, openPro
   const [creatingProject, setCreatingProject] = useState(false);
   const [deletingProject, setDeletingProject] = useState(false);
   const [checking, setChecking] = useState(false);
+  const [creatingAosr, setCreatingAosr] = useState(false);
   const request = useRef<AbortController | null>(null);
   const [filter, setFilter] = useState('all');
   const [query, setQuery] = useState('');
   const [searchMode, setSearchMode] = useState<'documents' | 'fragments'>('documents');
   const [appliedQuery, setAppliedQuery] = useState('');
   const [selected, setSelected] = useState<Item | null>(null);
-  const [check, setCheck] = useState<{ acts: number; complete: number; missing_refs: number } | null>(null);
+  const [check, setCheck] = useState<PackageCheck | null>(null);
   const [needs, setNeeds] = useState<{ document_id: string; title: string; works: string; number: string | null; reason: string }[]>([]);
   async function load(more = false) {
     request.current?.abort();
@@ -57,8 +68,10 @@ export default function WorkspaceDocuments({ category, canWrite = false, openPro
   const rows = data?.documents.filter((d) => filter === 'all' || (category === 'contracts' ? d.contract_kind === filter :
     filter === 'ready' ? ['approved', 'signed'].includes(d.status) : !['approved', 'signed'].includes(d.status))) ?? [];
   async function checkPackage() {
+    const project = activeProject();
+    if (!project) return;
     setChecking(true); setError('');
-    try { setCheck(await api('/archive/id-check')); } catch (e) { setError((e as Error).message); } finally { setChecking(false); }
+    try { setCheck(await api(`/archive/id-check?object_id=${encodeURIComponent(project)}`)); } catch (e) { setError((e as Error).message); } finally { setChecking(false); }
   }
   function searchNow() { if (busy) return; if (query === appliedQuery) void load(); else setAppliedQuery(query); }
   async function deleteProject() {
@@ -97,10 +110,18 @@ export default function WorkspaceDocuments({ category, canWrite = false, openPro
       setCreatingProject(false);
     }
   }
+  if (creatingAosr) return <>
+    <button className="btn" onClick={() => setCreatingAosr(false)}>Вернуться к документам</button>
+    <AosrForm aosrOnly onCreated={() => { setCreatingAosr(false); void load(); }} />
+  </>;
   return <>
-    <PageHead title={TITLES[category]} hint={category === 'project' ? 'Рабочие чертежи, спецификации и состояние их чтения. Вопрос можно задать по любому документу.' :
+    <PageHead title={TITLES[category]} description={category === 'project' ? 'Рабочие чертежи, спецификации и состояние их чтения. Вопрос можно задать по любому документу.' :
       category === 'contracts' ? 'Генподряд и субподряд выбранного проекта. Условия и ответы — с привязкой к оригиналам.' :
       'Перечень документов, состояние готовности и задания на подготовку — без ручного заполнения реквизитов.'}>
+      {category === 'documents' && canWrite && <button className="btn" onClick={() => setCreatingAosr(true)}>Создать АОСР</button>}
+      {category === 'documents' && <button className="btn primary" disabled={checking || !activeProject()} onClick={() => void checkPackage()}>
+        {checking ? 'Проверяю…' : 'Проверить комплектность'}
+      </button>}
       <button className="btn" disabled={busy} onClick={() => void load()}>Обновить список</button>
       <button className="btn" onClick={() => navigate('id', 'libraries')}>Подключить документы</button>
       {category === 'project' && canWrite && activeProject() &&
@@ -108,6 +129,7 @@ export default function WorkspaceDocuments({ category, canWrite = false, openPro
           {deletingProject ? 'Удаление проекта…' : 'Удалить проект…'}
         </button>}
     </PageHead>
+    {navigation}
     {error && <div role="alert" className="alert error">{error}</div>}
     {category === 'project' && canWrite && <details className="panel compact-panel" open={openProjectForm || undefined}>
       <summary>Добавить проект</summary>
@@ -118,18 +140,9 @@ export default function WorkspaceDocuments({ category, canWrite = false, openPro
       </form>
     </details>}
     {data?.needs_project && <div className="note">Выберите объект вверху страницы, чтобы видеть его документы и задавать вопросы по проекту.</div>}
-    <TaskComposer placeholder={PLACEHOLDERS[category]} documentId={selected?.id} title={selected?.title} />
-    {selected && <button className="btn small" onClick={() => setSelected(null)}>Снять выбор документа</button>}
-    {category === 'documents' && <RunList canWrite={canWrite} />}
-    {category === 'documents' && <div className="panel compact-panel"><div className="row"><strong>Готовность комплекта ИД</strong>
-      <button className="btn small" disabled={checking} onClick={() => void checkPackage()}>{checking ? 'Проверяю…' : 'Проверить комплектность'}</button></div>
-      {check && <p>Актов: {check.acts} · комплектных: {check.complete} · отсутствующих ссылок: {check.missing_refs}</p>}</div>}
-    {category === 'schemes' && <div className="panel"><h2>Какие схемы ещё нужны</h2><p className="small muted">По ссылкам и замечаниям имеющихся актов. Задание на другую схему можно дать текстом или голосом.</p>
-      {!needs.length && <p className="muted">Не найдены акты с отсутствующими схемами.</p>}
-      {needs.map((item, index) => <div className="database-connection" key={`${item.document_id}:${index}`}><strong>{item.number ? `Схема № ${item.number}` : item.works || item.title}</strong><p className="small muted">{item.title} · {item.reason}</p>
-        <button className="btn small primary" onClick={() => askAssistant(`Подготовь исполнительную схему${item.number ? ` № ${item.number}` : ''} по работам акта «${item.title}». Используй проект и имеющуюся съёмку; покажи, если фактических данных недостаточно.`, item.document_id, item.title)}>Поручить подготовку схемы</button></div>)}
-    </div>}
-    <div className="panel">
+    {category === 'project' && !DEMO && activeProject() && <ProjectStructure key={activeProject()} projectId={activeProject()} />}
+    <div className="document-workbench">
+    <div className="panel document-register">
       {category === 'project' && <div className="tabs" role="group" aria-label="Режим поиска">
         <button className={`tab ${searchMode === 'documents' ? 'active' : ''}`} aria-pressed={searchMode === 'documents'} onClick={() => setSearchMode('documents')}>Поиск по списку</button>
         <button className={`tab ${searchMode === 'fragments' ? 'active' : ''}`} aria-pressed={searchMode === 'fragments'} onClick={() => setSearchMode('fragments')}>Поиск фрагментов</button>
@@ -158,6 +171,27 @@ export default function WorkspaceDocuments({ category, canWrite = false, openPro
       </article>)}</div>
       {data?.has_more && <button className="btn" disabled={busy} onClick={() => void load(true)}>Показать ещё</button>}
       </>}
+    </div>
+    <aside className="document-tools" aria-label="Документы и задания">
+      {category === 'documents' && check && <section className="panel package-check" aria-label="Результат проверки комплектности">
+        <h2>Проверка комплектности</h2>
+        <p>Актов: {check.acts} · комплектных: {check.complete} · отсутствующих ссылок: {check.missing_refs}</p>
+        {check.items?.filter((item) => !item.complete).map((item) => <details className="database-connection" key={item.document_id}>
+          <summary>{item.title}</summary>
+          {item.issues.map((issue, index) => <p className="small" key={index}>{issue}</p>)}
+          {item.refs.filter((ref) => !ref.found).map((ref) => <p className="small text-bad" key={`${ref.kind}:${ref.number}`}>Не найдено · {ref.title} № {ref.number}</p>)}
+          <button className="btn small" onClick={() => askAssistant(`Проверь замечания к акту «${item.title}».`, item.document_id, item.title)}>Спросить по акту</button>
+        </details>)}
+      </section>}
+      <TaskComposer placeholder={PLACEHOLDERS[category]} documentId={selected?.id} title={selected?.title} />
+      {selected && <button className="btn small" onClick={() => setSelected(null)}>Снять выбор документа</button>}
+      {category === 'documents' && <RunList canWrite={canWrite} />}
+      {category === 'schemes' && <div className="panel"><h2>Какие схемы ещё нужны</h2><p className="small muted">По ссылкам и замечаниям имеющихся актов. Задание на другую схему можно дать текстом или голосом.</p>
+        {!needs.length && <p className="muted">Не найдены акты с отсутствующими схемами.</p>}
+        {needs.map((item, index) => <div className="database-connection" key={`${item.document_id}:${index}`}><strong>{item.number ? `Схема № ${item.number}` : item.works || item.title}</strong><p className="small muted">{item.title} · {item.reason}</p>
+          <button className="btn small primary" onClick={() => askAssistant(`Подготовь исполнительную схему${item.number ? ` № ${item.number}` : ''} по работам акта «${item.title}». Используй проект и имеющуюся съёмку; покажи, если фактических данных недостаточно.`, item.document_id, item.title)}>Поручить подготовку схемы</button></div>)}
+      </div>}
+    </aside>
     </div>
   </>;
 }

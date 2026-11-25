@@ -1,0 +1,35 @@
+.doc-form-review .section-list-header { align-items: flex-start; }
+.doc-form-review .section-list-header h2 { margin-bottom: 4px; }
+.doc-form-review .row { flex-wrap: wrap; }
+.doc-form-review fieldset { min-width: 0; }
+.doc-form-review .doc-form-date { flex: 0 1 13rem; margin-bottom: 0; }
+.doc-form-grid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(17rem, 1fr); gap: 16px; align-items: start; }
+.doc-form-preview, .doc-form-controls { min-width: 0; }
+.doc-form-sheet { background: var(--soft); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px;
+  max-height: min(62vh, 44rem); overflow: auto; font-family: "Times New Roman", serif; line-height: 1.55; }
+.doc-form-sheet p { margin: 0 0 7px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.doc-form-table { overflow-x: auto; margin-bottom: 12px; }
+.doc-form-table table { border-collapse: collapse; width: 100%; }
+.doc-form-table td { border: 1px solid var(--border-strong); }
+.doc-form-table td p:last-child { margin-bottom: 0; }
+.doc-form-marker { font: inherit; color: var(--text); text-align: left; white-space: pre-wrap; overflow-wrap: anywhere;
+  cursor: pointer; border: 1px solid var(--border-strong); background: var(--input); padding: 0 4px; border-radius: 4px; }
+.doc-form-marker.whole { max-width: 100%; }
+.doc-form-marker.mapped { background: var(--ok-soft); }
+.doc-form-marker.check { background: var(--warn-soft); }
+.doc-form-marker.selected, .doc-form-field-list button[aria-pressed="true"] { outline: 2px solid var(--accent); outline-offset: 1px; }
+.doc-form-inspector { border: 1px solid var(--border); padding: 10px; border-radius: var(--radius); }
+.doc-form-inspector p { overflow-wrap: anywhere; margin: 6px 0 10px; }
+.doc-form-value, .doc-form-evidence blockquote { white-space: pre-wrap; overflow-wrap: anywhere; }
+.doc-form-evidence blockquote { margin: 3px 0 6px; border-left: 2px solid var(--border-strong); padding-left: 8px; }
+.doc-form-evidence + .doc-form-evidence, .doc-form-choices > div + div { margin-top: 8px; }
+.doc-form-choices { padding: 8px; border: 1px solid var(--border); border-radius: 6px; }
+.doc-form-choices label { overflow-wrap: anywhere; }
+.doc-form-field-list { list-style: none; padding: 3px; margin: 10px 0; display: grid; gap: 6px; max-height: 15rem; overflow-y: auto; }
+.doc-form-field-list li { display: flex; gap: 4px 8px; flex-wrap: wrap; align-items: center; }
+.doc-form-field-list button.btn { white-space: normal; overflow-wrap: anywhere; text-align: left; }
+.doc-form-actions { margin-top: 12px; }
+@media (max-width: 800px) {
+  .doc-form-grid { grid-template-columns: minmax(0, 1fr); }
+  .doc-form-sheet { max-height: 24rem; }
+}

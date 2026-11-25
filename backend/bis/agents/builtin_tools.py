@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import or_, select
 
 from bis.agents.base import AgentContext, tool
-from bis.agents.resolve import OBJ_HINT, AmbiguousReference, contract_ref, object_ref
+from bis.agents.resolve import OBJ_HINT, AmbiguousReference, contract_row, object_ref
 from bis.documents import AOSRData, LetterData
 from bis.documents.aosr import REPRESENTATIVE_ROLES
 from bis.models import ConstructionObject, Contract, Counterparty, Document, KnowledgeSource, Organization
@@ -364,6 +364,28 @@ def get_object_participants(ctx: AgentContext, args: ObjectArgs) -> dict:
     }
 
 
+class StructureArgs(ObjectArgs):
+    on_date: date | None = Field(None, description="Дата документа для проверки полномочий представителей")
+
+
+@tool("get_project_structure", "Действующие карточки проекта, стороны по ролям, договоры, реквизиты, контакты и ответственные. "
+      "Используй для адресатов, подписантов и поиска участников проекта.", scopes=("registry:read",))
+def get_project_structure(ctx: AgentContext, args: StructureArgs) -> dict:
+    from bis.services.project_participants import registered_parties, registered_people
+
+    project = ctx.db.get(ConstructionObject, object_ref(ctx, args.object_id))
+    participants = docsvc.object_participants(ctx.db, ctx.org_id, project.id, args.on_date)
+    parties = registered_parties(ctx.db, project)
+    return {
+        "project": {"id": str(project.id), "name": project.name, "code": project.code, "address": project.address},
+        "parties": parties,
+        "people": registered_people(ctx.db, project, parties, on_date=args.on_date or date.today()),
+        "representatives": {key: person.model_dump() for key, person in participants["representatives"].items()},
+        "ambiguous_representative_roles": participants["ambiguous_representative_roles"],
+        "other_responsible": [person.model_dump() for person in participants["other_representatives"]],
+    }
+
+
 class ListDocumentsArgs(BaseModel):
     kind: str | None = Field(None, description="aosr, aook, ks2, ks3, scheme, m29, writeoff, letter, incoming_letter, contract, order, project_doc …")
     object_id: str | None = None
@@ -419,18 +441,19 @@ class AOSRArgs(BaseModel):
     additional_info: str | None = None
     number: str | None = None
     act_date: date | None = None
+    performer_id: uuid.UUID | None = Field(None, description="ID субподрядчика из структуры проекта, если он выполнил эти работы")
 
 
 @tool("create_aosr_draft", "Создать черновик АОСР по объекту. Участники и представители подставляются из реестра "
       "по приказам. Возвращает ссылку на документ и замечания проверки.", scopes=("documents:write",))
 def create_aosr_draft(ctx: AgentContext, args: AOSRArgs) -> dict:
     object_id = object_ref(ctx, args.object_id)
-    p = docsvc.object_participants(ctx.db, ctx.org_id, object_id, args.act_date)
+    p = docsvc.object_participants(ctx.db, ctx.org_id, object_id, args.act_date, performer_id=args.performer_id)
     if p["developer"] is None:
         raise ValueError("У объекта не указан застройщик/технический заказчик — заполните карточку объекта")
     data = AOSRData(
         number=args.number, date=args.act_date, object_name=p["object_name"], developer=p["developer"],
-        builder=p["builder"], designer=p["designer"], representatives=p["representatives"],
+        builder=p["builder"], designer=p["designer"], performer=p["performer"], representatives=p["representatives"],
         other_representatives=p["other_representatives"], works=args.works, project_docs=args.project_docs,
         materials=args.materials, executive_docs=args.executive_docs, work_start=args.work_start,
         work_end=args.work_end, norms=args.norms, next_works=args.next_works, additional_info=args.additional_info,
@@ -454,14 +477,30 @@ class LetterArgs(BaseModel):
     signer_name: str | None = None
     object_id: str | None = None
     contract_id: str | None = None
+    recipient_role: str | None = Field(None, description="Роль адресата в проекте: developer, contractor, subcontractor, designer, supplier")
+    recipient_id: uuid.UUID | None = Field(None, description="ID карточки контрагента из get_project_structure")
 
 
 @tool("create_letter_draft", "Создать черновик исходящего письма на бланке организации.", scopes=("documents:write",))
 def create_letter_draft(ctx: AgentContext, args: LetterArgs) -> dict:
+    from bis.services.project_participants import recipient
+
     org = ctx.db.get(Organization, ctx.org_id)
+    project_ref = args.object_id or ctx.focus.get("object")
+    project = ctx.db.get(ConstructionObject, object_ref(ctx, project_ref)) if project_ref else None
+    contract = contract_row(ctx, args.contract_id, object_id=project.id if project else None) if args.contract_id else None
+    if not project and contract and contract.object_id:
+        project = ctx.db.get(ConstructionObject, object_ref(ctx, str(contract.object_id)))
+    if not project and (args.recipient_role or args.recipient_id):
+        project = ctx.db.get(ConstructionObject, object_ref(ctx, None))
+    addressee = args.addressee
+    if not addressee:
+        card = recipient(ctx.db, project, role=args.recipient_role, counterparty_id=args.recipient_id, contract=contract)
+        if card:
+            addressee = [card[field] for field in ('head_position', 'name', 'head_name') if card[field]]
     signer = (org.settings or {}).get("default_signer") or {}
     data = LetterData(
-        sender=docsvc.party_from_org(org), in_reply_to=args.in_reply_to, addressee=args.addressee or ['[Адресат: уточнить по договору]'],
+        sender=docsvc.party_from_org(org), in_reply_to=args.in_reply_to, addressee=addressee or ['[Адресат: уточнить по договору]'],
         subject=args.subject, greeting=args.greeting, body=args.body, attachments=args.attachments,
         signer_position=args.signer_position or signer.get("position") or "[Должность подписанта: уточнить]",
         signer_name=args.signer_name or signer.get("name") or "[Подписант: уточнить]",
@@ -469,8 +508,7 @@ def create_letter_draft(ctx: AgentContext, args: LetterArgs) -> dict:
     )
     doc = docsvc.create_letter(
         ctx.db, ctx.storage, org_id=ctx.org_id, data=data, created_by=f"agent:{ctx.agent_name}",
-        object_id=object_ref(ctx, args.object_id or ctx.focus.get("object")) if args.object_id or ctx.focus.get("object") else None,
-        contract_id=contract_ref(ctx, args.contract_id) if args.contract_id else None, sample_id=args.sample_id,
+        object_id=project.id if project else None, contract_id=contract.id if contract else None, sample_id=args.sample_id,
         require_organization_form=bool(ctx.db.info.get('require_organization_letter_form')),
     )
     ref = _doc_ref(doc) | {'created': True, 'basis': (doc.data or {}).get('authoring', {}).get('basis')}
@@ -489,6 +527,7 @@ BUILTIN_TOOLS = [
     find_counterparties,
     find_contracts,
     get_object_participants,
+    get_project_structure,
     list_documents,
     get_organization_info,
     data_coverage,
