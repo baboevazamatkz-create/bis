@@ -696,18 +696,24 @@ def select_form(db, org_id, kind, object_id=None, *, organization_only=False, pr
                LibraryVersion.approved_at.is_not(None))).all()
     if profile:
         choices = [(version, level) for version, level in choices if version.mapping.get('profile') == profile]
+    if required_format := db.info.get('library_form_format'):
+        choices = [(version, level) for version, level in choices if version.mapping.get('format') == required_format]
+        if not choices:
+            raise MissingFormError('Для редактируемого черновика требуется подтверждённый бланк DOCX')
     if organization_only:
         choices = [(version, level) for version, level in choices if level == 'organization']
     if not choices:
         if organization_only:
             raise MissingFormError('В базе организации нет подтверждённой формы письма.')
         raise MissingFormError('Нет подтверждённой формы ' + kind.upper() + ' в подключённых библиотеках')
+    if selected := db.info.get('library_form_id'):
+        for version, _ in choices:
+            if str(version.id) == str(selected):
+                return version
+        raise ValueError('Выбранная подтверждённая форма недоступна в проекте или имеет другой вид')
     rank = {'project': 0, 'organization': 1, 'knowledge': 2}
     best = min(rank[level] for _, level in choices)
     found = [v for v, level in choices if rank[level] == best]
-    if len(found) > 1:
-        selected = db.info.get('library_form_id')
-        found = [v for v in found if str(v.id) == str(selected)] if selected else found
     if len(found) != 1:
         raise ValueError('Найдено несколько подтверждённых форм; выберите форму в задании')
     return found[0]
@@ -739,7 +745,8 @@ def render(db, storage, org_id, kind, data, object_id=None, *, organization_only
     if isinstance(data, BaseModel) and hasattr(data, "permit"):
         from bis.documents.aook import PERMITS
 
-        values["permit"] = PERMITS[data.permit].format(load=data.load_percent or "", conditions=data.conditions or "")
+        values["permit"] = (PERMITS[data.permit].format(load=data.load_percent or "", conditions=data.conditions or "")
+                            if data.permit else "")
     content = filled(original, item.relative_path, mapping, values)
     db.info['used_library_form'] = {'version_id': str(version.id), 'sha256': version.sha256,
         'file_name': item.relative_path.rsplit('/', 1)[-1], 'mime': version.mime}

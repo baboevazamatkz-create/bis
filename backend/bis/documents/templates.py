@@ -53,7 +53,7 @@ def default_template(db: Session, org_id: uuid.UUID, kind: str) -> DocumentTempl
 def render_with_org_template(db: Session, storage: Storage, org_id: uuid.UUID, kind: str, data: BaseModel) -> bytes | None:
     from bis.services.library_access import strict_enabled
 
-    if strict_enabled(db, org_id):
+    if db.info.get('library_form_id') or strict_enabled(db, org_id):
         from bis.services.library_forms import render
 
         return render(db, storage, org_id, kind, data)

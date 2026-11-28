@@ -20,6 +20,7 @@ from bis.plugins.sdk import get_registry
 
 router = APIRouter(tags=["chat"])
 HISTORY_LIMIT = 20
+HISTORY_CHAR_BUDGET = 32000
 STREAM_HEARTBEAT_SECONDS = 15
 log = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ class ChatIn(BaseModel):
     object_id: uuid.UUID | None = None
     workspace: Literal["platform", "executive"] = "platform"
     document_id: uuid.UUID | None = None
+    form_version_id: uuid.UUID | None = None
 
 
 @router.get("/agents")
@@ -54,6 +56,7 @@ def chat(body: ChatIn, db: Session = Depends(get_db), user: User = Depends(requi
 def _answer(db: Session, user: User, body: ChatIn, progress=None, on_route=None, is_cancelled=None) -> dict:
     from bis.services.library_access import bind_context
 
+    started = time.monotonic()
     current = db.info.get("source_context")
     if body.object_id and current and current.object_id and current.object_id != body.object_id:
         raise HTTPException(409, "Объект запроса отличается от активного проекта")
@@ -65,15 +68,26 @@ def _answer(db: Session, user: User, body: ChatIn, progress=None, on_route=None,
         if own_session:
             selected_project = own_session.object_id
     if not selected_project:
+        from bis.agents.authoring_tasks import EXECUTIVE, intent
         from bis.brain.orchestrator import question_plan
         from bis.models import ConstructionObject
         from bis.services.executive_pipeline import is_work_report
 
-        if question_plan(body.message)['predicates'] or is_work_report(body.message):
+        if question_plan(body.message)['predicates'] or is_work_report(body.message) or intent(body.message) in EXECUTIVE:
             projects = db.scalars(select(ConstructionObject.id).where(ConstructionObject.organization_id == user.organization_id,
                 ConstructionObject.status == 'active').limit(2)).all()
             if len(projects) == 1:
                 selected_project = projects[0]
+            elif intent(body.message) in EXECUTIVE:
+                import re
+
+                candidates = db.scalars(select(ConstructionObject).where(
+                    ConstructionObject.organization_id == user.organization_id, ConstructionObject.status == 'active')).all()
+                named = [project.id for project in candidates if any(
+                    name and len(name) > 2 and re.search(r'(?<!\w)' + re.escape(name) + r'(?!\w)', body.message, re.I)
+                    for name in (project.name, project.code))]
+                if len(named) == 1:
+                    selected_project = named[0]
     selected_document = None
     if body.document_id:
         from bis.models import Document
@@ -89,7 +103,8 @@ def _answer(db: Session, user: User, body: ChatIn, progress=None, on_route=None,
     scope = bind_context(db, user.organization_id, selected_project)
     reg = get_registry()
     if body.session_id:
-        session = db.get(ChatSession, body.session_id)
+        session = db.scalar(select(ChatSession).where(ChatSession.id == body.session_id,
+            ChatSession.user_id == user.id, ChatSession.organization_id == user.organization_id).with_for_update())
         if session is None or session.user_id != user.id or session.organization_id != user.organization_id or (scope.object_id and session.object_id != scope.object_id):
             raise HTTPException(404, "Диалог не найден")
         first = db.scalar(select(ChatMessage).where(ChatMessage.session_id == session.id, ChatMessage.role == "assistant")
@@ -102,8 +117,17 @@ def _answer(db: Session, user: User, body: ChatIn, progress=None, on_route=None,
         db.flush()
     rows = db.scalars(select(ChatMessage).where(ChatMessage.session_id == session.id)
                       .order_by(ChatMessage.created_at.desc()).limit(HISTORY_LIMIT)).all()
-    history = [Message(role=m.role, content=m.content) for m in reversed(rows)]
+    history = []
+    remaining = HISTORY_CHAR_BUDGET
+    for row in rows:
+        if not remaining:
+            break
+        content = row.content[:min(remaining, 12000)]
+        history.append(Message(role=row.role, content=content))
+        remaining -= len(content)
+    history.reverse()
 
+    previous = next((m for m in rows if m.role == "assistant"), None)
     explicit = body.agent
     if body.workspace == "executive":
         from bis.modules.executive import AGENTS
@@ -124,7 +148,6 @@ def _answer(db: Session, user: User, body: ChatIn, progress=None, on_route=None,
     ctx.workspace = body.workspace
     ctx.is_cancelled = is_cancelled
     ctx.check_cancelled()
-    previous = next((m for m in rows if m.role == "assistant"), None)
     if previous:
         state = (previous.meta or {}).get("context") or {}
         ctx.focus = {k: v for k, v in state.get("focus", {}).items()
@@ -136,6 +159,8 @@ def _answer(db: Session, user: User, body: ChatIn, progress=None, on_route=None,
             ctx.focus['object'] = str(scope.object_id)
         else:
             ctx.focus = {}
+    if scope.object_id:
+        ctx.focus['object'] = str(scope.object_id)
     if selected_document is None and previous:
         previous_id = ((previous.meta or {}).get('context') or {}).get('selected_document')
         if previous_id:
@@ -159,7 +184,7 @@ def _answer(db: Session, user: User, body: ChatIn, progress=None, on_route=None,
     ctx.db.info['request_created_documents'] = []
     from bis.agents.authoring_tasks import finalize, prepare
 
-    effective_request, artifact_result = prepare(ctx, body.message, previous, rows)
+    effective_request, artifact_result = prepare(ctx, body.message, previous, rows, form_version_id=body.form_version_id)
     from bis.services.executive_pipeline import is_work_report
 
     if artifact_result is not None:
@@ -186,14 +211,23 @@ def _answer(db: Session, user: User, body: ChatIn, progress=None, on_route=None,
         result = agent.run(ctx, reg.tools, history, effective_request)
 
     result = finalize(ctx, result, effective_request)
+    saved_task = ctx.draft_task or ctx.suspended_task
+    if session.object_id is None and saved_task.get('object_id') and saved_task.get('status') == 'created':
+        session.object_id = uuid.UUID(saved_task['object_id'])
+    metrics = {"duration_ms": round((time.monotonic() - started) * 1000),
+               "tools_executed": sum(not event.get("skipped") for event in result.trace),
+               "tool_errors": sum(bool(event.get("error")) and not event.get("skipped") for event in result.trace),
+               "tool_reuses": sum(bool(event.get("skipped")) for event in result.trace),
+               "model_usage": result.usage}
     now = datetime.now(UTC)
     db.add(ChatMessage(session_id=session.id, role="user", content=body.message, created_at=now))
     db.add(ChatMessage(
         session_id=session.id, role="assistant", content=result.text, agent=agent_name,
         created_at=now + timedelta(microseconds=1),
         meta={"citations": result.citations, "documents": result.documents, "trace": result.trace,
-              "provider": result.provider, "model": result.model, "routed_by": routed_by,
-              "context": {"focus": ctx.focus, "selected_document": ctx.selected_document, "draft_task": ctx.draft_task}, "workspace": body.workspace},
+              "provider": result.provider, "model": result.model, "routed_by": routed_by, "metrics": metrics,
+              "awaits_draft_permission": ctx.draft_task.get('status') == 'awaiting_permission' and result.provider == 'executive_draft',
+              "context": {"focus": ctx.focus, "selected_document": ctx.selected_document, "draft_task": saved_task}, "workspace": body.workspace},
     ))
     ctx.check_cancelled()
     db.commit()
@@ -206,6 +240,7 @@ def _answer(db: Session, user: User, body: ChatIn, progress=None, on_route=None,
         "citations": result.citations,
         "documents": result.documents,
         "trace": result.trace,
+        "metrics": metrics,
         "provider": result.provider,
         "model": result.model,
     }

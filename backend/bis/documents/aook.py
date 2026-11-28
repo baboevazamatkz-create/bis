@@ -25,7 +25,7 @@ class AOOKData(AOSRData):
     works: str = Field(description="Ответственные конструкции, предъявленные к освидетельствованию")
     tests: list[str] = Field(default_factory=list, description="Проведённые испытания и опробования")
     aosr_refs: list[str] = Field(default_factory=list, description="АОСР на скрытые работы в составе конструкций")
-    permit: Literal["full", "partial", "conditional"] = "full"
+    permit: Literal["full", "partial", "conditional"] | None = "full"
     load_percent: int | None = None
     conditions: str | None = None
 
@@ -37,6 +37,8 @@ def validate_aook(d: AOOKData) -> list[Issue]:
                             message="Не указаны АОСР на скрытые работы, входящие в состав конструкций"))
     if not d.tests:
         issues.append(Issue(level="warning", field="tests", message="Не указаны испытания (прочность бетона, сварные швы и т.п.)"))
+    if d.permit is None:
+        issues.append(Issue(level="error", field="permit", message="Разрешение на нагружение не установлено"))
     if d.permit == "partial" and not d.load_percent:
         issues.append(Issue(level="error", field="load_percent", message="Для частичного нагружения укажите процент нагрузки"))
     if d.permit == "conditional" and not d.conditions:
@@ -71,8 +73,11 @@ def render_aook(d: AOOKData) -> bytes:
     field_line(doc, "7. Конструкции выполнены в соответствии с", "; ".join(d.norms),
                "наименования и структурные единицы технических регламентов, иных нормативных правовых актов, разделы ПД")
     para(doc, "8. На основании изложенного:")
-    permit = PERMITS[d.permit].format(load=d.load_percent or "__", conditions=d.conditions or "")
-    para(doc, f"а) {permit};", indent_cm=1.0)
+    if d.permit is None:
+        field_line(doc, "а) Решение о нагружении конструкций:", "", "заполняется после инженерной проверки")
+    else:
+        permit = PERMITS[d.permit].format(load=d.load_percent or "__", conditions=d.conditions or "")
+        para(doc, f"а) {permit};", indent_cm=1.0)
     if d.next_works:
         para(doc, f"б) разрешается производство последующих работ: {d.next_works}.", indent_cm=1.0)
     para(doc)

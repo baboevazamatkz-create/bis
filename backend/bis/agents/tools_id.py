@@ -131,8 +131,10 @@ def prepare_executive_package(ctx: AgentContext, args: ExecutivePackageArgs) -> 
     originals = [m.content for m in ctx.conversation if m.role == "user"]
     if originals and not any(pipeline.norm(args.text) in pipeline.norm(t) for t in originals):
         raise ValueError("Передай исходное сообщение пользователя дословно; дополнительные факты должны иметь источник")
-    object_id = obj_row(ctx, args.object_id).id if args.object_id else None
-    request_id = uuid.uuid5(uuid.NAMESPACE_URL, f"bis:executive:{ctx.org_id}:{object_id}:{dt.date.today()}:{pipeline.norm(args.text)}")
+    scope = ctx.db.info.get('source_context')
+    object_id = obj_row(ctx, args.object_id).id if args.object_id else (scope.object_id if scope else None)
+    request_id = uuid.uuid5(uuid.NAMESPACE_URL,
+        f"bis:executive:{ctx.org_id}:{ctx.user.id}:{object_id}:{dt.date.today()}:{pipeline.norm(args.text)}")
     event, fresh = pipeline.create_run(ctx, pipeline.RunInput(text=args.text, object_id=object_id, request_id=request_id))
     if fresh:
         def progress(current):
