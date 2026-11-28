@@ -1,0 +1,112 @@
+name: BIS orchestrator Windows update
+
+on:
+  push:
+    branches: [codex/orchestrator-windows-package]
+
+permissions:
+  contents: read
+
+env:
+  SOURCE: a32e07613f1cdfda1fbd7b657b71f3524cf2031c
+  ASSET: BIS-Orchestrator-a32e076-Windows.zip
+  RELEASE_TAG: orchestrator-trial-a32e076
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: a32e07613f1cdfda1fbd7b657b71f3524cf2031c
+          path: application
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build the pinned offline package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          curl.exe --fail --location --retry 2 'https://github.com/baboevazamatkz-create/bis/releases/download/project-structure-aosr-331f56a/BIS-Project-Structure-AOSR-Windows11.zip' --output previous.zip
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot download the verified previous dependency bundle' }
+          python application/deploy/package-pilot.py base
+          if ($LASTEXITCODE -ne 0) { throw 'Source packaging failed' }
+          python -m pip wheel --no-deps --wheel-dir wheel ./application/backend
+          if ($LASTEXITCODE -ne 0) { throw 'Wheel build failed' }
+          $Wheel = (Get-ChildItem wheel/bis-*.whl).FullName
+          python deploy/orchestrator-package/build.py deploy/orchestrator-package base/BIS-Pilot-Windows.zip previous.zip $Wheel "delivery/$env:ASSET"
+          if ($LASTEXITCODE -ne 0) { throw 'Offline packaging failed' }
+      - name: Exercise offline update on Windows
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Expand-Archive "delivery/$env:ASSET" extracted
+          $Root = Join-Path $env:RUNNER_TEMP 'BIS-Pilot Test'
+          $null = New-Item -ItemType Directory $Root, "$Root/releases/previous", "$Root/data", "$Root/library"
+          python -m venv "$Root/venv"
+          if ($LASTEXITCODE -ne 0) { throw 'Test venv creation failed' }
+          Set-Content -LiteralPath "$Root/.pilot-installation" -Value 'BIS installed'
+          Set-Content -LiteralPath "$Root/.env" -Value 'BIS_TEST_ORIGINAL_CONFIG=kept'
+          Set-Content -LiteralPath "$Root/data/kept.txt" -Value 'previous database contents'
+          Set-Content -LiteralPath "$Root/library/original.txt" -Value 'project document'
+          $Before = '@echo off' + "`r`n" + "set `"BIS_WEB_DIR=$Root\releases\previous\web`"" + "`r`n" +
+              "`"$Root\venv\Scripts\bis.exe`" local --dir `"$Root`" --host 127.0.0.1 --port 8081`r`n"
+          [IO.File]::WriteAllText("$Root/START-BIS.cmd", $Before)
+          $ConfigHash = (Get-FileHash "$Root/.env").Hash
+          $DataHash = (Get-FileHash "$Root/data/kept.txt").Hash
+          $DocHash = (Get-FileHash "$Root/library/original.txt").Hash
+          $env:PIP_NO_INDEX = '1'
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File extracted/Update-BIS.ps1 -BisRoot $Root -NoStart
+          if ($LASTEXITCODE -ne 0) { throw 'Pilot update failed' }
+          if ((Get-FileHash "$Root/.env").Hash -ne $ConfigHash -or (Get-FileHash "$Root/data/kept.txt").Hash -ne $DataHash -or (Get-FileHash "$Root/library/original.txt").Hash -ne $DocHash) {
+              throw 'Existing data changed'
+          }
+          $App = "$Root/releases/pto_$($env:SOURCE.Substring(0,12))"
+          $Release = Get-Content "$App/RELEASE.json" -Raw | ConvertFrom-Json
+          if ($Release.source_commit -ne $env:SOURCE) { throw 'Wrong source SHA' }
+          $Web = Get-Content "$App/web/index.html" -Raw
+          foreach ($Asset in [regex]::Matches($Web, '/assets/[^" ]+')) {
+              if (-not (Test-Path "$App/web$($Asset.Value)")) { throw "Missing frontend asset: $($Asset.Value)" }
+          }
+          if ((Get-Content "$App/START-BIS.previous.cmd" -Raw) -ne $Before -or (Get-Content "$Root/START-BIS.cmd" -Raw) -notmatch 'start_release\.py.*--port 8081') {
+              throw 'Launcher activation or backup failed'
+          }
+          # A second update must accept the new launcher format and keep the installation unchanged.
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File extracted/Update-BIS.ps1 -BisRoot $Root -NoStart
+          if ($LASTEXITCODE -ne 0 -or (Get-FileHash "$Root/.env").Hash -ne $ConfigHash) { throw 'Repeat update failed' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: orchestrator-windows-update
+          path: delivery/
+          compression-level: 0
+          if-no-files-found: error
+
+  publish:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: orchestrator-windows-update
+          path: delivery
+      - name: Publish verified prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd delivery && sha256sum -c "$ASSET.sha256")
+          gh release create "$RELEASE_TAG" --target "$SOURCE" --prerelease \
+            --title "BIS Orchestrator trial a32e076 · Windows 11 x64" \
+            --notes "Offline update of an existing BIS installation. Preserves PostgreSQL, documents, and settings. Source: $SOURCE. Extract the ZIP and run Install-BIS.cmd." \
+            "delivery/$ASSET" "delivery/$ASSET.sha256"
+          mkdir proof
+          gh release download "$RELEASE_TAG" --pattern "$ASSET*" --dir proof
+          (cd proof && sha256sum -c "$ASSET.sha256")
