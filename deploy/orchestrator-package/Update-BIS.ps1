@@ -77,7 +77,7 @@ New-Item -ItemType Directory -Path $Stage | Out-Null
 try {
     $Packages = Join-Path $Stage 'packages'
     $Wheels = Join-Path $Payload 'wheels'
-    & $Python -I -m pip --isolated --disable-pip-version-check install --no-index --only-binary ':all:' --ignore-installed --find-links $Wheels --target $Packages 'bis==0.1.0' 'pgserver==0.1.4' imageio-ffmpeg colorama tzdata
+    & $Python -I -m pip --isolated --disable-pip-version-check install --no-index --only-binary ':all:' --ignore-installed --find-links $Wheels --target $Packages 'bis==0.1.0' 'pgserver==0.1.4' colorama tzdata
     if ($LASTEXITCODE -ne 0) { throw 'Offline dependency preparation failed.' }
     Copy-Item -LiteralPath (Join-Path $Payload 'deploy\web') -Destination (Join-Path $Stage 'web') -Recurse
     Copy-Item -LiteralPath (Join-Path $Payload 'RELEASE.json') -Destination $Stage
