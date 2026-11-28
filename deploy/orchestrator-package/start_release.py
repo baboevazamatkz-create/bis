@@ -18,7 +18,7 @@ if sys.argv[1:] == ["--verify"]:
     from bis.agents.executive_drafts import run
     from bis.main import app
 
-    assert run and any(route.path == "/api/chat/stream" for route in app.routes)
+    assert run and "/api/chat/stream" in app.openapi()["paths"]
 else:
     from bis.cli import main
 
