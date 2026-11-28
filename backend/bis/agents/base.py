@@ -7,6 +7,7 @@ import inspect
 import json
 import logging
 import re
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -15,6 +16,7 @@ from typing import Any, get_type_hints
 
 from pydantic import BaseModel, ValidationError
 from sqlalchemy import select
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from bis.llm.gateway import LLMGateway
@@ -59,6 +61,9 @@ class AgentContext:
     selected_document: str | None = None
     created_document_ids: list[str] = field(default_factory=list)
     draft_task: dict[str, Any] = field(default_factory=dict)
+    tool_outcomes: dict[str, tuple[str, bool]] = field(default_factory=dict)
+    suspended_task: dict[str, Any] = field(default_factory=dict)
+    uncertain_write: bool = False
 
     def check_cancelled(self) -> None:
         if self.is_cancelled and self.is_cancelled():
@@ -124,25 +129,80 @@ class Tool:
         ctx.check_cancelled()
         for scope in self.scopes:
             if not has_scope(ctx.user.role, scope):
-                return _json({"error": f"Недостаточно прав ({scope}) для инструмента {self.name}"}), True
+                return _json({"error": f"Недостаточно прав ({scope}) для инструмента {self.name}", "error_kind": "access"}), True
         try:
             args = self.args_model.model_validate(arguments)
         except ValidationError as e:
-            return _json({"error": "Неверные аргументы", "details": e.errors(include_url=False)}), True
-        try:
-            result = self.handler(ctx, args)
-        except (LookupError, ValueError, PermissionError) as e:
-            from bis.agents.resolve import AmbiguousReference
+            return _json({"error": "Неверные аргументы", "error_kind": "parameters", "details": e.errors(include_url=False)}), True
+        from bis.agents.authoring_tasks import incompatible_tool
 
-            if isinstance(e, AmbiguousReference):
-                ctx.ambiguous = True
-                ctx.choices = e.candidates
-                return _json({"error": str(e), "candidates": e.candidates}), True
-            return _json({"error": str(e)}), True
+        if detail := incompatible_tool(ctx.draft_task, self.name, arguments):
+            return _json({"error": detail, "error_kind": "incompatible"}), True
+        writes = any(scope.endswith(':write') for scope in self.scopes) or self.name == 'delegate_to_agent'
+        attempts = 2 if self.scopes and not writes else 1
+        for attempt in range(attempts):
+            before = len(ctx.db.info.get('request_created_documents', [])) if isinstance(ctx.db, Session) else 0
+            visible_documents = len(ctx.documents)
+            previous_writes = ctx.writes
+            try:
+                transaction = ctx.db.begin_nested() if isinstance(ctx.db, Session) else contextlib.nullcontext()
+                with transaction:
+                    result = self.handler(ctx, args)
+                    if writes and isinstance(ctx.db, Session):
+                        verify_registry_result(ctx, self.name, result)
+                break
+            except (LookupError, ValueError, PermissionError, OSError, DBAPIError) as e:
+                del ctx.documents[visible_documents:]
+                ctx.writes = previous_writes
+                if isinstance(ctx.db, Session):
+                    del ctx.db.info.get('request_created_documents', [])[before:]
+                    ctx.db.info.pop('used_library_form', None)
+                from bis.agents.resolve import AmbiguousReference
+
+                if isinstance(e, AmbiguousReference):
+                    ctx.ambiguous = True
+                    ctx.choices = e.candidates
+                    return _json({"error": str(e), "candidates": e.candidates, "error_kind": "missing_input"}), True
+                if isinstance(e, DBAPIError):
+                    transient = not e.connection_invalidated and getattr(e.orig, 'sqlstate', '') in ('40001', '40P01', '55P03')
+                    if transient and attempt + 1 < attempts:
+                        ctx.check_cancelled()
+                        time.sleep(.1)
+                        continue
+                    log.warning('Ошибка БД при выполнении %s: %s', self.name, type(e.orig).__name__)
+                    return _json({"error": "Операция базы не подтверждена. Проверьте состояние перед повтором.",
+                                  "error_kind": "transient" if transient and not writes else "uncertain"}), True
+                if isinstance(e, OSError) and not isinstance(e, PermissionError):
+                    return _json({"error": "Файл недоступен в хранилище.",
+                                  "error_kind": "uncertain" if writes else "storage"}), True
+                category = "access" if isinstance(e, PermissionError) else "unavailable" if isinstance(e, LookupError) else "constraints"
+                return _json({"error": str(e), "error_kind": category}), True
         ctx.check_cancelled()
         if any(sc.endswith(":write") for sc in self.scopes):
             ctx.writes += 1
         return bounded_json(result if isinstance(result, dict | list) else {"result": result}), False
+
+
+def verify_registry_result(ctx: AgentContext, name: str, result: Any) -> None:
+    from bis.models import MaterialReceipt, MaterialUsage, Task, WorkVolume
+
+    contracts = {
+        'create_task': (Task, 'id'), 'update_task': (Task, 'id'),
+        'report_volume': (WorkVolume, 'volume_id'),
+        'record_material_usage': (MaterialUsage, 'usage_id'),
+        'record_material_receipt': (MaterialReceipt, 'receipt_id'),
+    }
+    if name not in contracts:
+        return
+    model, key = contracts[name]
+    if not isinstance(result, dict) or not result.get(key):
+        raise ValueError('Инструмент не вернул идентификатор сохранённой записи')
+    identifier = uuid.UUID(str(result[key]))
+    record = ctx.db.scalar(select(model).where(model.id == identifier, model.organization_id == ctx.org_id)
+                           .execution_options(populate_existing=True))
+    project = ctx.db.info.get('source_context')
+    if record is None or (project and project.object_id and record.object_id != project.object_id):
+        raise ValueError('Запись не подтверждена в текущем проекте')
 
 
 def _json(obj: Any) -> str:
@@ -303,7 +363,7 @@ ACT_NUDGE = ("Пользователь просит сделать, а ты не
              "и спроси, нужен ли новый), затем дай итог по его результату.")
 
 
-ASK_ACT = re.compile(r"\b(сделай|создай|подготовь|оформи|сформируй|внеси|зарегистрируй|составь|напиши|заведи|"
+ASK_ACT = re.compile(r"\b(сделай|создай|подготовь|оформи|сформируй|собери|сгенерируй|нужно\s+(?:сделать|создать|подготовить|оформить|составить)|внеси|зарегистрируй|составь|напиши|заведи|"
                      r"поставь|запиши)\b", re.IGNORECASE)
 ACTION_OBJECT = re.compile(r"аоср|аоок|кс-?[23]|письм|черновик|поручени|задач|ведомост|\bакт\b|"
                            r"объ[её]м|приход|расход|схем|черт[её]ж|списани|приказ|записк|инструкц|положени|регламент|протокол|документ", re.IGNORECASE)
@@ -373,7 +433,7 @@ def text_tool_call(content: str, by_name: dict) -> ToolCall | None:
     """YandexGPT иногда пишет вызов инструмента текстом («create_aosr_draft {...}») вместо вызова — выполняем его."""
     if not content or "{" not in content:
         return None
-    m = _TEXT_CALL.search(content)
+    m = _TEXT_CALL.fullmatch(content.strip())
     if not m or m.group(1) not in by_name:
         return None
     try:
@@ -546,7 +606,9 @@ class Agent:
         inherited = shared_evidence(ctx)
         if inherited:
             messages.append(Message(role="system", content=inherited))
-        authoring = ctx.depth == 0 and bool(ctx.draft_task)
+        from bis.agents.authoring_tasks import EXECUTIVE
+
+        authoring = ctx.depth == 0 and bool(ctx.draft_task) and ctx.draft_task.get('kind') not in EXECUTIVE
         if authoring:
             from bis.agents.grounding import authoring_sources
 
@@ -604,7 +666,9 @@ class Agent:
             has_write = has_write or any(any(sc.endswith(":write") for sc in t.scopes)
                 and all(has_scope(ctx.user.role, sc) for sc in t.scopes) for t in registry.all())
         steps = self.max_steps
+        history_of_calls = ctx.tool_outcomes
         step = 0
+        write_blocked = False
         while step < steps:
             ctx.check_cancelled()
             step += 1
@@ -632,13 +696,13 @@ class Agent:
                         and requests_write(user_text):
                     # «черновик создан» без вызова инструмента — действие выдумано: заставляем выполнить
                     acted = True
-                    steps = step + 4
+                    steps = min(steps, step + 4)
                     messages.append(Message(role="user", content=ACT_NUDGE))
                     continue
                 if not retried and deflects(text) and not ctx.ambiguous and not wrote:
                     # отговорка вместо ответа: ещё одна попытка найти самому, а не перекладывать на пользователя
                     retried = True
-                    steps = step + 4
+                    steps = min(steps, step + 4)
                     recovered = retrieve(ctx, user_text)
                     if recovered:
                         messages.append(Message(role="system", content=recovered))
@@ -650,19 +714,41 @@ class Agent:
                     with contextlib.suppress(Exception):
                         ctx.progress({"type": "tool", "tool": call.name, "label": step_label(call.name, call.arguments)})
                 t = by_name.get(call.name)
-                if t is None:
-                    content, is_error = _json({"error": f"Инструмент {call.name} недоступен"}), True
+                read_epoch = ctx.writes if t and t.scopes and all(sc.endswith(':read') for sc in t.scopes) else None
+                signature = _json([call.name, read_epoch, json.dumps(call.arguments, sort_keys=True, default=str)])
+                previous_call = history_of_calls.get(signature)
+                if previous_call is not None:
+                    content, is_error = previous_call
+                    category = "duplicate" if is_error else "reused"
+                elif t is None:
+                    content, is_error = _json({"error": f"Инструмент {call.name} недоступен", "error_kind": "unavailable"}), True
+                    category = "unavailable"
                 else:
+                    ctx.check_cancelled()
                     content, is_error = t.run(ctx, call.arguments)
                     remember(ctx, call.name, call.arguments, content, is_error)
-                    is_write = any(sc.endswith(":write") for sc in t.scopes)
-                    tried_write = tried_write or is_write
+                    tried_write = tried_write or any(sc.endswith(":write") for sc in t.scopes)
                     wrote = wrote or ctx.writes > initial_writes
-                ctx.trace.append({"tool": call.name, "arguments": call.arguments, "error": is_error})
-                audit(ctx.db, ctx.org_id, actor_type="agent", actor=self.name, action=f"tool.{call.name}",
-                      details={"arguments": call.arguments, "error": is_error, "user": str(ctx.user.id)})
+                    category = json.loads(content).get("error_kind") if is_error else None
+                history_of_calls[signature] = content, is_error
+                trace = {"tool": call.name, "arguments": call.arguments, "error": is_error}
+                if category:
+                    trace["error_kind"] = category
+                if previous_call is not None:
+                    trace["skipped"] = True
+                ctx.trace.append(trace)
+                if previous_call is None:
+                    audit(ctx.db, ctx.org_id, actor_type="agent", actor=self.name, action=f"tool.{call.name}",
+                          details={"arguments": call.arguments, "error": is_error, "user": str(ctx.user.id)})
                 messages.append(Message(role="tool", content=content, tool_call_id=call.id, name=call.name,
                                         is_error=is_error))
+                if category == "uncertain" or ctx.uncertain_write:
+                    ctx.uncertain_write = True
+                    write_blocked = True
+                    break
+            if write_blocked:
+                text = "Исход операции не подтверждён. Проверьте реестр перед повторной записью."
+                break
         else:
             text = (text + "\n\n" if text else "") + "Проверка не завершена: достигнут лимит шагов. " \
                    "Результат ниже может быть неполным."

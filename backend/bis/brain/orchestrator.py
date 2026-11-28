@@ -71,11 +71,11 @@ def question_plan(question, focus=None):
                       'Ответить с основаниями либо показать конкретный пробел']}
 
 
-def investigate(ctx, question, object_id=None, *, budget=12, force=False):
+def investigate(ctx, question, object_id=None, *, budget=12, force=False, plan=None):
     from bis.services.executive_pipeline import locations, scope_matches
 
     project_id = ledger.scope(ctx, object_id)
-    plan = question_plan(question, ctx.focus)
+    plan = plan or question_plan(question, ctx.focus)
     task = BrainInvestigation(organization_id=ctx.org_id, object_id=project_id,
         user_id=ctx.user.id if ctx.user else None, question=question, state='running', plan=plan, result={})
     ctx.db.add(task)
@@ -108,6 +108,7 @@ def investigate(ctx, question, object_id=None, *, budget=12, force=False):
     pending = [(doc, text) for doc, text in candidates if doc.id not in cached_ids]
     read, unread, partial, failed = [str(d.id) for d, _ in already_read], [], [], []
     for doc, text in pending[:budget]:
+        ctx.check_cancelled()
         if ctx.progress:
             ctx.progress({'type': 'tool', 'tool': 'investigate_project', 'label': 'Сверяю источник: ' + doc.title})
         try:

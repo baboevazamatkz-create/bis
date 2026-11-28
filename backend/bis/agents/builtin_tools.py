@@ -444,6 +444,14 @@ class AOSRArgs(BaseModel):
     performer_id: uuid.UUID | None = Field(None, description="ID субподрядчика из структуры проекта, если он выполнил эти работы")
 
 
+    @field_validator("work_start", "work_end", "act_date")
+    @classmethod
+    def reject_placeholder_date(cls, value: date | None) -> date | None:
+        if value == date.min:
+            raise ValueError("Неизвестную дату нельзя заменять 0001-01-01")
+        return value
+
+
 @tool("create_aosr_draft", "Создать черновик АОСР по объекту. Участники и представители подставляются из реестра "
       "по приказам. Возвращает ссылку на документ и замечания проверки.", scopes=("documents:write",))
 def create_aosr_draft(ctx: AgentContext, args: AOSRArgs) -> dict:

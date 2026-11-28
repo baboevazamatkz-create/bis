@@ -15,11 +15,15 @@ def test_result_reports_actual_unknown_signer_instead_of_model_claim(monkeypatch
     from bis.agents import builtin_tools
     from bis.agents.authoring_tasks import finalize
     from bis.agents.base import AgentResult
-    doc = SimpleNamespace(id=uuid.uuid4(), organization_id='org', file_key='saved', kind='letter',
+    content = io.BytesIO()
+    Document().save(content)
+    doc = SimpleNamespace(id=uuid.uuid4(), organization_id='org', object_id=None,
+        file_key='saved', file_name='test.docx', kind='letter',
         data={'authoring': {'basis': {'identity_review_required': True,
                                     'sample': {'title': 'Архивное исходящее письмо'}}}})
     monkeypatch.setattr(builtin_tools, '_doc_ref', lambda d: {'id': str(d.id), 'title': 'Письмо', 'kind': 'letter'})
     ctx = SimpleNamespace(org_id='org', draft_task={'kind': 'letter'},
+        storage=SimpleNamespace(get=lambda _: content.getvalue()),
         db=SimpleNamespace(info={'request_created_documents': [str(doc.id)]}, get=lambda *a: doc))
     result = finalize(ctx, AgentResult(text='Подписант — Seed Person.', agent='assistant'), 'Напиши письмо')
     assert 'Seed Person' not in result.text

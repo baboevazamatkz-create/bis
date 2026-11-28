@@ -236,10 +236,12 @@ def create_task(ctx: AgentContext, args: CreateTaskArgs) -> dict:
         person = ctx.db.get(Person, _uuid(args.assignee_person_id, "исполнителя"))
         if person is None or person.organization_id != ctx.org_id:
             raise LookupError("Исполнитель не найден")
+    project = ctx.db.info.get('source_context')
+    object_id = object_ref(ctx, args.object_id) if args.object_id else (project.object_id if project else None)
     t = Task(organization_id=ctx.org_id, title=args.title, description=args.description,
              assignee_person_id=person.id if person else None, assignee_user_id=person.user_id if person else None,
              due_date=args.due_date, priority=args.priority,
-             object_id=object_ref(ctx, args.object_id) if args.object_id else None,
+             object_id=object_id,
              contract_id=contract_ref(ctx, args.contract_id) if args.contract_id else None,
              source_type=args.source_type or "agent", source_id=args.source_id, created_by=f"agent:{ctx.agent_name}")
     ctx.db.add(t)
@@ -409,7 +411,10 @@ def delegate_to_agent(ctx: AgentContext, args: DelegateArgs) -> dict:
         raise ValueError("Повторное делегирование запрещено — выполни задачу сам")
     if not ctx.agents or args.agent not in ctx.agents:
         raise LookupError(f"Агент «{args.agent}» не найден")
+    from bis.agents.authoring_tasks import verified_document
+
     caller = ctx.agent_name
+    existing = set(ctx.db.info.get('request_created_documents', []))
     sub = ctx.agents[args.agent]
     if sub.name == caller:
         raise ValueError("Нельзя делегировать самому себе")
@@ -422,8 +427,14 @@ def delegate_to_agent(ctx: AgentContext, args: DelegateArgs) -> dict:
         ctx.depth -= 1
         ctx.agent_name = caller
         ctx.ambiguous = ambiguous or ctx.ambiguous
+    created = [str(ref) for ref in ctx.db.info.get('request_created_documents', [])
+               if ref not in existing and verified_document(ctx, ref, ctx.draft_task)]
     return {"agent": sub.name, "title": sub.title, "answer": result.text,
-            "documents": [d for d in result.documents]}
+            "state": "uncertain" if ctx.uncertain_write else (
+                "verified_artifacts" if created else "needs_input" if ctx.ambiguous else "response"),
+            "created_document_ids": created, "documents": result.documents,
+            "sources": [{"document_id": item.get('document_id'), "page": item.get('page')}
+                        for item in result.citations if item.get('used')]}
 
 
 CONTROL_TOOLS.append(delegate_to_agent)
